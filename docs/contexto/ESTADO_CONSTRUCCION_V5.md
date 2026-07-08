@@ -13,8 +13,8 @@ M0 - Base estructural: CERRADO (doble revision Central + CSA conforme;
 ## Pieza actual
 P00 - Esqueleto de repositorio + CI base: ENTREGADA.
   Commits: d3f7ad6 (esqueleto) -> 15f936d (snapshot documentos-norte).
-  CI: checks equivalentes al workflow validados en local; Actions
-      pendiente por ausencia de remoto.
+  CI: checks equivalentes al workflow validados en local;
+      Actions pendiente por ausencia de remoto.
 
 ## Proxima pieza
 P01 - Contratos base y envelope: envelope canonico y familias de evento
