@@ -1,0 +1,20 @@
+{
+  "name": "ce-v5-monorepo",
+  "version": "0.0.0",
+  "private": true,
+  "packageManager": "pnpm@11.10.0",
+  "engines": {
+    "node": ">=24",
+    "pnpm": ">=11"
+  },
+  "scripts": {
+    "lint:biome": "biome check .",
+    "typecheck": "node tools/check_types_frontend.mjs",
+    "boundaries": "depcruise frontend/src --config .dependency-cruiser.cjs"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.4.0",
+    "dependency-cruiser": "18.0.0",
+    "typescript": "6.0.3"
+  }
+}

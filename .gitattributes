@@ -1,0 +1,3 @@
+contracts/schemas/** linguist-generated=true
+frontend/src/shared-contracts/generated/** linguist-generated=true
+* text=auto eol=lf

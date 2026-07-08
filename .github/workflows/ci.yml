@@ -1,0 +1,52 @@
+name: CI (guardarrailes P00)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  backend:
+    name: Backend (lint, format, types, boundaries, tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Instalar uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.13"
+      - name: Sincronizar entorno
+        run: uv sync --extra dev
+      - name: Ruff lint
+        run: uv run ruff check .
+      - name: Ruff format (check)
+        run: uv run ruff format --check .
+      - name: mypy
+        run: uv run mypy
+      - name: Fronteras de import (7.1)
+        run: uv run lint-imports
+      - name: Artefactos generados no editados (7.4)
+        run: uv run python tools/check_generated.py
+      - name: pytest
+        run: uv run pytest
+
+  frontend:
+    name: Frontend (lint, format, types, boundaries)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Instalar dependencias
+        run: pnpm install --frozen-lockfile=false
+      - name: Biome lint + format (check)
+        run: pnpm exec biome check .
+      - name: Type-check (frontend)
+        run: node tools/check_types_frontend.mjs
+      - name: Fronteras de import frontend (7.2)
+        run: pnpm exec depcruise frontend/src --config .dependency-cruiser.cjs

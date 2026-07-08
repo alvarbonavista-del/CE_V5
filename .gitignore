@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.import_linter_cache/
+
+# Node
+node_modules/
+dist/
+
+# Entorno (nunca subir secretos reales)
+.env
+
+# Sistema
+.DS_Store
