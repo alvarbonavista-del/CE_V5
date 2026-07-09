@@ -1,14 +1,14 @@
 # REGISTRO DE HITOS - Crypto Engine V5
 
 Archivo vivo (sin logica). Mantenido por Claude Code; Alvaro lo resube
-al knowledge al cerrar cada hito (DOC_ENTREGABLES sec.8).
+al knowledge al cerrar cada pieza o hito (DOC_ENTREGABLES sec.8).
 
-Ultima actualizacion: 2026-07-08 (cierre de M0).
+Ultima actualizacion: 2026-07-09 (cierre de pieza P01; M1 en curso).
 
 | Hito | Definicion breve (DOC_ROADMAP sec.4) | Piezas | Estado |
 |------|--------------------------------------|--------|--------|
 | M0 | Repo creado + CI de guardarrailes en verde (base estructural) | P00 | CERRADO |
-| M1 | Un evento viaja de punta a punta con envelope, idempotencia y Clock sobre el bus externo, con outbox transaccional; reinicio sin perdida | P01, P02, P02b, P03 | PENDIENTE |
+| M1 | Un evento viaja de punta a punta con envelope, idempotencia y Clock sobre el bus externo, con outbox transaccional; reinicio sin perdida | P01, P02, P02b, P03 | EN CURSO |
 | M2 | Un Componente se descubre por carpeta, aislado por tenant/RLS, con capacidades por el gate fail-closed; API/auth/realtime en pie; kill switch en caliente | P04, P05, P06, P06b | PENDIENTE |
 | M3 | Una Rule dispara sobre datos reales y proyecta signal.*/alert.*; el router backend entrega por un canal no-PWA/mock (sin overlay, sin ejecucion) | P07, P08, P09a | PENDIENTE |
 | M4 | PWA instalable con dashboard, chart y overlays de signal.* en movil real; push PWA; geo-blocking corta ejecucion, no visualizacion | P12a, P12b, P13, P09b | PENDIENTE |
@@ -20,3 +20,14 @@ Ultima actualizacion: 2026-07-08 (cierre de M0).
   caliente local). CI: checks equivalentes al workflow validados en
   local; Actions pendiente por ausencia de remoto.
 - Doble revision Central + CSA conforme; firmado por Alvaro.
+
+## Detalle M1 (en curso)
+- P01 - Contratos base y envelope: ENTREGADA (1 de 4). Commit 17bb584.
+  Envelope + familias como fuente Pydantic v2; cadena source -> JSON
+  Schema -> TS reproducible; checks 7.3/7.4/7.7 verdes en local. Doble
+  revision Central + CSA conforme; firmado por Alvaro. CI: checks
+  equivalentes al workflow validados en local; Actions pendiente por
+  ausencia de remoto.
+- P02 - Modelo temporal y Clock: PENDIENTE.
+- P02b - Persistencia base + migraciones + outbox transaccional: PENDIENTE.
+- P03 - EventBus: PENDIENTE.

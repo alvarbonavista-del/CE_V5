@@ -50,3 +50,28 @@ Revisa cada pieza contra su ficha de DOC_ROADMAP ("hecho cuando", checks
 obligatorios), DOC_ESTRUCTURA (fronteras/guardarrailes) y DOC_ENTREGABLES
 (DoD, deuda prohibida, fixes). Senala incoherencias y riesgos; no reabre
 arquitectura; decide Alvaro.
+
+=====================================================================
+REVISION CSA - PIEZA P01 (hito M1) - 2026-07-09
+=====================================================================
+Veredicto CSA: CONFORME, con condicion operacional (commit + barrido
+limpio + hash) ya CUMPLIDA. Central conforme. Firmado por Alvaro.
+Commit: 17bb584.
+Puntos validados por el CSA:
+- DoD de P01 cumplido (DOC_ENTREGABLES sec.4).
+- Decisiones D1-D6 no reabren ADR ni rompen frontera; D2/D3/D5 recomendadas
+  para registro (ya registradas en REGISTRO_DECISIONES sec.6).
+- Envelope respeta ADR-003 y NO invade P02 (ranuras de tiempo como campos,
+  sin semantica; idempotency_key required con formula por familia delegada
+  al productor). frozen + extra prohibido compatible con tolerant reader
+  en el borde de consumo.
+- Familias: enum cerrado de 10 + naming dominio.accion (ADR-004), sin tipos
+  concretos; no invade P04/P08/P09/P10.
+- 7.7: el primer commit de P01 fija baseline real; desde ahi, cambio
+  incompatible sin bump debe fallar.
+- CI: solo-local aceptable con la formula exacta (checks equivalentes al
+  workflow validados en local; Actions pendiente por ausencia de remoto).
+Para la proxima revision (P02, modelo temporal y Clock, ADR-007): el CSA
+debera comprobar que P02 da SEMANTICA a las ranuras de tiempo del envelope
+sin reabrir ADR-003 ni el versionado (ADR-005), con Clock inyectable en
+tests y maturity/watermark por familia.
