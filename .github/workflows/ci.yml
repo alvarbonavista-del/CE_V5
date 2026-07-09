@@ -32,6 +32,36 @@ jobs:
       - name: pytest
         run: uv run pytest
 
+  backend-integration:
+    name: Backend integration DB (P02b)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18.4
+        env:
+          POSTGRES_USER: ce_v5
+          POSTGRES_PASSWORD: ce_v5
+          POSTGRES_DB: ce_v5
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ce_v5 -d ce_v5"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Instalar uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.13"
+      - name: Sincronizar entorno
+        run: uv sync --extra dev
+      - name: Tests de integracion DB (P02b)
+        env:
+          CE_V5_DATABASE_URL: postgresql://ce_v5:ce_v5@localhost:5432/ce_v5
+        run: uv run pytest tests/integration -q
+
   frontend:
     name: Frontend (lint, format, types, boundaries)
     runs-on: ubuntu-latest

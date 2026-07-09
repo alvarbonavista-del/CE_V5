@@ -1,0 +1,17 @@
+# PostgreSQL local para desarrollo y tests de P02b (ADR-013).
+# Base de datos de juguete: NUNCA datos reales. Se puede tirar y recrear.
+services:
+  postgres:
+    image: postgres:18.4
+    container_name: ce_v5_postgres
+    environment:
+      POSTGRES_USER: ce_v5
+      POSTGRES_PASSWORD: ce_v5
+      POSTGRES_DB: ce_v5
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ce_v5 -d ce_v5"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
