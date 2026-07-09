@@ -3,7 +3,7 @@
 Archivo vivo (sin logica). Mantenido por Claude Code; Alvaro lo resube
 al knowledge al cerrar cada pieza o hito (DOC_ENTREGABLES sec.8).
 
-Ultima actualizacion: 2026-07-09 (cierre de pieza P01; M1 en curso).
+Ultima actualizacion: 2026-07-09 (cierre de pieza P02; M1 en curso).
 
 | Hito | Definicion breve (DOC_ROADMAP sec.4) | Piezas | Estado |
 |------|--------------------------------------|--------|--------|
@@ -28,6 +28,12 @@ Ultima actualizacion: 2026-07-09 (cierre de pieza P01; M1 en curso).
   revision Central + CSA conforme; firmado por Alvaro. CI: checks
   equivalentes al workflow validados en local; Actions pendiente por
   ausencia de remoto.
-- P02 - Modelo temporal y Clock: PENDIENTE.
+- P02 - Modelo temporal y Clock: ENTREGADA (2 de 4). Commit 271d677.
+  Envelope retipado a EpochMillis (UTC epoch ms int64) via CA-01; modelo
+  temporal (EpochMillis, enums de madurez/politicas, watermark basico);
+  maturity_state y tipos de vela por familia; Clock inyectable (real +
+  SimulatedClock). Checks verdes en local. Doble revision Central + CSA
+  conforme; firmado por Alvaro. CI: checks equivalentes al workflow
+  validados en local; Actions pendiente por ausencia de remoto.
 - P02b - Persistencia base + migraciones + outbox transaccional: PENDIENTE.
 - P03 - EventBus: PENDIENTE.

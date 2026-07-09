@@ -75,3 +75,27 @@ Para la proxima revision (P02, modelo temporal y Clock, ADR-007): el CSA
 debera comprobar que P02 da SEMANTICA a las ranuras de tiempo del envelope
 sin reabrir ADR-003 ni el versionado (ADR-005), con Clock inyectable en
 tests y maturity/watermark por familia.
+
+=====================================================================
+REVISION CSA - PIEZA P02 (hito M1) - 2026-07-09
+=====================================================================
+Veredicto CSA: CONFORME (entrega de pieza P02, no cierre de M1). Central
+conforme. Firmado por Alvaro. Commit de pieza: 271d677.
+Validado por el CSA:
+- DoD de P02 y "hecho cuando" cubiertos.
+- CA-01 aceptado: retipado pre-consumidor a EpochMillis con
+  ENVELOPE_VERSION=1, firmado, con 7.7 honesto (rojo antes, verde tras
+  commit). Queda constancia de que P01 tenia el defecto de tipo (datetime)
+  corregido por CA-01.
+- Deslinde temporal aceptado: asignacion/herencia en productores futuros.
+- reemission: corrects_idempotency_key opcional; obligatorio en
+  correction; prohibido en provisional/closed.
+- Decisiones de area (no reexport para evitar ciclo; Clock int stdlib puro)
+  y revision de D3 (paquete padre source.): conformes.
+- TAREA FUTURA: extender el 7.7 a version-aware antes de la primera
+  evolucion real de contrato con consumidores (P07/P08 a mas tardar).
+Para la proxima revision (P02b, persistencia base + migraciones + outbox
+transaccional, ADR-013): comprobar outbox/inbox transaccional, migraciones
+y audit tecnico minimo, SIN RLS ni tenancy (eso es P05), y que la
+persistencia respeta el envelope y el modelo temporal (EpochMillis) sin
+reabrir contratos.

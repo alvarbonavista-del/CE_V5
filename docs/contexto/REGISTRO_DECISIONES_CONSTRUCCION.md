@@ -90,6 +90,9 @@ que no vivan solo en el chat (anti-deriva, DOC_ENTREGABLES sec.9).
     limpio posterior + hash registrado.
 5.8 Doble revision por pieza (Central + CSA) antes de la firma de Alvaro,
     ademas de la consolidacion en el cierre de hito.
+5.9 La tanda de cierre de cada pieza termina COMMITEANDO sus propios
+    cambios de contexto (docs(contexto): cierre Pxx), para no dejar cola
+    en el arbol git. Origen: cola detectada en el cierre de P01.
 =====================================================================
 6. CIERRE DE PIEZA P01 - CONTRATOS BASE Y ENVELOPE
 =====================================================================
@@ -131,3 +134,44 @@ Guardarrailes activos tras P01: 7.1, 7.2, 7.3, 7.4, 7.7, lint/format/type
 (backend) y biome/tsc/depcruise (frontend), todos verdes en local.
 Inactivos por no existir aun su objeto: 7.5, 7.6 (P04), 7.8 (primera tabla
 tenant/user), 7.9 (primer Componente).
+=====================================================================
+7. CIERRE DE PIEZA P02 - MODELO TEMPORAL Y CLOCK
+=====================================================================
+Estado: ENTREGADA. Commit (pieza): 271d677. Doble revision Central + CSA
+conforme; firmado por Alvaro. CI: checks equivalentes al workflow
+validados en local; Actions pendiente por ausencia de remoto.
+- CA-01 (FIRMADO por Alvaro 2026-07-09): retipado de event_time,
+  ingestion_time y processing_time del envelope de datetime a EpochMillis
+  (int64 UTC epoch ms), cumpliendo ADR-007. Correccion pre-consumidor de
+  un defecto de P01 (no habia payloads ni consumidores). ENVELOPE_VERSION
+  se mantiene en 1 (un bump dejaria una v1 fantasma sin usuarios). El 7.7
+  detecto el cambio en rojo (los 3 campos) y volvio a verde tras el commit
+  firmado ecff426 que reestablece la baseline. time_anchor_ref se mantiene
+  como referencia, no se retipa.
+- Revision de D3 (Central, sin firma; registrada): 'time' es modulo
+  built-in de Python; un paquete de primer nivel con ese nombre queda
+  tapado e inimportable. Se adopta paquete padre 'source'
+  (contracts/source/__init__.py); imports pasan a source.envelope /
+  source.families / source.time; la raiz de importacion sube de
+  contracts/source a contracts. La estructura de carpetas de
+  DOC_ESTRUCTURA sec.3 NO cambia. D3 queda revisada, no anulada.
+- Reemision: corrects_idempotency_key OBLIGATORIO en correction,
+  PROHIBIDO en provisional/closed, OPCIONAL en reemission (ADR-007 solo
+  fija la referencia para correction; el resto no se inventa).
+- No reexportar maturity/market desde families/__init__ para evitar el
+  ciclo envelope<->families (implementacion; no reabre ADR-004).
+- Clock stdlib puro: Clock.now_ms() -> int; core/clock sin dependencia de
+  contratos; EpochMillis valida en la frontera de contratos, no en el reloj.
+- Deslinde temporal: la ASIGNACION (quien fija cada tiempo) y la HERENCIA
+  de ADR-007 se enforceran en los COMPONENTES productores (P04+ manifest/
+  Clock declarado; P07/P08/P09/P10 productores). P02 entrega tipo, ranura,
+  Clock y regla documentada.
+TAREA FUTURA registrada (aprobada por CSA; no es deuda de codigo de P02):
+- 7.7 version-aware: el check actual detecta diferencias contra la baseline
+  en git y NO lee envelope_version/event_schema_version. Basta en este
+  estadio (sin evolucion real con consumidores). ANTES de la primera
+  evolucion real de contrato con consumidores (a mas tardar P07/P08; se
+  adelanta si P02b/P03 introducen consumo persistente que haga peligrosa
+  una evolucion), el 7.7 debe extenderse a consciente de bump/versionado y
+  reglas expand-and-contract (ADR-005). Responsable: la pieza donde ocurra
+  esa primera evolucion.
