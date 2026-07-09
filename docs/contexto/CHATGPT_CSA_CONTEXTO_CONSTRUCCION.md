@@ -99,3 +99,28 @@ transaccional, ADR-013): comprobar outbox/inbox transaccional, migraciones
 y audit tecnico minimo, SIN RLS ni tenancy (eso es P05), y que la
 persistencia respeta el envelope y el modelo temporal (EpochMillis) sin
 reabrir contratos.
+
+=====================================================================
+REVISION CSA - PIEZA P02b (hito M1) - 2026-07-09
+=====================================================================
+Veredicto CSA: CONFORME (entrega de pieza P02b, no cierre de M1). Central
+conforme. Firmado por Alvaro. Commit de pieza:
+ed3e78833ce6789d9e435876dea8ae2c094421d4.
+Validado por el CSA:
+- DoD y "hecho cuando" cubiertos; atomicidad DB-outbox demostrada en caliente.
+- Runner de migraciones propio (forward-only, append-only, checksum) aceptado
+  frente a Alembic; respeta ADR-005 y DOC_ENTREGABLES sec.6.
+- Outbox jsonb opaco: la DB no valida contrato; la validacion es del
+  productor/publisher (ADR-006).
+- Identidad de evento (event_id/idempotency_key UNIQUE, stream_key,
+  event_type) coherente con ADR-003/013.
+- Timestamps infra via now() correctos (no son tiempos de evento).
+- Deslinde tenancy/RLS a P05 limpio; tablas system.
+- Sin ORM, Session Protocol, psycopg_adapter unico conocedor del driver: OK.
+- TAREAS FUTURAS: lock de migraciones antes de concurrencia/prod;
+  cualificacion de idempotency_key en productores P07/P08/P10.
+Para la proxima revision (P03, EventBus + adapter Redis, ADR-013): comprobar
+publish/consume idempotente, DLQ, equivalente local, outbox/inbox
+transaccional SOBRE la DB de P02b, replay por offset, y la validacion en
+caliente CRITICA de reinicio de consumidor sin perder ni duplicar. P03
+cierra M1.

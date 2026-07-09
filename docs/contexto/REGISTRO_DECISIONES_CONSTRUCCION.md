@@ -93,6 +93,13 @@ que no vivan solo en el chat (anti-deriva, DOC_ENTREGABLES sec.9).
 5.9 La tanda de cierre de cada pieza termina COMMITEANDO sus propios
     cambios de contexto (docs(contexto): cierre Pxx), para no dejar cola
     en el arbol git. Origen: cola detectada en el cierre de P01.
+5.10 Formato de instrucciones [POWERSHELL]: los comandos van en un bloque
+     copy-paste que contiene UNICAMENTE comandos ejecutables; PROHIBIDO
+     meter enunciados, explicaciones, comentarios # o numeraciones dentro
+     del bloque; la explicacion va FUERA, antes del bloque; cada comando o
+     grupo logico en su propio bloque. Las tandas [CLAUDE CODE] van en un
+     UNICO bloque de texto plano copy-paste sin partir. Origen: friccion en
+     el arranque de P02b.
 =====================================================================
 6. CIERRE DE PIEZA P01 - CONTRATOS BASE Y ENVELOPE
 =====================================================================
@@ -175,3 +182,46 @@ TAREA FUTURA registrada (aprobada por CSA; no es deuda de codigo de P02):
   una evolucion), el 7.7 debe extenderse a consciente de bump/versionado y
   reglas expand-and-contract (ADR-005). Responsable: la pieza donde ocurra
   esa primera evolucion.
+=====================================================================
+8. CIERRE DE PIEZA P02b - PERSISTENCIA BASE + OUTBOX TRANSACCIONAL
+=====================================================================
+Estado: ENTREGADA. Commit (pieza): ed3e78833ce6789d9e435876dea8ae2c094421d4.
+Doble revision Central + CSA conforme; firmado por Alvaro. CI: checks
+equivalentes al workflow validados en local; Actions pendiente por
+ausencia de remoto.
+Decisiones de construccion (dentro de area; ninguna reabre un ADR):
+- Motor PostgreSQL 18.4; driver psycopg 3.3.4 (verificados con web_search,
+  soporte Python 3.14). Sin ORM.
+- Runner de migraciones PROPIO (aceptado por Alvaro frente a Alembic):
+  forward-only, append-only, con checksum que rechaza editar una migracion
+  ya aplicada (ADR-005; DOC_ENTREGABLES sec.6). Tabla schema_migrations. Sin
+  down migrations: se adopta sucesor forward-only, no reescritura historica.
+- Frontera DB: Session como Protocol (ports.py); psycopg_adapter.py unico
+  conocedor del driver (REST-15); outbox.py depende solo de ports + stdlib;
+  adapters concretos se cablearan en composition root cuando existan
+  entrypoints.
+- Outbox: event_id UNIQUE, idempotency_key UNIQUE (dedup de productor),
+  stream_key, event_type, envelope jsonb, published_at. La DB NO valida el
+  schema del envelope: la validacion contractual corresponde al productor
+  antes de encolar y al publisher/bus en P03 (ADR-006). Envelope como jsonb
+  opaco.
+- Inbox: dedup por consumer_group/handler/idempotency_key. audit_log tecnico
+  minimo.
+- Tablas outbox/inbox/audit clasificadas isolation_scope=system (comentario
+  SQL, no mecanismo). Sin tenant_id, sin RLS. 7.8/RLS diferido a P05; P05
+  debera reconocer estas tablas como tecnicas de sistema (privilegios
+  restringidos, no superficie de consulta por usuario), aunque su contenido
+  incluya envelopes con scope tenant/user.
+- Timestamps de infraestructura (applied_at/created_at/processed_at):
+  DEFAULT now() del servidor; metadatos tecnicos, no tiempos de evento
+  (ADR-007 Clock es para productores de eventos).
+TAREAS FUTURAS registradas (aprobadas por CSA; no son deuda de codigo de P02b):
+- Lock de aplicacion de migraciones: ANTES de entornos compartidos/prod o de
+  cualquier flujo con aplicacion concurrente, el runner debe incorporar un
+  lock (advisory lock de PostgreSQL o equivalente). Responsable: la pieza/
+  momento donde aparezca ejecucion concurrente o el primer despliegue
+  compartido.
+- Cualificacion de idempotency_key: es UNIQUE global en la outbox. Al
+  construir productores reales (P07/P08/P10), las formulas de clave deben
+  quedar globalmente cualificadas por familia/scope/tenant/user/stream
+  cuando corresponda, para evitar colisiones cross-tenant.
