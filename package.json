@@ -10,11 +10,13 @@
   "scripts": {
     "lint:biome": "biome check .",
     "typecheck": "node tools/check_types_frontend.mjs",
-    "boundaries": "depcruise frontend/src --config .dependency-cruiser.cjs"
+    "boundaries": "depcruise frontend/src --config .dependency-cruiser.cjs",
+    "gen:ts": "node tools/gen_ts_types.mjs"
   },
   "devDependencies": {
     "@biomejs/biome": "2.4.0",
     "dependency-cruiser": "18.0.0",
+    "json-schema-to-typescript": "15.0.4",
     "typescript": "6.0.3"
   }
 }

@@ -1,0 +1,17 @@
+{
+  "description": "Las 10 familias base cerradas (ADR-004).",
+  "enum": [
+    "market",
+    "datasource",
+    "rule",
+    "signal",
+    "alert",
+    "execution",
+    "notification",
+    "user",
+    "component",
+    "billing"
+  ],
+  "title": "Family",
+  "type": "string"
+}

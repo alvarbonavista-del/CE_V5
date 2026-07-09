@@ -1,0 +1,195 @@
+{
+  "$defs": {
+    "EventPayload": {
+      "additionalProperties": false,
+      "description": "Raiz tipada de todo payload de evento. Sin campos en P01.",
+      "properties": {},
+      "title": "EventPayload",
+      "type": "object"
+    },
+    "Scope": {
+      "description": "Alcance del evento (ADR-003).",
+      "enum": [
+        "public_market",
+        "tenant",
+        "user",
+        "system"
+      ],
+      "title": "Scope",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "causation_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Causation Id"
+    },
+    "correlation_id": {
+      "minLength": 1,
+      "title": "Correlation Id",
+      "type": "string"
+    },
+    "envelope_version": {
+      "default": 1,
+      "minimum": 1,
+      "title": "Envelope Version",
+      "type": "integer"
+    },
+    "event_id": {
+      "format": "uuid",
+      "title": "Event Id",
+      "type": "string"
+    },
+    "event_schema_version": {
+      "minimum": 1,
+      "title": "Event Schema Version",
+      "type": "integer"
+    },
+    "event_time": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Event Time"
+    },
+    "event_type": {
+      "title": "Event Type",
+      "type": "string"
+    },
+    "idempotency_key": {
+      "minLength": 1,
+      "title": "Idempotency Key",
+      "type": "string"
+    },
+    "ingestion_time": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Ingestion Time"
+    },
+    "payload": {
+      "$ref": "#/$defs/EventPayload"
+    },
+    "processing_time": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Processing Time"
+    },
+    "scope": {
+      "$ref": "#/$defs/Scope"
+    },
+    "source": {
+      "minLength": 1,
+      "title": "Source",
+      "type": "string"
+    },
+    "source_event_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Source Event Id"
+    },
+    "source_sequence": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Source Sequence"
+    },
+    "stream_key": {
+      "minLength": 1,
+      "title": "Stream Key",
+      "type": "string"
+    },
+    "tenant_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Tenant Id"
+    },
+    "time_anchor_ref": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Time Anchor Ref"
+    },
+    "user_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "User Id"
+    }
+  },
+  "required": [
+    "event_type",
+    "event_schema_version",
+    "source",
+    "idempotency_key",
+    "stream_key",
+    "scope",
+    "correlation_id",
+    "payload"
+  ],
+  "title": "Envelope",
+  "type": "object"
+}
