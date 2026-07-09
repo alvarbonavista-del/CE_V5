@@ -4,7 +4,7 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from envelope import ENVELOPE_VERSION, Envelope, EventPayload, Scope
+from source.envelope import ENVELOPE_VERSION, Envelope, EventPayload, Scope
 
 
 def _base_kwargs(**overrides: Any) -> dict[str, Any]:

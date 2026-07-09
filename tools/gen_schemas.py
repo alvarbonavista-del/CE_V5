@@ -14,15 +14,14 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-SOURCE = REPO_ROOT / "contracts" / "source"
 SCHEMAS = REPO_ROOT / "contracts" / "schemas"
 
-sys.path.insert(0, str(SOURCE))
+sys.path.insert(0, str(REPO_ROOT / "contracts"))
 
 from pydantic import TypeAdapter  # noqa: E402
 
-from envelope import Envelope, EventPayload  # noqa: E402
-from families import Family  # noqa: E402
+from source.envelope import Envelope, EventPayload  # noqa: E402
+from source.families import Family  # noqa: E402
 
 
 def serialize(schema: dict[str, object]) -> str:

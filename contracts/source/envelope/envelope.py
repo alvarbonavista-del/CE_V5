@@ -20,9 +20,9 @@ from pydantic import (
     model_validator,
 )
 
-from envelope.enums import Scope
-from envelope.payload import EventPayload
-from families import validate_event_type
+from source.envelope.enums import Scope
+from source.envelope.payload import EventPayload
+from source.families import validate_event_type
 
 # Version del contrato del envelope (ADR-005: envelope_version). Evoluciona
 # de forma independiente de event_schema_version (version del payload por

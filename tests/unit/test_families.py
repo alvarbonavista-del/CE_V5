@@ -1,6 +1,6 @@
 import pytest
 
-from families import Family, validate_event_type
+from source.families import Family, validate_event_type
 
 
 def test_diez_familias_cerradas() -> None:

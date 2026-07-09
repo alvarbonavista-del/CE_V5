@@ -23,7 +23,7 @@ packages = ["backend/src/ce_v5"]
 [tool.ruff]
 line-length = 88
 target-version = "py313"
-src = ["backend/src", "contracts/source", "tests", "tools"]
+src = ["backend/src", "contracts", "tests", "tools"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
@@ -32,13 +32,13 @@ select = ["E", "F", "I", "UP", "B"]
 python_version = "3.13"
 strict = true
 plugins = ["pydantic.mypy"]
-mypy_path = ["backend/src", "contracts/source", "tools"]
+mypy_path = ["backend/src", "contracts", "tools"]
 explicit_package_bases = true
 files = ["backend/src/ce_v5", "contracts/source", "tools", "tests"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["backend/src", "contracts/source", "tools"]
+pythonpath = ["backend/src", "contracts", "tools"]
 
 [tool.importlinter]
 root_packages = ["ce_v5"]
