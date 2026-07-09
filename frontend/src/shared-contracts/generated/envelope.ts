@@ -5,11 +5,11 @@ export type CorrelationId = string
 export type EnvelopeVersion = number
 export type EventId = string
 export type EventSchemaVersion = number
-export type EventTime = (string | null)
+export type EventTime = (number | null)
 export type EventType = string
 export type IdempotencyKey = string
-export type IngestionTime = (string | null)
-export type ProcessingTime = (string | null)
+export type IngestionTime = (number | null)
+export type ProcessingTime = (number | null)
 /**
  * Alcance del evento (ADR-003).
  */

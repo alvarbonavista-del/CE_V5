@@ -75,8 +75,19 @@ def test_envelope_es_inmutable() -> None:
         setattr(env, campo, "otro")
 
 
-def test_ranuras_de_tiempo_opcionales() -> None:
-    now = datetime.now(UTC)
-    env = Envelope[EventPayload](**_base_kwargs(event_time=now))
-    assert env.event_time == now
+def test_ranuras_de_tiempo_son_epoch_ms() -> None:
+    env = Envelope[EventPayload](**_base_kwargs(event_time=1_700_000_000_000))
+    assert env.event_time == 1_700_000_000_000
     assert env.ingestion_time is None
+
+
+def test_event_time_rechaza_datetime() -> None:
+    with pytest.raises(ValidationError):
+        Envelope[EventPayload](**_base_kwargs(event_time=datetime.now(UTC)))
+
+
+def test_event_time_serializa_como_entero() -> None:
+    env = Envelope[EventPayload](**_base_kwargs(event_time=1_700_000_000_000))
+    dumped = env.model_dump(mode="json")
+    assert dumped["event_time"] == 1_700_000_000_000
+    assert isinstance(dumped["event_time"], int)

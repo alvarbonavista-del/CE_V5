@@ -57,8 +57,10 @@
     "event_time": {
       "anyOf": [
         {
-          "format": "date-time",
-          "type": "string"
+          "description": "Instante en UTC epoch milliseconds (int64). Formato canonico de tiempo en cable (ADR-007).",
+          "maximum": 9223372036854775807,
+          "minimum": 0,
+          "type": "integer"
         },
         {
           "type": "null"
@@ -79,8 +81,10 @@
     "ingestion_time": {
       "anyOf": [
         {
-          "format": "date-time",
-          "type": "string"
+          "description": "Instante en UTC epoch milliseconds (int64). Formato canonico de tiempo en cable (ADR-007).",
+          "maximum": 9223372036854775807,
+          "minimum": 0,
+          "type": "integer"
         },
         {
           "type": "null"
@@ -95,8 +99,10 @@
     "processing_time": {
       "anyOf": [
         {
-          "format": "date-time",
-          "type": "string"
+          "description": "Instante en UTC epoch milliseconds (int64). Formato canonico de tiempo en cable (ADR-007).",
+          "maximum": 9223372036854775807,
+          "minimum": 0,
+          "type": "integer"
         },
         {
           "type": "null"
