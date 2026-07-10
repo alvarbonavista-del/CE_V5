@@ -29,6 +29,12 @@ jobs:
         run: uv run python tools/check_generated.py
       - name: Contratos - compatibilidad de evolucion (7.7)
         run: uv run python tools/check_schema_compat.py
+      - name: Componentes - validacion de manifests (7.5)
+        run: uv run python tools/check_manifests.py
+      - name: Componentes - huerfanos (7.6)
+        run: uv run python tools/check_orphans.py
+      - name: Componentes - documentacion minima (7.9)
+        run: uv run python tools/check_component_docs.py
       - name: pytest
         run: uv run pytest
 

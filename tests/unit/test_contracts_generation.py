@@ -4,7 +4,11 @@ from gen_schemas import build_schemas, serialize
 
 def test_build_schemas_incluye_envelope_y_family() -> None:
     schemas = build_schemas()
-    assert set(schemas) == {"envelope.schema.json", "family.schema.json"}
+    assert set(schemas) == {
+        "envelope.schema.json",
+        "family.schema.json",
+        "component_lifecycle.schema.json",
+    }
 
 
 def test_envelope_schema_propiedades_y_requeridos() -> None:

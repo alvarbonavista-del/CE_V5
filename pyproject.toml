@@ -41,7 +41,7 @@ explicit_package_bases = true
 files = ["backend/src/ce_v5", "contracts/source", "tools", "tests"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests", "backend/src/ce_v5/components"]
 pythonpath = ["backend/src", "contracts", "tools"]
 
 [tool.importlinter]

@@ -22,6 +22,7 @@ from pydantic import TypeAdapter  # noqa: E402
 
 from source.envelope import Envelope, EventPayload  # noqa: E402
 from source.families import Family  # noqa: E402
+from source.families.component import ComponentLifecyclePayload  # noqa: E402
 
 
 def serialize(schema: dict[str, object]) -> str:
@@ -38,9 +39,12 @@ def build_schemas() -> dict[str, dict[str, object]]:
     envelope_schema["title"] = "Envelope"
     family_schema = TypeAdapter(Family).json_schema()
     family_schema["title"] = "Family"
+    component_schema = ComponentLifecyclePayload.model_json_schema()
+    component_schema["title"] = "ComponentLifecyclePayload"
     return {
         "envelope.schema.json": envelope_schema,
         "family.schema.json": family_schema,
+        "component_lifecycle.schema.json": component_schema,
     }
 
 

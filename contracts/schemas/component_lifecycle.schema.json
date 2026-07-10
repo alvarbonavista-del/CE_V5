@@ -1,0 +1,149 @@
+{
+  "$defs": {
+    "HealthStatus": {
+      "description": "Salud del componente, EJE APARTE del lifecycle (ADR-010).",
+      "enum": [
+        "healthy",
+        "degraded",
+        "unhealthy"
+      ],
+      "title": "HealthStatus",
+      "type": "string"
+    },
+    "LifecycleScope": {
+      "description": "Ambito de vida de una ComponentInstance (ADR-010).",
+      "enum": [
+        "global",
+        "tenant",
+        "user"
+      ],
+      "title": "LifecycleScope",
+      "type": "string"
+    },
+    "LifecycleState": {
+      "description": "Estados de la maquina principal de ComponentInstance (ADR-010).",
+      "enum": [
+        "registered",
+        "initializing",
+        "initialized",
+        "starting",
+        "running",
+        "paused",
+        "stopping",
+        "stopped",
+        "unloaded",
+        "failed",
+        "quarantined"
+      ],
+      "title": "LifecycleState",
+      "type": "string"
+    },
+    "ReadinessStatus": {
+      "description": "Disponibilidad para recibir trabajo, EJE APARTE (ADR-010).",
+      "enum": [
+        "ready",
+        "not_ready"
+      ],
+      "title": "ReadinessStatus",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Payload comun de todo evento component.* (ADR-010).\n\nIdentifica la instancia y su transicion. previous_state es None solo en\nel primer evento (component.registered). health_status y\nreadiness_status son EJES APARTE del lifecycle (ADR-010). error_code se\nespera en FAILED/QUARANTINED.",
+  "properties": {
+    "component_id": {
+      "title": "Component Id",
+      "type": "string"
+    },
+    "component_instance_id": {
+      "title": "Component Instance Id",
+      "type": "string"
+    },
+    "component_version": {
+      "title": "Component Version",
+      "type": "string"
+    },
+    "error_code": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Error Code"
+    },
+    "health_status": {
+      "$ref": "#/$defs/HealthStatus"
+    },
+    "lifecycle_scope": {
+      "$ref": "#/$defs/LifecycleScope"
+    },
+    "new_state": {
+      "$ref": "#/$defs/LifecycleState"
+    },
+    "previous_state": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/LifecycleState"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "readiness_status": {
+      "$ref": "#/$defs/ReadinessStatus"
+    },
+    "reason": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Reason"
+    },
+    "tenant_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Tenant Id"
+    },
+    "user_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "User Id"
+    }
+  },
+  "required": [
+    "component_id",
+    "component_version",
+    "component_instance_id",
+    "lifecycle_scope",
+    "new_state",
+    "health_status",
+    "readiness_status"
+  ],
+  "title": "ComponentLifecyclePayload",
+  "type": "object"
+}
