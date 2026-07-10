@@ -145,3 +145,24 @@ Proxima revision: M2 arranca con P04 (raiz Componente, manifest, discovery,
 lifecycle; ADR-001/008/009/010). Comprobar discovery por carpeta que valida
 el manifest ANTES de cargar codigo, lifecycle observable, y checks 7.5/7.6
 activandose con el primer Componente real.
+=====================================================================
+REVISION CSA - PIEZA P04 (hito M2) - 2026-07-10
+=====================================================================
+Veredicto CSA: CONFORME (entrega de pieza P04; abre M2, no lo cierra).
+Central conforme. Firmado por Alvaro. Commit de pieza:
+866b434ec04dd3e04a9d43a9b3fa2f6f50dfd196.
+Validado: DoD, "hecho cuando" y validacion en caliente (copiar carpeta +
+reiniciar; lifecycle completo por el bus Redis). D8 aceptada con la regla
+operativa fail-loud (publish nunca silencioso; emitir-antes-de-aplicar;
+tests de regresion). D10 health separado en contrato, derivado minimo,
+DEGRADED diferido. D1 direccion core->contracts correcta. D9 arista
+STOPPED->FAILED dentro de ADR-010; aristas de politica a P06. D3/D4 enum
+abierto y capabilities genericas conforme ADR-008. D6 loader inyectado,
+valida antes de cargar (ADR-009). D7 y demas diferidos cumplen 5.11. Checks
+7.5/7.6/7.9 activados. Correccion de registro: la regla 5.11 no estaba en
+disco (no se anadio en el cierre de M1); se anade verbatim en este cierre.
+Para la proxima revision (P05, tenancy shared-schema + RLS, ADR-011):
+comprobar que toda tabla declara alcance (public_market/tenant/user/system),
+RLS activo fail-closed, tests de aislamiento cross-tenant, check 7.8
+activandose; y que las tablas system de P02b (outbox/inbox/audit) se
+reconocen como tecnicas de sistema, no superficie tenant.

@@ -4,35 +4,37 @@ Archivo vivo de estado de proceso (sin logica). Lo mantiene Claude Code
 en disco; Alvaro lo resube al knowledge cada vez que se cierra una pieza
 o un hito (DOC_ENTREGABLES sec.8).
 
-Ultima actualizacion: 2026-07-10 (cierre de pieza P03 y hito M1).
+Ultima actualizacion: 2026-07-10 (cierre de pieza P04; hito M2 EN CURSO).
 
 ## Hito actual
-Ninguno en curso. M1 CERRADO (2026-07-10). Proximo hito: M2 (sustrato de
-plataforma).
+M2 EN CURSO (sustrato de plataforma), abierto por P04. Piezas de M2: P04
+(ENTREGADA), P05, P06, P06b (PENDIENTES).
 
 ## Pieza actual
-P03 - Sustrato EventBus (abstraccion + adapter Redis) (ADR-013): ENTREGADA.
-  Commit de pieza: cb25b81
-  (cb25b81e2948977dfd574d5c3aff137b8a11eed5). Cierre de contexto en el commit
-  "docs(contexto): cierre P03 y M1" (regla 5.9).
-  Abstraccion propia EventBus en core/bus (puerto + DTOs, sin broker ni
-  contratos); adapter Redis Streams en infra/bus_redis (at-least-once, consumer
-  groups, ordering por stream_key con particionado basico, DLQ observable,
-  replay por offset con error si el offset fue purgado); OutboxPublisher (drena
-  la outbox de P02b, valida el envelope contra el contrato antes de publicar,
-  ADR-006) e InboxConsumer (dedup por inbox de P02b, ACK tras persistir el
-  efecto) en infra/db; equivalente local en docker-compose (Redis 8.8);
-  composition root de validacion en caliente. Reinicio de consumidor SIN perder
-  ni duplicar demostrado en caliente (20 eventos, dedup 1). Doble revision
-  Central + CSA conforme; firmado por Alvaro.
-  CI: checks equivalentes al workflow validados en local; Actions pendiente por
-      ausencia de remoto.
+P04 - Raiz Componente, manifest, discovery, lifecycle (ADR-001/008/009/010):
+  ENTREGADA.
+  Commit de pieza: 866b434
+  (866b434ec04dd3e04a9d43a9b3fa2f6f50dfd196). Cierre de contexto en el commit
+  "docs(contexto): cierre P04" (regla 5.9).
+  Raiz Componente como rol por contratos (Protocol de lifecycle + enganches,
+  ADR-001); familia de eventos component.* en contracts/source (payload
+  tipado; primer payload concreto del sistema); ComponentManifest tipado con
+  validacion estatica (ADR-008); discovery por carpeta que valida el manifest
+  ANTES de cargar codigo, con loader inyectado e import dinamico (ADR-009);
+  supervisor de lifecycle que conduce ComponentInstances por la maquina de
+  ADR-010 y emite component.* por el EventBus con envelope + Clock (emision
+  fail-loud: emitir-antes-de-aplicar). Checks 7.5/7.6/7.9 materializados y en
+  el workflow. Componente dummy 'sample' que demuestra "copiar carpeta +
+  reiniciar" (CE-14) en caliente sobre el bus Redis. Doble revision Central +
+  CSA conforme; firmado por Alvaro.
+  CI: checks equivalentes al workflow validados en local; Actions pendiente
+      por ausencia de remoto.
 
 ## Proxima pieza
-P04 - Raiz Componente, manifest, discovery, lifecycle (ADR-001/008/009/010):
-  sustrato de Componentes: raiz neutral, manifest tipado, discovery por carpeta
-  que valida el manifest ANTES de cargar codigo, lifecycle observable. Abre el
-  hito M2. Activa los checks 7.5 y 7.6.
+P05 - Tenancy shared-schema + RLS (ADR-011): tenancy shared-schema + RLS
+  fail-closed sobre la persistencia de P02b; toda tabla declara alcance
+  (public_market/tenant/user/system); tests de aislamiento cross-tenant.
+  Activa el check 7.8. Segunda pieza del hito M2.
 
 ## Piezas cerradas
 - P00 - Esqueleto de repositorio + CI base: ENTREGADA (hito M0 CERRADO).
@@ -43,6 +45,8 @@ P04 - Raiz Componente, manifest, discovery, lifecycle (ADR-001/008/009/010):
   Commit ed3e788.
 - P03 - Sustrato EventBus + adapter Redis: ENTREGADA. Commit cb25b81.
   Con P03 se cierra el hito M1 (4 de 4).
+- P04 - Raiz Componente, manifest, discovery, lifecycle: ENTREGADA.
+  Commit 866b434. Abre el hito M2.
 
 ## Regla de trabajo (REGISTRO_DECISIONES sec.1)
 Construccion en micro-pasos: el periferico nunca entrega la pieza entera
@@ -53,15 +57,21 @@ de golpe. Un paso, se explica, Alvaro ejecuta y pega salida, siguiente.
   sin placeholders.
 - Windows local requiere PYTHONUTF8=1 y PYTHONIOENCODING=utf-8.
 - Docker Desktop (backend WSL2) requerido para el PostgreSQL local de
-  pruebas y el check de integracion DB (ADR-013).
-- Checks activos tras M1: 7.1, 7.2, 7.3, 7.4, 7.7, integracion DB (job
-  backend-integration con PostgreSQL) e integracion del bus (mismo job, ahora
-  tambien con Redis 8.8), mas lint/format/type (backend) y biome/tsc/depcruise
-  (frontend); todos verdes en local. Inactivos hasta existir su objeto: 7.5/7.6
-  (P04), 7.8 (primera tabla tenant/user, P05).
+  pruebas y el check de integracion DB/bus (ADR-013).
+- Checks activos tras P04: 7.1, 7.2, 7.3, 7.4, 7.5, 7.6, 7.7, 7.9,
+  integracion DB e integracion del bus (job backend-integration con
+  PostgreSQL y Redis 8.8), mas lint/format/type (backend) y biome/tsc/
+  depcruise (frontend); todos verdes en local. Inactivo hasta existir su
+  objeto: 7.8 (primera tabla tenant/user, P05).
+- 7.5/7.6/7.9 (P04): tools/check_manifests, tools/check_orphans,
+  tools/check_component_docs; enganchados al job backend del workflow.
+- Componentes: viven en backend/src/ce_v5/components/<nombre>/ (manifest.json
+  + __init__ entrypoint + logica + tests + README); testpaths incluye esa
+  carpeta. Componente de referencia: sample.
 - Contracts: la fuente Pydantic se importa como paquete 'source'
   (source.envelope / source.families / source.time); raiz de importacion
-  en contracts/ (revision de D3, REGISTRO_DECISIONES sec.7).
+  en contracts/. El vocabulario de lifecycle vive en
+  source.families.component (P04 D1).
 - Persistencia (P02b): variable CE_V5_DATABASE_URL con el DSN de
   PostgreSQL; migraciones via "python -m ce_v5.infra.db.migrations";
   entorno local en infra/compose/docker-compose.yml.

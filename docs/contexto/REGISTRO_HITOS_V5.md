@@ -3,13 +3,13 @@
 Archivo vivo (sin logica). Mantenido por Claude Code; Alvaro lo resube
 al knowledge al cerrar cada pieza o hito (DOC_ENTREGABLES sec.8).
 
-Ultima actualizacion: 2026-07-10 (cierre de pieza P03; hito M1 CERRADO).
+Ultima actualizacion: 2026-07-10 (cierre de pieza P04; hito M2 EN CURSO).
 
 | Hito | Definicion breve (DOC_ROADMAP sec.4) | Piezas | Estado |
 |------|--------------------------------------|--------|--------|
 | M0 | Repo creado + CI de guardarrailes en verde (base estructural) | P00 | CERRADO |
 | M1 | Un evento viaja de punta a punta con envelope, idempotencia y Clock sobre el bus externo, con outbox transaccional; reinicio sin perdida | P01, P02, P02b, P03 | CERRADO |
-| M2 | Un Componente se descubre por carpeta, aislado por tenant/RLS, con capacidades por el gate fail-closed; API/auth/realtime en pie; kill switch en caliente | P04, P05, P06, P06b | PENDIENTE |
+| M2 | Un Componente se descubre por carpeta, aislado por tenant/RLS, con capacidades por el gate fail-closed; API/auth/realtime en pie; kill switch en caliente | P04, P05, P06, P06b | EN CURSO |
 | M3 | Una Rule dispara sobre datos reales y proyecta signal.*/alert.*; el router backend entrega por un canal no-PWA/mock (sin overlay, sin ejecucion) | P07, P08, P09a | PENDIENTE |
 | M4 | PWA instalable con dashboard, chart y overlays de signal.* en movil real; push PWA; geo-blocking corta ejecucion, no visualizacion | P12a, P12b, P13, P09b | PENDIENTE |
 | M5 | Ejecucion gateada: bloqueo UE/EEA/UK, orden manual BYOC, autotrade BYOC, reconciliacion | P10a, P10b, P11 | PENDIENTE |
@@ -57,3 +57,16 @@ demostrada de punta a punta (un evento viaja con envelope, idempotencia y
 Clock sobre el bus externo, con outbox transaccional; reinicio sin perdida).
 Doble revision Central + CSA conforme; firmado por Alvaro. Proximo hito: M2
 (sustrato de plataforma): P04, P05, P06, P06b.
+
+## Detalle M2 (en curso desde 2026-07-10)
+- P04 - Raiz Componente, manifest, discovery, lifecycle (ADR-001/008/009/010):
+  ENTREGADA (1 de 4 de M2). Commit 866b434. Raiz Componente como rol por
+  contratos; familia de eventos component.* en contracts/source; manifest
+  tipado con validacion estatica; discovery por carpeta que valida el
+  manifest ANTES de cargar codigo (loader inyectado, import dinamico);
+  supervisor de lifecycle observable que emite component.* por el bus con
+  envelope + Clock (emision fail-loud). "Copiar carpeta + reiniciar" (CE-14)
+  demostrado en caliente sobre el bus Redis con el componente sample. Checks
+  7.5/7.6/7.9 activados y en el workflow. Checks equivalentes al workflow
+  verdes en local; doble revision Central + CSA conforme; firmado por Alvaro.
+- P05, P06, P06b: PENDIENTES.

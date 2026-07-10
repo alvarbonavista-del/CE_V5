@@ -100,6 +100,14 @@ que no vivan solo en el chat (anti-deriva, DOC_ENTREGABLES sec.9).
      grupo logico en su propio bloque. Las tandas [CLAUDE CODE] van en un
      UNICO bloque de texto plano copy-paste sin partir. Origen: friccion en
      el arranque de P02b.
+5.11 Deuda tecnica (afina sec.7 y DOC_ENTREGABLES): prohibida por norma.
+     Unica excepcion admitida: cuando resolverla EXIGE construir una pieza
+     POSTERIOR en el roadmap (o la condicion que esa pieza introduce). Toda
+     tarea futura registrada debe cumplir esto: la pieza actual queda
+     completa y correcta para su DoD y sus ADR, y lo diferido depende de una
+     pieza/condicion posterior; adelantarlo seria construir "por si acaso"
+     (tambien prohibido). Si algo se pudiera resolver ya sin una pieza
+     posterior, NO se difiere: se hace ahora.
 =====================================================================
 6. CIERRE DE PIEZA P01 - CONTRATOS BASE Y ENVELOPE
 =====================================================================
@@ -289,3 +297,61 @@ duplicar). Mata el bus informal _bus(ev) de v4.
 Proximo hito: M2 (sustrato plataforma): P04 (raiz Componente/manifest/
 discovery/lifecycle), P05 (tenancy + RLS), P06 (PolicyEvaluator + kill
 switch), P06b (API/auth/realtime).
+=====================================================================
+11. CIERRE DE PIEZA P04 - RAIZ COMPONENTE, MANIFEST, DISCOVERY, LIFECYCLE
+=====================================================================
+Estado: ENTREGADA. Commit (pieza): 866b434ec04dd3e04a9d43a9b3fa2f6f50dfd196.
+Doble revision Central + CSA conforme; firmado por Alvaro. Abre el hito M2
+(sustrato plataforma). CI: checks equivalentes al workflow validados en
+local; Actions pendiente por ausencia de remoto.
+Decisiones de construccion (dentro de area; ninguna reabre un ADR):
+- D1. Vocabulario de lifecycle (LifecycleState, HealthStatus,
+  ReadinessStatus, LifecycleScope) vive en contracts/source como contrato
+  de los eventos component.*; el nucleo lo importa (direccion core ->
+  contracts, base neutral; 7.1 KEPT) y aporta la maquina de transiciones y
+  el contrato de enganches.
+- D2. Familia component.*: ComponentEventType (uno por estado),
+  event_type_for_state, ComponentLifecyclePayload (identidad de instancia +
+  previous/new + health/readiness + reason/error_code, con validacion de
+  coherencia de ambito). Primer payload concreto del sistema
+  (component_lifecycle.schema.json + .ts).
+- D3. Manifest type como StrEnum ComponentType (engine/worker/connector/
+  notification_provider/auth_provider/exporter/ui_plugin); "abierto" = crece
+  subiendo manifest_schema_version, sin texto libre (ADR-008).
+- D4. capabilities genericas (kind+version+name+schema_ref+detail); P04
+  valida buena forma y referencia de schema; la validacion semantica del
+  detalle la hace la pieza duena de esa capability (ADR-008).
+- D5. Campo entrypoint (str|None); su ausencia/inconsistencia la caza 7.6.
+- D6. Discovery con loader INYECTADO e import dinamico: lee y valida el
+  manifest ANTES de importar codigo; el nucleo NO adquiere dependencia
+  estatica de components/* (ADR-009; 7.1 KEPT).
+- D7. Manifest en JSON solo en v5.0; el YAML de ADR-009 se difiere hasta que
+  un componente lo necesite (5.11).
+- D8. Emision de lifecycle por el EventBus PORT (REST-15) SIN outbox, por no
+  nacer de una transaccion de DB. REGLA OPERATIVA (exigida por CSA): el
+  fallo de publish es FAIL-LOUD, nunca silencioso. Implementado como
+  emitir-antes-de-aplicar: se publica el component.* y solo si el publish
+  tiene exito se aplica el nuevo estado; si el publish falla, la excepcion
+  PROPAGA y el estado local NO avanza; tests de regresion lo demuestran. Si
+  en una pieza posterior el estado de componente pasa a persistirse
+  transaccionalmente en DB, estos eventos se moveran al patron outbox.
+- D9. Arista STOPPED -> FAILED anadida para el fallo de teardown (FAILED ya
+  es estado de ADR-010; rellena arista operativa, no extiende el ADR). Las
+  aristas de POLITICA (reintento desde FAILED, liberacion de QUARANTINED,
+  backoff, fail-fast/quarantine por criticidad) quedan para P06.
+- D10. health_status/readiness_status SEPARADOS en el contrato (ADR-010)
+  pero derivados minimamente del estado en P04 (READY solo en RUNNING;
+  UNHEALTHY en FAILED/QUARANTINED); el reporte rico (DEGRADED por
+  dependencia opcional caida) se difiere a la resolucion de dependencias.
+- D11. Discovery y los tres checks ignoran carpetas privadas/ocultas.
+- D12. testpaths incluye backend/src/ce_v5/components (tests junto al
+  componente; DOC_ESTRUCTURA sec.5).
+- Checks activados desde P04: 7.5 (check_manifests), 7.6 (check_orphans),
+  7.9 (check_component_docs); materializan los diferidos de P00.
+TAREAS FUTURAS registradas (cumplen 5.11; dependen de pieza/capacidad
+posterior):
+- Soporte YAML de manifest: cuando un componente lo requiera.
+- Health DEGRADED rico: cuando exista resolucion de dependencias/capabilities.
+- Aristas de politica de lifecycle (reintento/quarantine/backoff): P06.
+- Outbox de eventos de lifecycle: solo si el estado de componente se
+  persiste transaccionalmente en DB.
