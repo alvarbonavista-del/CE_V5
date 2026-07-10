@@ -33,7 +33,7 @@ jobs:
         run: uv run pytest
 
   backend-integration:
-    name: Backend integration DB (P02b)
+    name: Backend integration (DB + bus)
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -49,6 +49,15 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
+      redis:
+        image: redis:8.8
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
       - name: Instalar uv
@@ -57,9 +66,10 @@ jobs:
           python-version: "3.13"
       - name: Sincronizar entorno
         run: uv sync --extra dev
-      - name: Tests de integracion DB (P02b)
+      - name: Tests de integracion (DB + bus)
         env:
           CE_V5_DATABASE_URL: postgresql://ce_v5:ce_v5@localhost:5432/ce_v5
+          CE_V5_REDIS_URL: redis://localhost:6379/0
         run: uv run pytest tests/integration -q
 
   frontend:
