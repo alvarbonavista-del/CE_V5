@@ -124,3 +124,24 @@ publish/consume idempotente, DLQ, equivalente local, outbox/inbox
 transaccional SOBRE la DB de P02b, replay por offset, y la validacion en
 caliente CRITICA de reinicio de consumidor sin perder ni duplicar. P03
 cierra M1.
+=====================================================================
+REVISION CSA - PIEZA P03 + CIERRE HITO M1 - 2026-07-10
+=====================================================================
+Veredicto CSA: P03 CONFORME; M1 CONFORME PARA CIERRE TECNICO. Central
+conforme. Firmado por Alvaro. Commit de pieza P03:
+cb25b81e2948977dfd574d5c3aff137b8a11eed5.
+Validado (P03): DoD y validacion caliente critica (reinicio de consumidor
+sin perder ni duplicar; 20 eventos, dedup 1); OutboxPublisher/InboxConsumer
+en infra/db broker-neutrales; bus contract-agnostic con validacion en el
+publisher (cierra el bypass del jsonb opaco de P02b); idempotencia de
+consumidor (inbox transaccional, ACK tras commit); DLQ observable; replay
+por offset con error si el offset fue purgado; empaquetado de
+contracts/source en runtime + redis; fail-loud de mensaje-veneno con
+cuarentena como tarea futura; 7.7 version-aware ahora prerrequisito duro
+antes de cualquier evolucion de contrato.
+Validado (M1): P01+P02+P02b+P03 demuestran la espina dorsal tecnica; no
+falta P04/P05/P06 (son M2).
+Proxima revision: M2 arranca con P04 (raiz Componente, manifest, discovery,
+lifecycle; ADR-001/008/009/010). Comprobar discovery por carpeta que valida
+el manifest ANTES de cargar codigo, lifecycle observable, y checks 7.5/7.6
+activandose con el primer Componente real.

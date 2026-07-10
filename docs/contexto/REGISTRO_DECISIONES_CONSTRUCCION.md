@@ -225,3 +225,67 @@ TAREAS FUTURAS registradas (aprobadas por CSA; no son deuda de codigo de P02b):
   construir productores reales (P07/P08/P10), las formulas de clave deben
   quedar globalmente cualificadas por familia/scope/tenant/user/stream
   cuando corresponda, para evitar colisiones cross-tenant.
+=====================================================================
+9. CIERRE DE PIEZA P03 - SUSTRATO EVENTBUS (ABSTRACCION + ADAPTER REDIS)
+=====================================================================
+Estado: ENTREGADA. Commit (pieza): cb25b81e2948977dfd574d5c3aff137b8a11eed5.
+Doble revision Central + CSA conforme; firmado por Alvaro. CI: checks
+equivalentes al workflow validados en local; Actions pendiente por ausencia
+de remoto.
+Decisiones de construccion (dentro de area; ninguna reabre un ADR):
+- D1. OutboxPublisher e InboxConsumer en infra/db (junto a outbox/inbox de
+  P02b), broker-neutrales, dependientes solo de puertos; sin carpeta nueva.
+- D2. Bus contract-agnostic: BusMessage lleva el envelope serializado opaco
+  + claves de routing (stream_key, idempotency_key); la validacion de
+  contrato vive en el OutboxPublisher, no en el transporte ni en la DB
+  (REST-15, ADR-006). Cierra el punto de P02b: con P03 un envelope invalido
+  no llega al broker.
+- D3. Topic derivado de la familia del evento (event_type antes del punto,
+  ADR-004).
+- D4. Particionado basico por stream_key (crc32 % partitions, default 1);
+  avanzado fuera de alcance (ADR-013).
+- D5. Idempotencia de consumidor: INSERT ... ON CONFLICT DO NOTHING
+  RETURNING en inbox; efecto + apunte en la misma transaccion; ACK solo
+  tras commit.
+- D6. DLQ como stream aparte con owner, reason_code, attempts,
+  first_seen_at, last_seen_at, procedure; timestamps con hora del servidor
+  Redis (metadato de infra, no tiempo de evento).
+- D7. Tipado del borde redis-py (8.0.1 no generico): retornos como Any
+  reconstruidos a tipos propios; 3 alias de tipo; cero type: ignore, cero
+  deuda.
+- D8. RedisBusConfig.from_env, simetrico a DbConfig.from_env, para el
+  composition root.
+- Empaquetado: pyproject.toml += redis==8.0.1 y packages del wheel +=
+  "contracts/source" (el contrato se instala en RUNTIME, no solo en tests),
+  porque P03 es el primer codigo backend en ejecucion que importa el
+  contrato para validar envelopes. Completa REST-4/ADR-006; no cambia
+  arquitectura.
+- Versiones (web_search): Redis 8.8 imagen; redis-py 8.0.1 (Python 3.14).
+TAREAS FUTURAS registradas:
+- Mensaje-veneno en outbox: hoy el publisher es fail-loud (no publica, eleva
+  OutboxPublishError, no avanza en silencio); un veneno persistente DETIENE
+  el drenado (head-of-line). Aceptado para v5.0 (mejor parar que perder/
+  duplicar). Tarea futura: cuarentena/side-lining de filas veneno de la
+  outbox, con procedimiento operativo, sin romper ordering ni ocultar el
+  fallo.
+- 7.7 version-aware (AFINADA, actualiza la tarea de sec.7): desde el cierre
+  de M1 hay consumo persistente real. Extender el 7.7 a version-aware pasa a
+  ser PRERREQUISITO DURO antes de CUALQUIER evolucion futura de contrato
+  (envelope, payload, event_schema_version, envelope_version, expand-and-
+  contract), no solo "a mas tardar P07/P08".
+=====================================================================
+10. CIERRE DE HITO M1 - ESPINA DORSAL TECNICA
+=====================================================================
+Estado: CERRADO. Doble revision (Central + CSA) conforme; firmado por
+Alvaro. Fecha: 2026-07-10.
+Piezas: P01 (envelope y familias), P02 (modelo temporal y Clock), P02b
+(persistencia base + outbox transaccional), P03 (EventBus + adapter Redis).
+Demostracion de la definicion de M1: un evento viaja de punta a punta con
+envelope, idempotencia y Clock sobre el bus externo, con outbox
+transaccional; reinicio sin perdida. Evidencia end-to-end: la validacion en
+caliente de P03 (outbox de P02b -> bus Redis -> consumidor idempotente ->
+efecto persistido -> ACK/dedup -> reinicio de consumidor sin perder ni
+duplicar). Mata el bus informal _bus(ev) de v4.
+Proximo hito: M2 (sustrato plataforma): P04 (raiz Componente/manifest/
+discovery/lifecycle), P05 (tenancy + RLS), P06 (PolicyEvaluator + kill
+switch), P06b (API/auth/realtime).
