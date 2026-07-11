@@ -3,7 +3,7 @@
 Archivo vivo (sin logica). Mantenido por Claude Code; Alvaro lo resube
 al knowledge al cerrar cada pieza o hito (DOC_ENTREGABLES sec.8).
 
-Ultima actualizacion: 2026-07-10 (cierre de pieza P04; hito M2 EN CURSO).
+Ultima actualizacion: 2026-07-11 (cierre de pieza P05; hito M2 EN CURSO).
 
 | Hito | Definicion breve (DOC_ROADMAP sec.4) | Piezas | Estado |
 |------|--------------------------------------|--------|--------|
@@ -69,4 +69,18 @@ Doble revision Central + CSA conforme; firmado por Alvaro. Proximo hito: M2
   demostrado en caliente sobre el bus Redis con el componente sample. Checks
   7.5/7.6/7.9 activados y en el workflow. Checks equivalentes al workflow
   verdes en local; doble revision Central + CSA conforme; firmado por Alvaro.
-- P05, P06, P06b: PENDIENTES.
+- P05 - Tenancy shared-schema + RLS (ADR-011): ENTREGADA (2 de 4 de M2).
+  Commit 795deb3. Tenancy shared-schema con RLS fail-closed sobre la
+  persistencia de P02b; tenant como abstraccion y user_tenant_membership como
+  capa aparte; TenantContextResolver en el backend (el cliente nunca impone el
+  tenant) que falla cerrado sin pertenencia valida; SET LOCAL transaccional;
+  rol de aplicacion sin BYPASSRLS ni SUPERUSER y rol de migraciones fuera de
+  runtime; toda tabla declara isolation_scope (las de sistema de P02b
+  allowlistadas); defensa en profundidad con filtrado por tenant en la capa de
+  aplicacion. Fuga cross-tenant demostrada como BLOQUEADA en lectura, borrado y
+  escritura; sin pertenencia, falla cerrado. Check 7.8 activado
+  (tools/check_tenancy.py) y demostrado que MUERDE (tabla tenant sin RLS ->
+  FAIL; tabla sin tenant_id fuera de la allowlist -> FAIL). Tests de aislamiento
+  en CI en cada build. Checks equivalentes al workflow verdes en local; doble
+  revision Central + CSA conforme; firmado por Alvaro.
+- P06 y P06b: PENDIENTES.

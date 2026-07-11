@@ -355,3 +355,78 @@ posterior):
 - Aristas de politica de lifecycle (reintento/quarantine/backoff): P06.
 - Outbox de eventos de lifecycle: solo si el estado de componente se
   persiste transaccionalmente en DB.
+=====================================================================
+12. CIERRE DE PIEZA P05 - TENANCY SHARED-SCHEMA + RLS
+=====================================================================
+Estado: ENTREGADA. Commit (pieza): 795deb3. Doble revision Central + CSA
+conforme; firmado por Alvaro. P05 es 2/4 de M2; no cierra el hito. CI: checks
+equivalentes al workflow validados en local; Actions pendiente por ausencia de
+remoto.
+Decisiones de construccion (dentro de area; ninguna reabre un ADR):
+- D1. Rol ce_v5_app creado SIN LOGIN por la migracion 0004 (sin secretos en el
+  repo, CE-13); la credencial la provisiona el entorno; la contrasena nunca se
+  interpola en SQL (parametro a set_config, aplicado con format(%L)).
+- D2. La PK de tenant se llama tenant_id (no id), para que la regla "toda tabla
+  tenant/user tiene tenant_id" sea literal y verificable, sin excepciones en el
+  check.
+- D3. user_tenant_membership SIN FK a tabla de usuarios (no existe hasta P06b) y
+  SIN UNIQUE(user_id): la unicidad 1:1 de v5.0 la impone el RESOLVER
+  (fail-closed ante 0 o >1 pertenencias), no el esquema, dejando abierta la
+  costura de organizaciones (ADR-011).
+- D4. DOBLE contexto transaccional: app.current_user_id (para que el resolver
+  pueda LEER la pertenencia bajo RLS antes de conocer el tenant) y
+  app.current_tenant_id (para operar tenant-scoped). La policy de lectura de
+  user_tenant_membership permite leer SOLO las filas del principal autenticado;
+  la escritura exige contexto de tenant.
+- D5. SET LOCAL implementado con set_config(clave, valor, true): transaccion-
+  local y parametrizable; valores parametrizados, claves controladas por codigo;
+  ningun identificador interpolado en SQL.
+- D6. Guardia de runtime: si el rol conectado tuviera SUPERUSER o BYPASSRLS, la
+  aplicacion se NIEGA a operar (AppRoleError). Fail-closed ante despliegue
+  incorrecto, no un aviso.
+- D7. isolation_scope declarado con COMMENT ON TABLE; el enforcement lo hace el
+  check 7.8; allowlist EXPLICITA de tablas sin tenant_id en
+  tools/check_tenancy.py (anadir una linea es visible en el diff).
+- D8. El check 7.8 lee pg_catalog/pg_policies y NUNCA information_schema (que
+  oculta objetos segun privilegios y dejaria pasar una tabla sin grants); corre
+  con el DSN de migraciones para visibilidad total del catalogo.
+- D9. Toda la suite de integracion corre ahora bajo el rol de APLICACION
+  sometido a RLS (las migraciones con el rol dueno); la limpieza pasa de
+  TRUNCATE a DELETE. P02b/P03/P04 no pierden cobertura: ahora se validan bajo
+  restricciones mas parecidas al runtime real.
+- D10. Sin sharding, sin db-per-tenant, sin schema-per-tenant (ADR-011 los
+  declara no construidos en v5.0).
+OBLIGACION VINCULANTE SOBRE P06b (REGLA DURA DE SEGURIDAD):
+app.current_user_id se fija EXCLUSIVAMENTE desde la sesion/JWT/auth VERIFICADA
+por el backend. JAMAS desde datos controlados por el cliente: ni body, ni query
+param, ni header no autenticado, ni selector de tenant, ni payload de WebSocket.
+El cliente puede, como mucho, SOLICITAR un tenant activo; nunca imponer usuario
+ni tenant. El backend resuelve y falla cerrado. Si esta regla se rompiera, un
+cliente podria leer pertenencias ajenas y derivar tenants ajenos: caeria todo el
+aislamiento de P05.
+REGLA DURA DE PERSISTENCIA PARA TODA PIEZA FUTURA (desde P05):
+- Semantica de DSN: CE_V5_DATABASE_URL = rol de APLICACION (sin bypass,
+  sometido a RLS); CE_V5_MIGRATIONS_DATABASE_URL = rol de migraciones/dueno,
+  fuera de runtime.
+- Toda tabla nueva que persista datos debe: (a) declarar isolation_scope en
+  COMMENT ON TABLE; (b) llevar tenant_id si el alcance es tenant, y tenant_id +
+  user_id/owner si es user, o entrar en la allowlist explicita con
+  justificacion; (c) activar ENABLE RLS + FORCE RLS con policy atada al contexto
+  transaccional cuando proceda; (d) operar bajo TenantScopedDatabase, nunca con
+  conexion cruda que salte el resolver.
+- El check 7.8 rompe el build si no se cumple.
+Validacion en caliente (7/7, salida real, rol de aplicacion): fuga de LECTURA
+bajo A del tenant de B -> 0 filas; fuga de BORRADO -> 0 filas borradas y la fila
+sigue bajo B; fuga de ESCRITURA -> rechazada por policy RLS; sin pertenencia ->
+falla cerrado (TenantResolutionError); rol con bypass -> AppRoleError. Ademas se
+demostro que el check 7.8 MUERDE (tabla tenant sin RLS -> FAIL; tabla sin
+tenant_id fuera de allowlist -> FAIL; esquema limpio -> OK).
+Check activado desde P05: 7.8 (tools/check_tenancy.py).
+TAREAS FUTURAS registradas (cumplen 5.11):
+- FK de user_tenant_membership.user_id al canon de usuario: P06b (migracion
+  sucesora cuando exista la tabla).
+- Claves de cache con tenant_id e invalidacion por rol/premium/jurisdiccion/KYC:
+  P06 (ADR-012).
+- Cualificacion de idempotency_key por tenant/scope (de P02b): productores
+  reales P07/P08/P10.
+- Aristas de politica de lifecycle (de P04): P06.

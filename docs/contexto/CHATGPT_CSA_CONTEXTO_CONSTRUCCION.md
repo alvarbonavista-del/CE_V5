@@ -166,3 +166,24 @@ comprobar que toda tabla declara alcance (public_market/tenant/user/system),
 RLS activo fail-closed, tests de aislamiento cross-tenant, check 7.8
 activandose; y que las tablas system de P02b (outbox/inbox/audit) se
 reconocen como tecnicas de sistema, no superficie tenant.
+=====================================================================
+REVISION CSA - PIEZA P05 (hito M2) - 2026-07-11
+=====================================================================
+Veredicto CSA: CONFORME (entrega de pieza P05; 2/4 de M2, no lo cierra). Central
+conforme. Firmado por Alvaro. Commit de pieza: 795deb3.
+Validado: DoD, "hecho cuando" y validacion en caliente critica (fuga cross-tenant
+bloqueada en lectura, borrado y escritura; falla cerrado sin pertenencia;
+AppRoleError con rol bypass; 7.8 demostrado que muerde). D4 (doble contexto
+transaccional) aceptada como necesidad legitima de implementacion que NO
+contradice ADR-011, con la policy de lectura acotada al propio principal. D3 sin
+UNIQUE ni FK: preserva la costura de organizaciones; el resolver fail-closed
+cubre la seguridad. D5/D6/D7/D8/D9 conformes. Cambio de semantica de DSN y las
+cuatro obligaciones de persistencia futura: registrados como regla dura.
+OBLIGACION VINCULANTE SOBRE P06b: app.current_user_id solo desde sesion/auth
+verificada por backend, jamas desde entrada del cliente. Es el mayor riesgo
+heredado de P05.
+Para la proxima revision (P06, PolicyEvaluator + kill switch, ADR-012):
+comprobar ALLOW/DENY/NOT_APPLICABLE con reason_code + policy_version, DENY>ALLOW,
+fail-closed en sensibles, SensitiveActionAudit, y kill switch que propaga por
+evento y corta una capability EN CALIENTE sin reinicio; y que el gate existe
+ANTES que cualquier capacidad gateada (ADR-012 antes de ADR-018).
