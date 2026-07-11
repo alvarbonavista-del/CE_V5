@@ -15,6 +15,10 @@ P05 - Tenancy shared-schema + RLS (ADR-011): ENTREGADA.
   Commit de pieza: 795deb3
   (795deb300b8b559b2d8314be32ab6a91f71b3d9f). Cierre de contexto en el commit
   "docs(contexto): cierre P05" (regla 5.9).
+  Hash del commit de cierre de contexto: c9ee0950f20f241c24514bd3928e09197fee9473.
+  (Un commit no puede contener su propio hash: por eso el hash del cierre se
+  registra en el commit inmediato posterior. Regla 5.9 cumplida: cero cola en
+  el arbol.)
   Modelo tenant + user_tenant_membership (pertenencia en capa aparte, costura
   de organizaciones abierta sin soportarlas); TenantContextResolver que
   resuelve el tenant en el backend desde la identidad autenticada y falla
