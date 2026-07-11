@@ -13,8 +13,6 @@ import pytest
 import redis
 
 from ce_v5.infra.bus_redis import RedisBusConfig, RedisEventBus, create_client
-from ce_v5.infra.db.config import DbConfig
-from ce_v5.infra.db.migrations.runner import apply_migrations
 from ce_v5.infra.db.outbox import OutboxEvent, write_atomically
 from ce_v5.infra.db.outbox_publisher import (
     OutboxPublisher,
@@ -57,16 +55,11 @@ def _event(envelope: dict[str, object]) -> OutboxEvent:
 
 
 @pytest.fixture
-def db() -> Iterator[Database]:
-    assert _DSN is not None
-    database = PsycopgDatabase(DbConfig(dsn=_DSN))
-    apply_migrations(database)
-    with database.transaction() as session:
-        session.execute("TRUNCATE outbox")
-    try:
-        yield database
-    finally:
-        database.close()
+def db(app_db: PsycopgDatabase) -> Iterator[Database]:
+    # El rol de aplicacion no puede TRUNCATE (solo DELETE, migracion 0004).
+    with app_db.transaction() as session:
+        session.execute("DELETE FROM outbox")
+    yield app_db
 
 
 @pytest.fixture

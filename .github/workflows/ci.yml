@@ -39,8 +39,16 @@ jobs:
         run: uv run pytest
 
   backend-integration:
-    name: Backend integration (DB + bus)
+    name: Backend integration (DB + bus + tenancy)
     runs-on: ubuntu-latest
+    # DOS roles (ADR-011): CE_V5_DATABASE_URL ya NO es el superusuario, es el
+    # rol de aplicacion (sin BYPASSRLS). El servicio postgres arranca con el
+    # usuario ce_v5, que es el rol de migraciones (dueno de las tablas).
+    env:
+      CE_V5_DATABASE_URL: postgresql://ce_v5_app:ce_v5_app@localhost:5432/ce_v5
+      CE_V5_MIGRATIONS_DATABASE_URL: postgresql://ce_v5:ce_v5@localhost:5432/ce_v5
+      CE_V5_APP_DB_PASSWORD: ce_v5_app
+      CE_V5_REDIS_URL: redis://localhost:6379/0
     services:
       postgres:
         image: postgres:18.4
@@ -72,10 +80,13 @@ jobs:
           python-version: "3.13"
       - name: Sincronizar entorno
         run: uv sync --extra dev
+      - name: Provisionar rol de aplicacion (ADR-011)
+        run: uv run python -m ce_v5.infra.db.provision
+      - name: Aplicar migraciones
+        run: uv run python -m ce_v5.infra.db.migrations
+      - name: Tenancy y RLS (7.8)
+        run: uv run python tools/check_tenancy.py
       - name: Tests de integracion (DB + bus)
-        env:
-          CE_V5_DATABASE_URL: postgresql://ce_v5:ce_v5@localhost:5432/ce_v5
-          CE_V5_REDIS_URL: redis://localhost:6379/0
         run: uv run pytest tests/integration -q
 
   frontend:

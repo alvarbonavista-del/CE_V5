@@ -14,9 +14,7 @@ import redis
 
 from ce_v5.core.bus import BusMessage
 from ce_v5.infra.bus_redis import RedisBusConfig, RedisEventBus, create_client
-from ce_v5.infra.db.config import DbConfig
 from ce_v5.infra.db.inbox_consumer import InboxConsumer
-from ce_v5.infra.db.migrations.runner import apply_migrations
 from ce_v5.infra.db.ports import Database, Session
 from ce_v5.infra.db.psycopg_adapter import PsycopgDatabase
 
@@ -43,16 +41,11 @@ def _message(event_id: str, idempotency_key: str) -> BusMessage:
 
 
 @pytest.fixture
-def db() -> Iterator[Database]:
-    assert _DSN is not None
-    database = PsycopgDatabase(DbConfig(dsn=_DSN))
-    apply_migrations(database)
-    with database.transaction() as session:
-        session.execute("TRUNCATE inbox")
-    try:
-        yield database
-    finally:
-        database.close()
+def db(app_db: PsycopgDatabase) -> Iterator[Database]:
+    # El rol de aplicacion no puede TRUNCATE (solo DELETE, migracion 0004).
+    with app_db.transaction() as session:
+        session.execute("DELETE FROM inbox")
+    yield app_db
 
 
 @pytest.fixture

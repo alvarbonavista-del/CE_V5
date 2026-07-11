@@ -14,7 +14,6 @@ from pathlib import Path
 import psycopg
 import pytest
 
-from ce_v5.infra.db.config import DbConfig
 from ce_v5.infra.db.migrations.runner import MigrationsError, apply_migrations
 from ce_v5.infra.db.outbox import OutboxEvent, write_atomically
 from ce_v5.infra.db.ports import Database
@@ -28,17 +27,12 @@ pytestmark = pytest.mark.skipif(
 
 
 @pytest.fixture
-def db() -> Iterator[Database]:
-    assert _DSN is not None
-    database = PsycopgDatabase(DbConfig(dsn=_DSN))
-    apply_migrations(database)
-    with database.transaction() as session:
+def db(app_db: PsycopgDatabase) -> Iterator[Database]:
+    # El rol de aplicacion no puede TRUNCATE (solo DELETE, migracion 0004).
+    with app_db.transaction() as session:
         session.execute("CREATE TEMP TABLE demo_negocio (nota text NOT NULL)")
-        session.execute("TRUNCATE outbox")
-    try:
-        yield database
-    finally:
-        database.close()
+        session.execute("DELETE FROM outbox")
+    yield app_db
 
 
 def _make_event() -> OutboxEvent:
@@ -108,20 +102,22 @@ def test_rollback_por_fallo_de_outbox_no_deja_negocio(db: Database) -> None:
     assert _count(db, "SELECT count(*) FROM outbox") == 1
 
 
-def test_apply_migrations_es_idempotente(db: Database) -> None:
-    assert apply_migrations(db) == []
+def test_apply_migrations_es_idempotente(migrator_db: PsycopgDatabase) -> None:
+    assert apply_migrations(migrator_db) == []
 
 
-def test_tamper_detecta_checksum_alterado(db: Database, tmp_path: Path) -> None:
+def test_tamper_detecta_checksum_alterado(
+    migrator_db: PsycopgDatabase, tmp_path: Path
+) -> None:
     sql_file = tmp_path / "9001_demo_tamper.sql"
     sql_file.write_text("CREATE TABLE demo_tamper (x int);\n", encoding="utf-8")
     try:
-        assert apply_migrations(db, tmp_path) == ["9001"]
+        assert apply_migrations(migrator_db, tmp_path) == ["9001"]
         sql_file.write_text("CREATE TABLE demo_tamper (y int);\n", encoding="utf-8")
         with pytest.raises(MigrationsError):
-            apply_migrations(db, tmp_path)
+            apply_migrations(migrator_db, tmp_path)
     finally:
-        with db.transaction() as session:
+        with migrator_db.transaction() as session:
             session.execute("DROP TABLE IF EXISTS demo_tamper")
             session.execute(
                 "DELETE FROM schema_migrations WHERE version = %s", ["9001"]
