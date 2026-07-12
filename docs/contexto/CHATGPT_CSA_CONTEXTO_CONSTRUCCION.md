@@ -187,3 +187,30 @@ comprobar ALLOW/DENY/NOT_APPLICABLE con reason_code + policy_version, DENY>ALLOW
 fail-closed en sensibles, SensitiveActionAudit, y kill switch que propaga por
 evento y corta una capability EN CALIENTE sin reinicio; y que el gate existe
 ANTES que cualquier capacidad gateada (ADR-012 antes de ADR-018).
+=====================================================================
+REVISION CSA - PIEZA P06 (hito M2) - 2026-07-12
+=====================================================================
+Veredicto: CONFORME (Central y CSA). Firmado por Alvaro. P06 ENTREGADA (3/4 de
+M2). Commit 06cb51ff4db3ab3943d374b339cf291e1541ec92.
+Validacion en caliente CRITICA SUPERADA: DB -> outbox -> Redis -> consumidor ->
+invalidacion -> DENY, sin reinicio del proceso, con TTL de 60 s que descarta la
+expiracion del cache como causa; restauracion a ALLOW tambien en caliente.
+DOS ENMIENDAS HISTORICAS (append-only, sin maquillar): P03/M1 (el publisher solo
+podia publicar payloads vacios y no validaba ningun schema de payload; sus dos
+ficheros de test usaban un event_type inexistente y consagraban el defecto) y P05
+(el check 7.8 permitia que una tabla con tenant_id se autodeclarase system y
+esquivase allowlist y RLS). Ninguna pieza se reabre; ambos guardarrailes se
+corrigen hacia delante.
+CORRECCION sobre P06b: el rol administrativo/compliance auditado NO es obligacion
+de P06b (es herencia v5.1). La unica obligacion vinculante sobre P06b es que el
+SubjectInputsResolver derive identidad y sujeto SOLO de autenticacion backend
+verificada.
+ENDURECIMIENTO del mapa de diferidos: siete campos obligatorios, pieza duena viva,
+regla de salida, y prohibicion de diferir tipos ya en uso o a piezas cerradas.
+Para la proxima revision (P06b - API/Auth/Realtime Gateway; ADR-002/006/011/012/
+013/019): comprobar que app.current_user_id y el SubjectInputsResolver derivan SOLO
+de la sesion verificada y NUNCA de entrada del cliente (obligaciones vinculantes de
+P05 y P06); que la API NO evalua reglas ni ejecuta ordenes; que las capabilities se
+exponen como INFORMATIVAS (la decision autoritativa es el PolicyGate en el punto
+sensible); y que el enforcement de politica en los bordes usa el PolicyGate de P06.
+P06b CIERRA M2.

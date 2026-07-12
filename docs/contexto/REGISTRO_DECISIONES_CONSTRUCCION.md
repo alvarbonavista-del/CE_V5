@@ -108,6 +108,11 @@ que no vivan solo en el chat (anti-deriva, DOC_ENTREGABLES sec.9).
      pieza/condicion posterior; adelantarlo seria construir "por si acaso"
      (tambien prohibido). Si algo se pudiera resolver ya sin una pieza
      posterior, NO se difiere: se hace ahora.
+5.12 Cuando una pieza crea un ADR nuevo, la tanda de cierre pasa de CUATRO a
+     CINCO archivos: los cuatro de contexto MAS ADRS_PROPUESTOS.md en
+     APPEND-ONLY (los ADR previos quedan intactos, nunca se renumeran ni se
+     reescriben). El ADR se escribe tambien en docs/adr/ del repo. Alvaro
+     resube los cinco al knowledge.
 =====================================================================
 6. CIERRE DE PIEZA P01 - CONTRATOS BASE Y ENVELOPE
 =====================================================================
@@ -430,3 +435,173 @@ TAREAS FUTURAS registradas (cumplen 5.11):
 - Cualificacion de idempotency_key por tenant/scope (de P02b): productores
   reales P07/P08/P10.
 - Aristas de politica de lifecycle (de P04): P06.
+=====================================================================
+13. CIERRE DE PIEZA P06 - POLICYEVALUATOR CENTRAL + KILL SWITCH (EL GATE)
+=====================================================================
+Estado: ENTREGADA. Commit (pieza): 06cb51ff4db3ab3943d374b339cf291e1541ec92.
+Doble revision Central + CSA conforme; firmado por Alvaro. P06 es 3/4 de M2; no
+cierra el hito (lo cierra P06b). CI: checks equivalentes al workflow validados en
+local; Actions pendiente por ausencia de remoto.
+
+CONSULTAS ARQUITECTONICAS ELEVADAS Y FIRMADAS
+- CA-02 (opcion A): familia de evento policy.* creada por ADR-021, ejercitando la
+  clausula de gobierno de ADR-004 (que queda VIGENTE e intacto). Cuatro tipos:
+  kill_switch_activated, kill_switch_deactivated, version_published,
+  subject_invalidated. FRONTERA DURA: policy.* = CAUSA (cambia la politica);
+  component.* = CONSECUENCIA (cambia el lifecycle de una instancia). El supervisor
+  emite component.quarantined con causation_id apuntando al event_id del policy.*
+  que lo provoco. Un kill switch JAMAS se emite como component.*.
+- CA-03 (opcion A reforzada): rol de DB ce_v5_operator ESTRECHO, unico que escribe
+  kill switches. El rol de aplicacion solo LEE (un switch invisible es un switch
+  inutil). GUARDIA DE ARRANQUE fail-closed: un proceso de runtime que encuentre
+  CE_V5_OPERATOR_DATABASE_URL en el entorno NO ARRANCA. La separacion la hace
+  cumplir el codigo, no un documento.
+- CA-04 (opcion A1): el operador PONE EN VIGOR ediciones del reglamento, NO las
+  redacta (la redaccion es catalogo comercial, dato de Alvaro, via migraciones).
+  Motivo: la asimetria de riesgo. Un kill switch solo puede DENEGAR DE MAS;
+  escribir reglas puede PERMITIR DE MAS. TRANSACCION ATOMICA: cambio de estado +
+  auditoria + outbox en el MISMO commit; nunca "la DB dice bloqueado y los
+  procesos no se enteran". OUTBOX DEL OPERADOR ACOTADA POR EL MOTOR: una policy
+  RLS con WITH CHECK le permite encolar SOLO los cuatro policy.*; un intento de
+  encolar un execution.* falso lo RECHAZA el motor (demostrado). El operador puede
+  denegar de mas; jamas fabricar hechos.
+- CA-05 (opcion A): operator_audit (system) es la auditoria CANONICA de la accion
+  de operador; sensitive_action_audit (tenant-scoped) queda intacta como auditoria
+  de seguridad POR SUJETO. Enmienda el punto 5 de CA-04, que exigia auditar un
+  acto GLOBAL en una tabla TENANT-SCOPED y habria envenenado su RLS.
+- CA-06: fix del defecto latente de P03 (ver ENMIENDA HISTORICA 1).
+
+TRES AUDITORIAS SEPARADAS POR ALCANCE (regla de diseno)
+- operator_audit (system): que hizo el OPERADOR a la plataforma. Append-only real.
+- sensitive_action_audit (tenant/user, RLS): que le paso a un SUJETO.
+- audit_log (system, P02b): traza tecnica de infraestructura.
+Tres tablas, tres propositos. Mezclarlas habria envenenado la RLS de la de sujeto.
+
+DECISIONES DE CONSTRUCCION (dentro de area; ninguna reabre un ADR)
+- D1. La SENSIBILIDAD es CODIGO (lista cerrada: connect_broker, execute_order,
+  activate_autotrade, manual_order, manage_api_key); el CATALOGO de capacidades es
+  DATO. Motivo: si la sensibilidad fuese un dato, un UPDATE podria marcar
+  execute_order como NO sensible y APAGAR EL FAIL-CLOSED sin tocar una linea de
+  codigo. El candado no puede tener la llave dentro.
+- D2. El kill switch es un instrumento ROMO a proposito: (scope, objetivo), y
+  apaga todo lo que cae dentro. Las combinaciones finas son REGLAS de politica, no
+  interruptores de emergencia. Un boton de panico con veinte parametros es un boton
+  que falla cuando hace falta.
+- D4. Endurecimiento del check 7.8 (ver ENMIENDA HISTORICA 2).
+- D5. VPN INDETERMINADA -> DENY en capacidades sensibles. Deniega de mas a
+  proposito: mejor bloquear una orden que ejecutarla sin saber de donde viene.
+- D6. Una capacidad SENSIBLE exige ENTITLEMENT EXPLICITO. No se concede "porque
+  ninguna regla la prohibe": es la diferencia entre el candado abierto y tener
+  llave.
+- D7. FAIL-LOUD ante datos de politica invalidos: el store valida al leer y lanza;
+  el gate convierte CUALQUIER excepcion en DENY con auditoria. Una regla mal
+  escrita DENIEGA y SE NOTA; jamas concede.
+- D8. SI NO SE PUEDE AUDITAR, NO SE PERMITE. Si la escritura de auditoria falla en
+  una capability sensible que la politica iba a PERMITIR, el gate DENIEGA
+  (denied_audit_unavailable). Una accion sensible sin traza es una accion que el
+  sistema no puede demostrar.
+- D9. La UI es INFORMATIVA (cortesia: oculta/deshabilita) y NO se audita; el punto
+  sensible del backend (require) es la LEY y se audita SIEMPRE, tanto el ALLOW
+  como el DENY. Auditar cada refresco de pantalla inundaria la traza de ruido justo
+  cuando importa. Asimetria asociada: un kill switch de exchange/connector solo
+  aplica si el llamador APORTA el recurso; la UI no lo aporta, el punto sensible si.
+- INVERSION DE DEPENDENCIA: el PUERTO LifecycleGate vive en core/component y el
+  ADAPTADOR en core/policy, para que la dependencia fluya en un solo sentido
+  (core.policy -> core.component) y no se cierre un ciclo de imports.
+
+DEFECTO DE CACHE HALLADO POR LA VALIDACION EN CALIENTE (no por los tests)
+La clave de cache no incluia las CAPACIDADES preguntadas. Un capability set
+cacheado tras preguntar por ['execute_order'] se servia como respuesta valida a
+['view_dashboard'], y la capability no evaluada salia NOT_APPLICABLE (o DENY
+denied_not_evaluated si era sensible). Es decir: EL GATE DENEGABA CAPACIDADES QUE
+LA POLITICA PERMITE. Fail-closed, pero ROTO. Ningun test lo cazo porque todos
+preguntaban por la misma lista: hizo falta un sistema ENCENDIDO con dos preguntas
+seguidas distintas. FIX: un digest ESTABLE (ordenado, deduplicado, determinista)
+de las capacidades como componente mas de la clave, que ya incluye tenant_id,
+user_id, policy_version, input_versions y evaluated_at. 5 tests de regresion que
+FALLAN sin el fix. Este hallazgo es, por si solo, la justificacion de que el
+Roadmap declare la validacion en caliente CRITICA y NO rebajable.
+
+DEFERRED_EVENT_TYPES (condicion previa exigida por el CSA)
+Un tipo de evento diferido se admite SOLO con entrada estructurada de siete campos
+obligatorios: event_type, family, motivo, owner_piece (pieza duena concreta),
+dependency_reason (que parte del payload exige esa pieza), status
+(deferred_until_piece) y exit_rule (al cerrar la pieza duena, el tipo se REGISTRA
+con su payload o se ELIMINA si ya no aplica). PROHIBIDO diferir a una pieza YA
+CERRADA (nadie lo pagaria nunca: es deuda disfrazada) y PROHIBIDO diferir un tipo
+que el codigo actual ya use (seria una mentira en el registro). El check
+tools/check_event_payload_registry.py lo hace cumplir y se demostro que MUERDE
+(entrada sin pieza duena -> FAIL). Sin esto, el mapa de diferidos seria un
+vertedero.
+
+ENMIENDA HISTORICA 1 (P03 / M1) - append-only, SIN MAQUILLAR
+El OutboxPublisher de P03 validaba el envelope drenado contra Envelope[EventPayload]
+BASE, que declara extra="forbid" y CERO campos. Consecuencia: la outbox SOLO PODIA
+PUBLICAR PAYLOADS VACIOS y NO validaba NINGUN schema de payload. La afirmacion D2
+de la sec.9 ("con P03 un envelope invalido no llega al broker") era cierta para el
+ENVELOPE pero FALSA para el payload: la garantia era ILUSORIA.
+AGRAVANTE: los DOS ficheros de test de la outbox de P03 (unitario e integracion)
+usaban un event_type INEXISTENTE ('component.demo') con payload vacio. La suite de
+P03 no solo no detectaba el defecto: LO CONSAGRABA. Ningun test de la pieza probo
+jamas un payload real contra su schema. La doble revision de P03 (Central Y CSA) no
+lo detecto porque la suite decia verde.
+La validacion en caliente de P03 y la demostracion end-to-end de M1 se hicieron con
+PAYLOADS VACIOS.
+Las propiedades de transporte de M1 (envelope, idempotencia, Clock, bus externo,
+outbox/inbox, ACK tras persistir el efecto, reinicio sin perder ni duplicar) SIGUEN
+SIENDO VALIDAS: no dependen del contenido del payload. M1 NO se reabre; se matiza
+con verdad.
+El mismo defecto habria estallado en P07 (market.*), P08 (rule./signal./alert.*),
+P09 (notification.*) y P10b (execution.*, DINERO REAL).
+FIX (CA-06, firmado): registro canonico event_type -> clase de payload en
+contracts/source/families/registry.py; el publisher valida contra la clase CONCRETA
+y la coherencia de event_schema_version; fail-loud sin excepcion (no publica, no
+marca la fila); check bloqueante nuevo. P02b, P03 y P04 siguen verdes.
+
+ENMIENDA HISTORICA 2 (P05) - append-only, SIN MAQUILLAR
+El check 7.8 entregado en P05 tenia una VIA DE FUGA: solo consultaba la allowlist
+para tablas SIN tenant_id. Por tanto, una tabla CON columna tenant_id podia
+autodeclararse isolation_scope=system en su COMMENT y esquivar A LA VEZ la allowlist
+visible en el diff Y el requisito de RLS. P06 lo cierra (D4): TODA tabla clasificada
+system debe estar en la allowlist explicita, tenga o no tenant_id. Demostrado con
+tres pruebas negativas sobre la base real (tabla system con tenant_id no allowlistada
+-> FAIL; tabla tenant sin RLS -> FAIL; tabla tenant sin tenant_id -> FAIL). P05 NO
+se reabre; el guardarrail se corrige hacia delante.
+
+OBLIGACION VINCULANTE SOBRE P06b (unica)
+El SubjectInputsResolver debe derivar la identidad y el sujeto EXCLUSIVAMENTE de la
+autenticacion backend VERIFICADA. JAMAS de datos controlados por el cliente: ni
+body, ni query param, ni header no autenticado, ni payload de WebSocket. Es la misma
+regla dura que P05 impuso sobre app.current_user_id. Sin esto, el gate del lifecycle
+no puede evaluar sujetos.
+
+VIA DECLARADA v5.1 (NO es obligacion de P06b)
+El rol administrativo/compliance auditado (DOC_ROADMAP sec.8, herencia v5.1+) se
+colocara DELANTE de la primitiva de operador cuando exista; no ampliara permisos del
+runtime ni convertira ce_v5_operator en un admin general. En v5.0 el guardia es: la
+CUSTODIA DE LA CREDENCIAL (solo Alvaro tiene el DSN de operador), el rol estrecho, el
+runtime sin ese DSN (guardia de arranque), los privilegios y RLS, y la auditoria
+append-only.
+
+TAREA VINCULANTE SOBRE P07
+Mover los tres market.* de DEFERRED_EVENT_TYPES a EVENT_PAYLOAD_REGISTRY con su
+payload real (OHLCV/timeframe). El check no le dejara olvidarlo.
+
+TAREAS PAGADAS EN P06 (venian de piezas anteriores)
+- [x] Claves de cache con tenant_id e invalidacion por evento ante cambio de rol,
+      premium, jurisdiccion o KYC (venia de P05, ADR-012).
+- [x] Aristas de politica del lifecycle (reintento desde FAILED, liberacion de
+      QUARANTINED, backoff acotado, fail-fast por criticidad), gate previo a
+      INITIALIZE y kill switch -> QUARANTINED con causation_id (venian de P04).
+
+VALIDACION EN CALIENTE CRITICA (superada; salida real)
+Proceso vivo con el rol de aplicacion; operador en OTRA terminal con OTRA credencial.
+TTL del cache fijado a 60 s A PROPOSITO para que la caducidad quedase DESCARTADA como
+causa. Cadena demostrada: transaccion de DB -> outbox -> bus Redis -> consumidor ->
+invalidacion de cache -> DENY, en ~1 segundo, en el MISMO proceso (contador de
+iteracion continuo, sin reinicio), con el reason_code denied_by_kill_switch y el
+kill_switch_id en la traza. La capability NO apuntada por el switch siguio en ALLOW
+(precision quirurgica). Al soltar el switch, la capability volvio a ALLOW en caliente.
+Extras demostrados: fail-closed ante sujeto no resoluble; la guardia CA-03 (un runtime
+con el DSN de operador NO arranca); el operador NO puede encolar un execution.* falso;
+y las auditorias no se pueden editar ni borrar.

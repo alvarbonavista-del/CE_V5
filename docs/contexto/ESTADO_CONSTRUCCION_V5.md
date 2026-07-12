@@ -4,38 +4,32 @@ Archivo vivo de estado de proceso (sin logica). Lo mantiene Claude Code
 en disco; Alvaro lo resube al knowledge cada vez que se cierra una pieza
 o un hito (DOC_ENTREGABLES sec.8).
 
-Ultima actualizacion: 2026-07-11 (cierre de pieza P05; hito M2 EN CURSO).
+Ultima actualizacion: 2026-07-12 (cierre de pieza P06; hito M2 EN CURSO).
 
 ## Hito actual
 M2 EN CURSO (sustrato de plataforma), abierto por P04. Piezas de M2: P04
-(ENTREGADA), P05 (ENTREGADA), P06 y P06b (PENDIENTES). 2 de 4.
+(ENTREGADA), P05 (ENTREGADA), P06 (ENTREGADA), P06b (PENDIENTE). 3 de 4.
 
 ## Pieza actual
-P05 - Tenancy shared-schema + RLS (ADR-011): ENTREGADA.
-  Commit de pieza: 795deb3
-  (795deb300b8b559b2d8314be32ab6a91f71b3d9f). Cierre de contexto en el commit
-  "docs(contexto): cierre P05" (regla 5.9).
-  Hash del commit de cierre de contexto: c9ee0950f20f241c24514bd3928e09197fee9473.
-  (Un commit no puede contener su propio hash: por eso el hash del cierre se
-  registra en el commit inmediato posterior. Regla 5.9 cumplida: cero cola en
-  el arbol.)
-  Modelo tenant + user_tenant_membership (pertenencia en capa aparte, costura
-  de organizaciones abierta sin soportarlas); TenantContextResolver que
-  resuelve el tenant en el backend desde la identidad autenticada y falla
-  cerrado sin pertenencia valida; SET LOCAL transaccional del contexto; rol de
-  aplicacion sin BYPASSRLS ni SUPERUSER y rol de migraciones fuera de runtime;
-  RLS ENABLE + FORCE con policies atadas al contexto; isolation_scope declarado
-  en las seis tablas (las cuatro de sistema allowlistadas); check 7.8
-  materializado (tools/check_tenancy.py) y en el workflow; tests de aislamiento
-  en CI; fuga cross-tenant demostrada como bloqueada en lectura, borrado y
-  escritura. Doble revision Central + CSA conforme; firmado por Alvaro.
+P06 - PolicyEvaluator central + kill switch (ADR-012, ADR-021): ENTREGADA.
+  Commit de pieza: 06cb51f
+  (06cb51ff4db3ab3943d374b339cf291e1541ec92). Cierre de contexto en el commit
+  "docs(contexto): cierre P06 y ADR-021" (regla 5.9); su hash se registra en el
+  commit inmediato posterior.
+  Resumen: gate fail-closed con capability sets por sujeto (reason_code +
+  policy_version); DENY > ALLOW en sensibles; overrides que solo conceden dentro
+  del perimetro superior; kill switch jerarquico que corta EN CALIENTE por evento
+  sin reinicio (DB -> outbox -> bus -> invalidacion -> DENY); cache con clave que
+  incluye tenant_id y las capacidades preguntadas, invalidacion por evento y
+  fail-closed ante staleness; TRES auditorias separadas por alcance; PolicyGate
+  como primitiva de enforcement; gate previo a INITIALIZE y aristas de politica
+  del lifecycle. Rol de DB ce_v5_operator estrecho, fuera de runtime. Doble
+  revision Central + CSA conforme; firmado por Alvaro.
   CI: checks equivalentes al workflow validados en local; Actions pendiente
       por ausencia de remoto.
 
 ## Proxima pieza
-P06 - PolicyEvaluator central + kill switch (ADR-012): resolucion de
-  capacidades por jurisdiccion/plan/rol, fail-closed, kill switch jerarquico,
-  enforcement en API. Tercera pieza del hito M2.
+P06b - API/Auth/Realtime Gateway. CIERRA el hito M2.
 
 ## Piezas cerradas
 - P00 - Esqueleto de repositorio + CI base: ENTREGADA (hito M0 CERRADO).
@@ -49,6 +43,7 @@ P06 - PolicyEvaluator central + kill switch (ADR-012): resolucion de
 - P04 - Raiz Componente, manifest, discovery, lifecycle: ENTREGADA.
   Commit 866b434. Abre el hito M2.
 - P05 - Tenancy shared-schema + RLS: ENTREGADA. Commit 795deb3.
+- P06 - PolicyEvaluator central + kill switch: ENTREGADA. Commit 06cb51f.
 
 ## Regla de trabajo (REGISTRO_DECISIONES sec.1)
 Construccion en micro-pasos: el periferico nunca entrega la pieza entera
@@ -65,6 +60,9 @@ de golpe. Un paso, se explica, Alvaro ejecuta y pega salida, siguiente.
   con PostgreSQL y Redis 8.8), mas lint/format/type (backend) y biome/tsc/
   depcruise (frontend); todos verdes en local. Ya no queda ningun check
   inactivo.
+- Checks activos tras P06: 7.1-7.9 + check audit (tools/check_audit.py) + check
+  de registro event_type->payload (tools/check_event_payload_registry.py) +
+  integracion DB/bus. Todos verdes en local.
 - 7.5/7.6/7.9 (P04): tools/check_manifests, tools/check_orphans,
   tools/check_component_docs; enganchados al job backend del workflow.
 - Componentes: viven en backend/src/ce_v5/components/<nombre>/ (manifest.json
@@ -88,3 +86,13 @@ de golpe. Un paso, se explica, Alvaro ejecuta y pega salida, siguiente.
   Migraciones: "python -m ce_v5.infra.db.migrations" corre con el rol de
   migraciones. Check 7.8: "python tools/check_tenancy.py". Validacion en
   caliente de P05: "python tools/validate_p05_tenancy.py".
+- Politica (P06, ADR-012/ADR-021): existe un TERCER DSN,
+  CE_V5_OPERATOR_DATABASE_URL (rol ce_v5_operator: kill switch, publicacion de
+  policy_version y su auditoria). JAMAS debe estar presente en un proceso de
+  runtime: DbConfig.from_env lo detecta y ABORTA el arranque
+  (OperatorDsnInRuntimeError). Solo la herramienta de operador
+  ("python -m ce_v5.entrypoints.operator_cli") lo porta. Tambien
+  CE_V5_OPERATOR_DB_PASSWORD para provisionar el rol. Utilidades de P06:
+  tools/seed_p06_fake.py (escenario FALSO de demo),
+  entrypoints/hot_validation_policy.py (validacion en caliente),
+  tools/show_p06_audit.py (volcado de auditorias).

@@ -1231,3 +1231,68 @@ licencias, mobile), INFORME 3 (dashboard, marcas con metadatos), INFORME
 motivo); REST-6/OBJ-3, REST-13. Cruza DAP-12/ADR-019, DAP-13/ADR-015,
 DAP-5/ADR-014, DAP-2/ADR-006, DAP-4/ADR-007, DAP-11/ADR-012,
 DAP-14/ADR-016. Relacionado con ADR-019.
+
+===================================================================
+ADR-021: Familia de evento policy.* para la propagacion de politica y kill switch.
+===================================================================
+Estado: Aceptado.
+Fecha: 2026-07-11.
+
+Contexto:
+ADR-012 exige que el kill switch sea entrada de primera clase y que
+PROPAGUE POR EVENTO, sin reinicio, y que la cache del capability set se
+invalide por evento como mecanismo principal. ADR-004 declaro CERRADAS
+las diez familias base (market, datasource, rule, signal, alert,
+execution, notification, user, component, billing) y dejo una clausula
+de gobierno explicita: familia nueva solo por ADR o decision explicita
+de arquitectura. Ninguna de las diez familias cubre semanticamente "ha
+cambiado la politica" ni "se ha activado un kill switch". No hay
+contradiccion entre ADRs: hay un hueco que ADR-004 previo. Elevado como
+CA-02 y firmado por Alvaro.
+
+Decision:
+Se crea la familia policy.*, con cuatro tipos:
+policy.kill_switch_activated, policy.kill_switch_deactivated,
+policy.version_published y policy.subject_invalidated. Scope (ADR-003):
+system para los kill switch de plataforma (global, exchange, connector,
+market_scope, capability); tenant o user para los dirigidos a un sujeto;
+policy.subject_invalidated con el scope del sujeto invalidado. FRONTERA
+DURA policy.* / component.*: policy.* es la CAUSA (cambia la politica, se
+activa un kill switch, se invalida el capability set de un sujeto);
+component.* es la CONSECUENCIA (cambia el lifecycle de una
+ComponentInstance). Flujo canonico: se activa un kill switch -> se emite
+policy.kill_switch_activated -> el supervisor lo consume -> si decide
+aislar, emite component.quarantined con causation_id apuntando al
+event_id del policy.*. Un componente que acaba en QUARANTINED por
+politica NO convierte el kill switch en un component.*. Los payloads
+viven en contracts/source (ADR-006) y estan registrados en el registro
+canonico event_type -> payload.
+
+Consecuencias:
+Se gana: vocabulario limpio y autoexplicativo para la propagacion de
+politica; los consumidores del gate se suscriben a policy.* y no a un
+firehose de otra familia; extensibilidad sin tocar el nucleo (tipos
+nuevos dentro de la familia se declaran en el manifest, ADR-004 nivel 1);
+cadena causal explicita entre politica y lifecycle. Se acepta: una
+familia mas en el vocabulario (ampliacion ADITIVA del enum cerrado, de
+diez a once), que el check de compatibilidad de schemas (7.7) trata como
+compatible (ampliar un enum lo es; reducirlo no), demostrado con prueba
+negativa.
+
+Alternativas consideradas:
+B. Reutilizar una familia existente (component.* o user.*). Descartada:
+fuerza la semantica (un kill switch global o de exchange no es un hecho
+de usuario ni de componente), deja sin casa el kill switch por exchange,
+market_scope y capability, y fragmenta el mecanismo entre dos familias.
+Es deuda conceptual del tipo que causo la deriva de v4.
+C. Propagar el kill switch FUERA del EventBus (polling a DB o canal
+ad-hoc). Descartada: contradice ADR-012 (propagacion por evento) y
+ADR-013 (todo proceso se comunica por el bus), y reintroduce el bus
+informal de v4.
+
+Referencias:
+Ejercita la clausula de gobierno de ADR-004 (que queda VIGENTE e
+intacto). Cruza ADR-012 (PolicyEvaluator y kill switch), ADR-003
+(envelope, scope, causation_id), ADR-010 (QUARANTINED) y ADR-013
+(transporte y outbox). Origen: CA-02, firmada por Alvaro. Construido en
+la pieza P06.

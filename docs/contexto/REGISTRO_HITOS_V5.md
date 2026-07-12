@@ -3,7 +3,7 @@
 Archivo vivo (sin logica). Mantenido por Claude Code; Alvaro lo resube
 al knowledge al cerrar cada pieza o hito (DOC_ENTREGABLES sec.8).
 
-Ultima actualizacion: 2026-07-11 (cierre de pieza P05; hito M2 EN CURSO).
+Ultima actualizacion: 2026-07-12 (cierre de pieza P06; hito M2 EN CURSO).
 
 | Hito | Definicion breve (DOC_ROADMAP sec.4) | Piezas | Estado |
 |------|--------------------------------------|--------|--------|
@@ -83,4 +83,20 @@ Doble revision Central + CSA conforme; firmado por Alvaro. Proximo hito: M2
   FAIL; tabla sin tenant_id fuera de la allowlist -> FAIL). Tests de aislamiento
   en CI en cada build. Checks equivalentes al workflow verdes en local; doble
   revision Central + CSA conforme; firmado por Alvaro.
-- P06 y P06b: PENDIENTES.
+- P06 - PolicyEvaluator central + kill switch (ADR-012, ADR-021): ENTREGADA
+  (3 de 4 de M2). Commit 06cb51f. Familia policy.* creada por ADR-021 (CA-02),
+  con la frontera dura policy.* = CAUSA / component.* = CONSECUENCIA unidas por
+  causation_id. Gate fail-closed: DENY > ALLOW en sensibles, entitlement
+  explicito obligatorio, VPN/jurisdiccion desconocidas -> DENY, y "si no se
+  puede auditar, no se permite". Kill switch jerarquico con transaccion atomica
+  (estado + auditoria + outbox) y propagacion por evento. Rol de DB
+  ce_v5_operator estrecho, con guardia de arranque que impide que un proceso de
+  runtime porte su credencial. Checks nuevos: "audit" y registro
+  event_type->payload, ambos demostrados MORDIENDO. VALIDACION EN CALIENTE
+  CRITICA SUPERADA: una capability ALLOW pasa a DENY en ~1 segundo, en el MISMO
+  proceso y sin reinicio, con TTL de cache de 60 s que descarta la caducidad
+  como causa; y vuelve a ALLOW al soltar el switch. Dos defectos historicos
+  corregidos (P03 y P05, ver REGISTRO_DECISIONES sec.13). Checks equivalentes al
+  workflow verdes en local; doble revision Central + CSA conforme; firmado por
+  Alvaro.
+- P06b: PENDIENTE. Cierra M2.
