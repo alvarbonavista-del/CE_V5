@@ -18,7 +18,11 @@ from source.families import validate_event_type
 
 # Version del formato del manifest (ADR-008: manifest_schema_version).
 # Evoluciona bajo ADR-005, independiente del envelope y de los payloads.
-MANIFEST_SCHEMA_VERSION = 1
+# v2: anade 'critical' (marca de criticidad ADR-010 fail-fast). El campo es
+# opcional-con-default, asi que un manifest v1 sigue validando y se trata como
+# no critico; por eso el bump es honesto (nueva semantica de lifecycle) sin
+# romper manifests existentes.
+MANIFEST_SCHEMA_VERSION = 2
 
 
 class ComponentType(StrEnum):
@@ -150,6 +154,13 @@ class ComponentManifest(BaseModel):
     ui: UiDeclaration | None = None
     policy_requirements: PolicyRequirements = Field(default_factory=PolicyRequirements)
     config_schema: dict[str, object] | None = None
+
+    # Criticidad (ADR-010 fail-fast). Un Componente CRITICO cuya INITIALIZE
+    # falla lleva la instancia a FAILED de inmediato (fail-fast): la plataforma
+    # no puede operar a medias sin el. Uno NO critico (default) cae a
+    # QUARANTINED con backoff acotado y puede reintentarse. Es DECLARATIVO; la
+    # decision de lifecycle la aplica el supervisor (P06).
+    critical: bool = False
 
     @field_validator("entrypoint")
     @classmethod

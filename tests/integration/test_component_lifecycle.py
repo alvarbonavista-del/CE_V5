@@ -20,9 +20,11 @@ import redis
 from ce_v5.core.clock import SystemClock
 from ce_v5.core.component import ComponentLifecycle, LifecycleState, Supervisor
 from ce_v5.core.discovery import discover, import_entrypoint
+from ce_v5.core.policy import KillSwitchQuarantineConsumer
 from ce_v5.infra.bus_redis import RedisBusConfig, RedisEventBus, create_client
 from source.envelope import Envelope
 from source.families.component import ComponentLifecyclePayload
+from source.families.policy import KillSwitchPayload, KillSwitchScope
 
 _URL = os.environ.get("CE_V5_REDIS_URL")
 pytestmark = pytest.mark.skipif(
@@ -107,3 +109,43 @@ def test_alta_por_carpeta_y_lifecycle_por_el_bus(bus: RedisEventBus) -> None:
     print("[P04 caliente] transiciones emitidas y leidas del bus:")
     for r in received:
         print("   ", r.message.event_type)
+
+
+def test_kill_switch_aisla_y_el_bus_muestra_la_causa(bus: RedisEventBus) -> None:
+    """CA-02 sobre el bus real: un kill switch (CAUSA) provoca
+    component.quarantined (CONSECUENCIA) con causation_id al evento de politica;
+    el kill switch NUNCA viaja como component.*.
+    """
+    result = discover(_COMPONENTS, import_entrypoint)
+    definition = next(d for d in result.registered if d.component_id == "sample")
+    entrypoint = definition.entrypoint
+    assert entrypoint is not None
+    target = import_entrypoint(entrypoint)
+    assert callable(target)
+    component = target()
+
+    supervisor = Supervisor(bus, SystemClock(), source="tests.hot.p06")
+    supervisor.register(definition, component, instance_id="sample-ks")
+    supervisor.initialize("sample-ks")
+    supervisor.start("sample-ks")
+
+    consumer = KillSwitchQuarantineConsumer(supervisor)
+    switch = KillSwitchPayload(
+        kill_switch_id="ks-hot",
+        scope=KillSwitchScope.GLOBAL,
+        reason_code="denied_by_kill_switch",
+        policy_version="v1",
+        actor="operator",
+    )
+    consumer.on_activated(switch, event_id="evt-policy-hot")
+
+    assert supervisor.instance("sample-ks").state is LifecycleState.QUARANTINED
+    received = bus.replay("component", start=None, max_messages=100)
+    types = [r.message.event_type for r in received]
+    assert types[-1] == "component.quarantined"
+    assert all(t.startswith("component.") for t in types)  # nunca como policy.*
+    quarantined = Envelope[ComponentLifecyclePayload].model_validate_json(
+        received[-1].message.envelope
+    )
+    assert quarantined.causation_id == "evt-policy-hot"
+    assert quarantined.payload.error_code == "denied_by_kill_switch"

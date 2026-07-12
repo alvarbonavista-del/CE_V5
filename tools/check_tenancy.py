@@ -3,11 +3,13 @@
 Materializa en CI las reglas de aislamiento del ADR-011: cada tabla declara
 su isolation_scope; las tablas de alcance tenant o user llevan tenant_id (y
 user_id cuando toca), tienen RLS habilitado Y forzado, y toda su policy ata
-la fila al tenant de la transaccion via app_current_tenant_id(); las tablas
-sin tenant_id solo se admiten si estan en una allowlist explicita; y el rol
-de aplicacion existe sin poder saltarse el RLS. Corre en cada build contra la
-base ya migrada. La logica pura (check_schema) es testeable sin PostgreSQL;
-solo load_schema toca el catalogo.
+la fila al tenant de la transaccion via app_current_tenant_id(); TODA tabla de
+alcance system solo se admite si esta en una allowlist explicita, tenga o no
+columna tenant_id (asi una tabla con datos de tenant no puede autodeclararse
+system y esquivar el registro visible en el diff); y el rol de aplicacion
+existe sin poder saltarse el RLS. Corre en cada build contra la base ya
+migrada. La logica pura (check_schema) es testeable sin PostgreSQL; solo
+load_schema toca el catalogo.
 """
 
 import re
@@ -28,15 +30,21 @@ from ce_v5.infra.db.psycopg_adapter import PsycopgDatabase  # noqa: E402
 
 ISOLATION_SCOPES = ("public_market", "tenant", "user", "system")
 
-# Toda tabla nueva SIN columna tenant_id exige una entrada explicita aqui con
-# su alcance permitido. Es deliberado: sumar una linea a esta allowlist es una
-# decision visible en el diff (alguien la revisa en el PR), no un descuido que
-# se cuela. Si una tabla sin tenant_id no aparece aqui, el check 7.8 falla.
+# TODA tabla de alcance system exige una entrada explicita aqui con su alcance,
+# TENGA O NO columna tenant_id; tambien las public_market sin tenant_id. Es
+# deliberado: sumar una linea a esta allowlist es una decision visible en el
+# diff (alguien la revisa en el PR), no un descuido que se cuela. Si una tabla
+# system no aparece aqui, el check 7.8 falla.
 TABLAS_SIN_TENANT_PERMITIDAS: dict[str, str] = {
     "outbox": "system",
     "inbox": "system",
     "audit_log": "system",
     "schema_migrations": "system",
+    # Catalogo/artefacto de PLATAFORMA (P06), no superficie de tenant:
+    "policy_version": "system",  # edicion vigente del reglamento (ADR-012).
+    "policy_rule": "system",  # reglamento de negocio de Alvaro (ADR-012).
+    "kill_switch": "system",  # artefacto de operador (CA-03); no es de tenant.
+    "operator_audit": "system",  # auditoria canonica de operador (CA-05).
 }
 
 _TENANT_SCOPES = ("tenant", "user")
@@ -139,15 +147,26 @@ def _table_violations(table: TableInfo) -> list[str]:
                     "7.8): no ata la fila al tenant de la transaccion."
                 )
 
-    # R6: tabla sin tenant_id solo se admite allowlistada y con alcance acorde.
-    if not has_tenant and not scoped:
+    # R6: clasificacion sin superficie de tenant propia. TODA tabla 'system'
+    # debe estar en la allowlist explicita, TENGA O NO columna tenant_id: si no,
+    # una tabla con datos de tenant podria autodeclararse system y esquivar el
+    # registro visible en el diff. Las 'public_market' sin tenant_id, tambien.
+    needs_allowlist = scope == "system" or (scope == "public_market" and not has_tenant)
+    if needs_allowlist:
         allowed = TABLAS_SIN_TENANT_PERMITIDAS.get(table.name)
         if allowed is None:
-            out.append(
-                f"{table.name}: R6 tabla sin tenant_id fuera de la allowlist "
-                "TABLAS_SIN_TENANT_PERMITIDAS (ADR-011, 7.8): declara su "
-                "alcance alli de forma explicita o anade tenant_id."
-            )
+            if scope == "system":
+                out.append(
+                    f"{table.name}: R6 tabla system no allowlistada: anadela a "
+                    "la allowlist de tools/check_tenancy.py con justificacion "
+                    "escrita (ADR-011, 7.8)."
+                )
+            else:
+                out.append(
+                    f"{table.name}: R6 tabla sin tenant_id fuera de la allowlist "
+                    "TABLAS_SIN_TENANT_PERMITIDAS (ADR-011, 7.8): declara su "
+                    "alcance alli de forma explicita o anade tenant_id."
+                )
         elif allowed != scope:
             out.append(
                 f"{table.name}: R6 la allowlist permite alcance '{allowed}' "

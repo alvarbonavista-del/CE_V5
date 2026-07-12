@@ -1,0 +1,86 @@
+{
+  "$defs": {
+    "KillSwitchScope": {
+      "description": "Ambitos de kill switch (ADR-012).\n\nUn switch apaga TODO lo que cae dentro de su ambito; un ambito amplio\nbloquea a los inferiores. La union de bloqueos activos manda.",
+      "enum": [
+        "global",
+        "exchange",
+        "connector",
+        "market_scope",
+        "capability",
+        "tenant",
+        "user"
+      ],
+      "title": "KillSwitchScope",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Payload de policy.kill_switch_activated y _deactivated (ADR-012).\n\ntarget_ref identifica el objetivo del ambito: el exchange, el connector,\nel market_scope o la capability. En GLOBAL no hay objetivo. En TENANT y\nUSER el objetivo es el sujeto, no un target_ref.",
+  "properties": {
+    "actor": {
+      "title": "Actor",
+      "type": "string"
+    },
+    "kill_switch_id": {
+      "title": "Kill Switch Id",
+      "type": "string"
+    },
+    "policy_version": {
+      "title": "Policy Version",
+      "type": "string"
+    },
+    "reason_code": {
+      "title": "Reason Code",
+      "type": "string"
+    },
+    "scope": {
+      "$ref": "#/$defs/KillSwitchScope"
+    },
+    "target_ref": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Target Ref"
+    },
+    "tenant_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Tenant Id"
+    },
+    "user_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "User Id"
+    }
+  },
+  "required": [
+    "kill_switch_id",
+    "scope",
+    "reason_code",
+    "policy_version",
+    "actor"
+  ],
+  "title": "KillSwitchPayload",
+  "type": "object"
+}

@@ -1,6 +1,11 @@
 """Raiz Componente: rol por contratos, lifecycle y supervisor (ADR-001/010)."""
 
 from ce_v5.core.component.definition import ComponentDefinition
+from ce_v5.core.component.gate import (
+    LifecycleGate,
+    LifecycleGateRequest,
+    LifecycleVerdict,
+)
 from ce_v5.core.component.lifecycle import (
     LEGAL_TRANSITIONS,
     ComponentLifecycle,
@@ -29,8 +34,11 @@ __all__ = [
     "DuplicateInstanceError",
     "HealthStatus",
     "IllegalTransitionError",
+    "LifecycleGate",
+    "LifecycleGateRequest",
     "LifecycleScope",
     "LifecycleState",
+    "LifecycleVerdict",
     "ReadinessStatus",
     "Supervisor",
     "SupervisorError",

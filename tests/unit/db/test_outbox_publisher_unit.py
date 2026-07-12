@@ -1,4 +1,11 @@
-"""Tests unitarios del OutboxPublisher (sin Postgres ni Redis)."""
+"""Tests unitarios del OutboxPublisher (sin Postgres ni Redis).
+
+Nota (CA-06): antes usaban el event_type inexistente 'component.demo' con
+payload vacio, que solo pasaba por el defecto de CA-06 (validacion contra
+EventPayload base con extra=forbid). Un test que pasa con un evento inventado no
+prueba el contrato; ahora se anclan a policy.subject_invalidated con su payload
+real. La INTENCION de los tests se conserva.
+"""
 
 from __future__ import annotations
 
@@ -16,8 +23,9 @@ from ce_v5.infra.db.outbox_publisher import (
 )
 from ce_v5.infra.db.ports import Session, SqlParams
 
+_EVENT_TYPE = "policy.subject_invalidated"
 _VALID_ENVELOPE: dict[str, object] = {
-    "event_type": "component.demo",
+    "event_type": _EVENT_TYPE,
     "envelope_version": 1,
     "event_schema_version": 1,
     "source": "test",
@@ -25,12 +33,12 @@ _VALID_ENVELOPE: dict[str, object] = {
     "stream_key": "stream-1",
     "scope": "system",
     "correlation_id": "corr-1",
-    "payload": {},
+    "payload": {"tenant_id": "t1", "reason": "role_changed", "policy_version": "v1"},
 }
 
 
 def _row(idx: int, envelope: dict[str, object]) -> tuple[object, ...]:
-    return (idx, uuid.uuid4(), "component.demo", "stream-1", f"idem-{idx}", envelope)
+    return (idx, uuid.uuid4(), _EVENT_TYPE, "stream-1", f"idem-{idx}", envelope)
 
 
 class _FakeSession:
@@ -71,10 +79,10 @@ def test_topic_for_usa_la_familia() -> None:
 def test_drain_publica_y_marca(in_memory_bus: EventBus) -> None:
     db = _FakeDatabase([_row(1, dict(_VALID_ENVELOPE)), _row(2, dict(_VALID_ENVELOPE))])
     publisher = OutboxPublisher(db=db, bus=in_memory_bus)
-    in_memory_bus.ensure_group("component", "g1")
+    in_memory_bus.ensure_group("policy", "g1")
     assert publisher.drain_once(batch_size=10) == 2
     assert any("UPDATE outbox" in query for query, _ in db.session.executed)
-    received = in_memory_bus.poll("component", "g1", "c1", max_messages=10, block_ms=0)
+    received = in_memory_bus.poll("policy", "g1", "c1", max_messages=10, block_ms=0)
     assert len(received) == 2
 
 

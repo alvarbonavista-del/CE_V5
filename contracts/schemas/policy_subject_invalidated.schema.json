@@ -1,0 +1,53 @@
+{
+  "$defs": {
+    "InvalidationReason": {
+      "description": "Motivo por el que el capability set de un sujeto deja de valer.",
+      "enum": [
+        "role_changed",
+        "plan_changed",
+        "entitlement_changed",
+        "override_changed",
+        "jurisdiction_changed",
+        "kyc_changed",
+        "kill_switch_changed",
+        "policy_version_changed"
+      ],
+      "title": "InvalidationReason",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Payload de policy.subject_invalidated: el capability set de un sujeto\ndeja de ser valido y debe recomputarse (ADR-012: invalidacion por evento).\n\nuser_id ausente => se invalida el tenant entero.",
+  "properties": {
+    "policy_version": {
+      "title": "Policy Version",
+      "type": "string"
+    },
+    "reason": {
+      "$ref": "#/$defs/InvalidationReason"
+    },
+    "tenant_id": {
+      "title": "Tenant Id",
+      "type": "string"
+    },
+    "user_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "User Id"
+    }
+  },
+  "required": [
+    "tenant_id",
+    "reason",
+    "policy_version"
+  ],
+  "title": "SubjectInvalidatedPayload",
+  "type": "object"
+}

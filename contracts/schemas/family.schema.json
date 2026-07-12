@@ -1,5 +1,5 @@
 {
-  "description": "Las 10 familias base cerradas (ADR-004).",
+  "description": "Las 11 familias CERRADAS: las 10 base de ADR-004 mas policy (ADR-021).",
   "enum": [
     "market",
     "datasource",
@@ -10,7 +10,8 @@
     "notification",
     "user",
     "component",
-    "billing"
+    "billing",
+    "policy"
   ],
   "title": "Family",
   "type": "string"

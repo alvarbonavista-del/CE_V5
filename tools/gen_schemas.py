@@ -23,6 +23,11 @@ from pydantic import TypeAdapter  # noqa: E402
 from source.envelope import Envelope, EventPayload  # noqa: E402
 from source.families import Family  # noqa: E402
 from source.families.component import ComponentLifecyclePayload  # noqa: E402
+from source.families.policy import (  # noqa: E402
+    KillSwitchPayload,
+    PolicyVersionPublishedPayload,
+    SubjectInvalidatedPayload,
+)
 
 
 def serialize(schema: dict[str, object]) -> str:
@@ -41,10 +46,19 @@ def build_schemas() -> dict[str, dict[str, object]]:
     family_schema["title"] = "Family"
     component_schema = ComponentLifecyclePayload.model_json_schema()
     component_schema["title"] = "ComponentLifecyclePayload"
+    kill_switch_schema = KillSwitchPayload.model_json_schema()
+    kill_switch_schema["title"] = "KillSwitchPayload"
+    version_published_schema = PolicyVersionPublishedPayload.model_json_schema()
+    version_published_schema["title"] = "PolicyVersionPublishedPayload"
+    subject_invalidated_schema = SubjectInvalidatedPayload.model_json_schema()
+    subject_invalidated_schema["title"] = "SubjectInvalidatedPayload"
     return {
         "envelope.schema.json": envelope_schema,
         "family.schema.json": family_schema,
         "component_lifecycle.schema.json": component_schema,
+        "policy_kill_switch.schema.json": kill_switch_schema,
+        "policy_version_published.schema.json": version_published_schema,
+        "policy_subject_invalidated.schema.json": subject_invalidated_schema,
     }
 
 

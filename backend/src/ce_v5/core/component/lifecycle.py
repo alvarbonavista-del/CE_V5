@@ -9,10 +9,13 @@ Componente (composicion sobre herencia, ADR-001). Solo stdlib mas
 contratos; sin logica de dominio ni de supervision: el supervisor de P04
 (Bloque 5) consume esta tabla para validar cada transicion.
 
-Alcance deliberado de P04: se modela la maquina que dibuja ADR-010. Las
-aristas de POLITICA (reintento desde FAILED, liberacion de QUARANTINED) NO
-se incluyen aqui: quien decide poner en cuarentena o liberar es el
-PolicyEvaluator (P06), que las anadira como cambio explicito.
+P04 modelo la maquina base de ADR-010. P06 anade las ARISTAS DE POLITICA (D9)
+como cambio explicito, ahora que existe quien decide poner en cuarentena o
+liberar (la politica): denegacion del gate antes de INITIALIZE, fallo de
+INITIALIZE no critico con backoff, kill switch sobre una instancia viva, y los
+reintentos/liberaciones observables. Todas convergen en QUARANTINED (PROHIBIDO,
+no roto) o FAILED (roto/critico) y salen por transiciones explicitas; ningun
+bucle oculto.
 """
 
 from collections.abc import Mapping
@@ -21,21 +24,45 @@ from typing import Protocol, runtime_checkable
 from source.families.component import LifecycleState
 
 # UNLOADED es el unico estado terminal: una instancia descargada no revive;
-# se descubre y registra una nueva (ADR-010).
+# se descubre y registra una nueva (ADR-010). Las aristas hacia QUARANTINED y
+# los reintornos a INITIALIZING son ARISTAS DE POLITICA (D9, P06); van marcadas.
 LEGAL_TRANSITIONS: Mapping[LifecycleState, frozenset[LifecycleState]] = {
-    LifecycleState.REGISTERED: frozenset({LifecycleState.INITIALIZING}),
+    LifecycleState.REGISTERED: frozenset(
+        {
+            LifecycleState.INITIALIZING,
+            # Politica: el gate deniega antes del primer INITIALIZE (P06).
+            LifecycleState.QUARANTINED,
+        }
+    ),
     LifecycleState.INITIALIZING: frozenset(
-        {LifecycleState.INITIALIZED, LifecycleState.FAILED}
+        {
+            LifecycleState.INITIALIZED,
+            LifecycleState.FAILED,
+            # Politica: fallo de INITIALIZE no critico -> cuarentena con backoff.
+            LifecycleState.QUARANTINED,
+        }
     ),
     LifecycleState.INITIALIZED: frozenset(
-        {LifecycleState.STARTING, LifecycleState.FAILED}
+        {
+            LifecycleState.STARTING,
+            LifecycleState.FAILED,
+            # Politica: kill switch sobre la instancia ya inicializada (P06).
+            LifecycleState.QUARANTINED,
+        }
     ),
-    LifecycleState.STARTING: frozenset({LifecycleState.RUNNING, LifecycleState.FAILED}),
+    LifecycleState.STARTING: frozenset(
+        {
+            LifecycleState.RUNNING,
+            LifecycleState.FAILED,
+            LifecycleState.QUARANTINED,  # Politica: kill switch (P06).
+        }
+    ),
     LifecycleState.RUNNING: frozenset(
         {
             LifecycleState.PAUSED,
             LifecycleState.STOPPING,
             LifecycleState.FAILED,
+            LifecycleState.QUARANTINED,  # Politica: kill switch (P06).
         }
     ),
     LifecycleState.PAUSED: frozenset(
@@ -43,6 +70,7 @@ LEGAL_TRANSITIONS: Mapping[LifecycleState, frozenset[LifecycleState]] = {
             LifecycleState.RUNNING,
             LifecycleState.STOPPING,
             LifecycleState.FAILED,
+            LifecycleState.QUARANTINED,  # Politica: kill switch (P06).
         }
     ),
     LifecycleState.STOPPING: frozenset({LifecycleState.STOPPED, LifecycleState.FAILED}),
@@ -50,9 +78,20 @@ LEGAL_TRANSITIONS: Mapping[LifecycleState, frozenset[LifecycleState]] = {
     LifecycleState.STOPPED: frozenset({LifecycleState.UNLOADED, LifecycleState.FAILED}),
     LifecycleState.UNLOADED: frozenset(),
     LifecycleState.FAILED: frozenset(
-        {LifecycleState.QUARANTINED, LifecycleState.UNLOADED}
+        {
+            LifecycleState.QUARANTINED,
+            LifecycleState.UNLOADED,
+            # Politica: reintento explicito de operador desde FAILED (P06).
+            LifecycleState.INITIALIZING,
+        }
     ),
-    LifecycleState.QUARANTINED: frozenset({LifecycleState.UNLOADED}),
+    LifecycleState.QUARANTINED: frozenset(
+        {
+            LifecycleState.UNLOADED,
+            # Politica: liberacion/reintento; re-consulta el gate e INITIALIZE.
+            LifecycleState.INITIALIZING,
+        }
+    ),
 }
 
 

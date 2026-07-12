@@ -1,6 +1,12 @@
 """Tests de integracion del OutboxPublisher (requieren Postgres y Redis).
 Se saltan si falta CE_V5_DATABASE_URL o CE_V5_REDIS_URL. NUNCA datos
 reales: servicios de juguete (DOC_ENTREGABLES sec.5).
+
+Nota (CA-06): antes usaban el event_type inexistente 'component.demo' con
+payload vacio, que solo pasaba por el defecto de CA-06 (validacion contra
+EventPayload base con extra=forbid). Un test que pasa con un evento inventado no
+prueba el contrato; ahora se anclan a policy.subject_invalidated con su payload
+real. La INTENCION de los tres tests se conserva.
 """
 
 from __future__ import annotations
@@ -32,7 +38,7 @@ pytestmark = pytest.mark.skipif(
 
 def _valid_envelope(idempotency_key: str) -> dict[str, object]:
     return {
-        "event_type": "component.demo",
+        "event_type": "policy.subject_invalidated",
         "envelope_version": 1,
         "event_schema_version": 1,
         "source": "test",
@@ -40,7 +46,11 @@ def _valid_envelope(idempotency_key: str) -> dict[str, object]:
         "stream_key": "stream-demo",
         "scope": "system",
         "correlation_id": "corr-1",
-        "payload": {},
+        "payload": {
+            "tenant_id": "t1",
+            "reason": "role_changed",
+            "policy_version": "v1",
+        },
     }
 
 
@@ -49,7 +59,7 @@ def _event(envelope: dict[str, object]) -> OutboxEvent:
         event_id=uuid.uuid4(),
         idempotency_key=str(envelope["idempotency_key"]),
         stream_key="stream-demo",
-        event_type="component.demo",
+        event_type="policy.subject_invalidated",
         envelope=envelope,
     )
 
@@ -125,7 +135,7 @@ def test_envelope_invalido_no_publica_ni_marca(
         event_id=uuid.uuid4(),
         idempotency_key="idem-3",
         stream_key="stream-demo",
-        event_type="component.demo",
+        event_type="policy.subject_invalidated",
         envelope={"foo": "bar"},
     )
     write_atomically(db, business=[], event=event)

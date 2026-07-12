@@ -8,6 +8,9 @@ def test_build_schemas_incluye_envelope_y_family() -> None:
         "envelope.schema.json",
         "family.schema.json",
         "component_lifecycle.schema.json",
+        "policy_kill_switch.schema.json",
+        "policy_version_published.schema.json",
+        "policy_subject_invalidated.schema.json",
     }
 
 

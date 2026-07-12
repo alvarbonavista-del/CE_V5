@@ -3,7 +3,7 @@ import pytest
 from source.families import Family, validate_event_type
 
 
-def test_diez_familias_cerradas() -> None:
+def test_once_familias_cerradas() -> None:
     esperadas = {
         "market",
         "datasource",
@@ -15,6 +15,7 @@ def test_diez_familias_cerradas() -> None:
         "user",
         "component",
         "billing",
+        "policy",
     }
     assert {f.value for f in Family} == esperadas
 

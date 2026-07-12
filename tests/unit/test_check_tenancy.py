@@ -162,6 +162,21 @@ def test_r6_tabla_nueva_sin_tenant_id_fuera_de_allowlist_es_violacion() -> None:
     assert "R6" in violations[0]
 
 
+def test_r6_tabla_system_con_tenant_id_no_allowlistada_falla() -> None:
+    # Antes PASABA (la allowlist solo se consultaba para tablas sin tenant_id);
+    # ahora TODA tabla system debe estar allowlistada aunque lleve tenant_id.
+    table = _table(
+        name="fuga_system",
+        scope="system",
+        columns=frozenset({"tenant_id", "id"}),
+        policies=(),
+    )
+    violations = check_tenancy.check_schema([table], _GOOD_ROLE)
+    assert len(violations) == 1
+    assert "R6" in violations[0]
+    assert "no allowlistada" in violations[0]
+
+
 def test_r7_rol_con_bypassrls_es_violacion() -> None:
     role = AppRoleInfo(name="ce_v5_app", is_superuser=False, can_bypass_rls=True)
     violations = check_tenancy.check_schema([], role)

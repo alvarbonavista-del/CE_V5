@@ -56,9 +56,20 @@ def test_fallo_alcanzable_desde_transiciones_activas() -> None:
         assert can_transition(origen, LifecycleState.FAILED)
 
 
-def test_aristas_de_politica_no_estan_en_p04() -> None:
-    assert not can_transition(LifecycleState.FAILED, LifecycleState.INITIALIZING)
-    assert not can_transition(LifecycleState.QUARANTINED, LifecycleState.INITIALIZING)
+def test_aristas_de_politica_presentes_en_p06() -> None:
+    # P06 (B8b) anade las aristas de politica (D9): denegacion del gate antes de
+    # INITIALIZE, kill switch sobre instancia viva, y reintento/liberacion.
+    assert can_transition(LifecycleState.FAILED, LifecycleState.INITIALIZING)
+    assert can_transition(LifecycleState.QUARANTINED, LifecycleState.INITIALIZING)
+    assert can_transition(LifecycleState.REGISTERED, LifecycleState.QUARANTINED)
+    assert can_transition(LifecycleState.INITIALIZING, LifecycleState.QUARANTINED)
+    for origen in (
+        LifecycleState.INITIALIZED,
+        LifecycleState.STARTING,
+        LifecycleState.RUNNING,
+        LifecycleState.PAUSED,
+    ):
+        assert can_transition(origen, LifecycleState.QUARANTINED)
 
 
 def test_transicion_ilegal_es_falsa() -> None:

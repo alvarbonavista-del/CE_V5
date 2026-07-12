@@ -1,0 +1,44 @@
+{
+  "additionalProperties": false,
+  "description": "Payload de policy.version_published: entra en vigor una policy_version.",
+  "properties": {
+    "actor": {
+      "title": "Actor",
+      "type": "string"
+    },
+    "policy_version": {
+      "title": "Policy Version",
+      "type": "string"
+    },
+    "previous_policy_version": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Previous Policy Version"
+    },
+    "reason": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Reason"
+    }
+  },
+  "required": [
+    "policy_version",
+    "actor"
+  ],
+  "title": "PolicyVersionPublishedPayload",
+  "type": "object"
+}
