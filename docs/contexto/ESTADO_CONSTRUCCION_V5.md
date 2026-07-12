@@ -16,6 +16,10 @@ P06 - PolicyEvaluator central + kill switch (ADR-012, ADR-021): ENTREGADA.
   (06cb51ff4db3ab3943d374b339cf291e1541ec92). Cierre de contexto en el commit
   "docs(contexto): cierre P06 y ADR-021" (regla 5.9); su hash se registra en el
   commit inmediato posterior.
+  Hash del commit de cierre de contexto: d57b8d32e47e068ed6c4a7427d5b17ef4a1eff28.
+  (Un commit no puede contener su propio hash: por eso el hash del cierre se
+  registra en el commit inmediato posterior. Regla 5.9 cumplida: cero cola en
+  el arbol.)
   Resumen: gate fail-closed con capability sets por sujeto (reason_code +
   policy_version); DENY > ALLOW en sensibles; overrides que solo conceden dentro
   del perimetro superior; kill switch jerarquico que corta EN CALIENTE por evento
