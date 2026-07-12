@@ -10,9 +10,13 @@ jobs:
     name: Backend (lint, format, types, boundaries, tests)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Instalar uv
-        uses: astral-sh/setup-uv@v5
+        # Version EXACTA: desde su v8.0.0 setup-uv DEJO DE PUBLICAR etiquetas
+        # moviles (@v8 no existe) por seguridad de cadena de suministro; una
+        # etiqueta movil comprometida ejecutaria codigo ajeno en el CI sin que
+        # nadie cambie nada en el repo.
+        uses: astral-sh/setup-uv@v8.1.0
         with:
           python-version: "3.13"
       - name: Sincronizar entorno
@@ -75,9 +79,13 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Instalar uv
-        uses: astral-sh/setup-uv@v5
+        # Version EXACTA: desde su v8.0.0 setup-uv DEJO DE PUBLICAR etiquetas
+        # moviles (@v8 no existe) por seguridad de cadena de suministro; una
+        # etiqueta movil comprometida ejecutaria codigo ajeno en el CI sin que
+        # nadie cambie nada en el repo.
+        uses: astral-sh/setup-uv@v8.1.0
         with:
           python-version: "3.13"
       - name: Sincronizar entorno
@@ -106,12 +114,12 @@ jobs:
     name: Frontend (lint, format, types, boundaries)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       # Sin 'version' aqui: la version de pnpm la fija SOLO packageManager en
       # package.json (unica fuente de verdad); duplicarla aborta con
       # ERR_PNPM_BAD_PM_VERSION.
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
         with:
           node-version: 24
           cache: pnpm
