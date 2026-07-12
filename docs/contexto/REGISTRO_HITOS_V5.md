@@ -3,7 +3,7 @@
 Archivo vivo (sin logica). Mantenido por Claude Code; Alvaro lo resube
 al knowledge al cerrar cada pieza o hito (DOC_ENTREGABLES sec.8).
 
-Ultima actualizacion: 2026-07-12 (cierre de pieza P06; hito M2 EN CURSO).
+Ultima actualizacion: 2026-07-12 (T-01).
 
 | Hito | Definicion breve (DOC_ROADMAP sec.4) | Piezas | Estado |
 |------|--------------------------------------|--------|--------|
@@ -100,3 +100,10 @@ Doble revision Central + CSA conforme; firmado por Alvaro. Proximo hito: M2
   workflow verdes en local; doble revision Central + CSA conforme; firmado por
   Alvaro.
 - P06b: PENDIENTE. Cierra M2.
+
+## Nota T-01 (2026-07-12)
+Desde T-01 el proyecto tiene remoto privado y GitHub Actions ejecutandose de
+verdad. Actions VERDE en el commit 64330c7. La formula "Actions pendiente por
+ausencia de remoto" que aparece en los cierres de P00 a P06 era CIERTA cuando
+se escribio y se conserva sin tocar; queda DEROGADA hacia delante (regla
+5.13): a partir de aqui, una pieza no se cierra sin Actions en verde.

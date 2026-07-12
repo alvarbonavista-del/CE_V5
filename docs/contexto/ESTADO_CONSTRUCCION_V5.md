@@ -4,7 +4,7 @@ Archivo vivo de estado de proceso (sin logica). Lo mantiene Claude Code
 en disco; Alvaro lo resube al knowledge cada vez que se cierra una pieza
 o un hito (DOC_ENTREGABLES sec.8).
 
-Ultima actualizacion: 2026-07-12 (cierre de pieza P06; hito M2 EN CURSO).
+Ultima actualizacion: 2026-07-12 (T-01: remoto, copia de seguridad y CI real).
 
 ## Hito actual
 M2 EN CURSO (sustrato de plataforma), abierto por P04. Piezas de M2: P04
@@ -29,8 +29,8 @@ P06 - PolicyEvaluator central + kill switch (ADR-012, ADR-021): ENTREGADA.
   como primitiva de enforcement; gate previo a INITIALIZE y aristas de politica
   del lifecycle. Rol de DB ce_v5_operator estrecho, fuera de runtime. Doble
   revision Central + CSA conforme; firmado por Alvaro.
-  CI: checks equivalentes al workflow validados en local; Actions pendiente
-      por ausencia de remoto.
+  CI: Actions VERDE en el commit 64330c7 (T-01). La formula anterior
+      ("Actions pendiente por ausencia de remoto") queda DEROGADA (regla 5.13).
 
 ## Proxima pieza
 P06b - API/Auth/Realtime Gateway. CIERRA el hito M2.
@@ -100,3 +100,8 @@ de golpe. Un paso, se explica, Alvaro ejecuta y pega salida, siguiente.
   tools/seed_p06_fake.py (escenario FALSO de demo),
   entrypoints/hot_validation_policy.py (validacion en caliente),
   tools/show_p06_audit.py (volcado de auditorias).
+- Remoto: github.com/alvarbonavista-del/CE_V5 (PRIVADO). Desde T-01 existe
+  copia del repositorio fuera del disco de Alvaro. Empujar es obligatorio al
+  cerrar cada pieza.
+- CI real: GitHub Actions ejecuta ci.yml en cada push. Tres jobs (backend,
+  backend-integration con PostgreSQL y Redis, frontend). VERDE desde 64330c7.

@@ -113,6 +113,11 @@ que no vivan solo en el chat (anti-deriva, DOC_ENTREGABLES sec.9).
      APPEND-ONLY (los ADR previos quedan intactos, nunca se renumeran ni se
      reescriben). El ADR se escribe tambien en docs/adr/ del repo. Alvaro
      resube los cinco al knowledge.
+5.13 Desde T-01, el barrido local NO sustituye a GitHub Actions. Una pieza no
+     se cierra hasta que Actions esta en VERDE sobre el commit de la pieza.
+     La formula "Actions pendiente por ausencia de remoto" (5.6) queda
+     derogada. Los cierres historicos que la contienen NO se reescriben: eran
+     ciertos cuando se escribieron.
 =====================================================================
 6. CIERRE DE PIEZA P01 - CONTRATOS BASE Y ENVELOPE
 =====================================================================
@@ -605,3 +610,63 @@ kill_switch_id en la traza. La capability NO apuntada por el switch siguio en AL
 Extras demostrados: fail-closed ante sujeto no resoluble; la guardia CA-03 (un runtime
 con el DSN de operador NO arranca); el operador NO puede encolar un execution.* falso;
 y las auditorias no se pueden editar ni borrar.
+=====================================================================
+14. T-01: REMOTO, COPIA DE SEGURIDAD Y VERIFICACION REAL DE CI
+=====================================================================
+Trabajo FUERA DEL ROADMAP, ordenado por Alvaro tras el cierre de P06.
+MOTIVO: deuda prohibida SIN PIEZA DUENA (regla 5.11). Dos hechos, arrastrados
+SIETE PIEZAS desde M0: (1) el proyecto no tenia NINGUNA copia fuera del disco de
+Alvaro; (2) el fichero .github/workflows/ci.yml NUNCA se habia ejecutado. Los
+commits daban historia, pero en el MISMO disco: un fallo de hardware se habria
+llevado el codigo y su historia a la vez. Y el workflow era un plan sin ensayar.
+No existia decision escrita que respaldase seguir asi; era un hueco de proceso.
+
+FASE 1 - AUDITORIA DE SECRETOS DEL HISTORIAL COMPLETO (bloqueante, superada)
+Motivo: el historial de git es PARA SIEMPRE. Un secreto commiteado y borrado
+despues SIGUE en el historial y queda comprometido en cuanto se empuja.
+Herramienta: gitleaks v8.30.1 (version verificada), sobre TODOS los commits
+(--log-opts=--all), mas revision manual.
+RESULTADO: LIMPIO. 23 commits escaneados, "no leaks found". Ningun fichero .env,
+.pem, .key, secret ni credential ha existido JAMAS en el historial (verificado con
+git log --diff-filter=A sobre todo el arbol). .gitignore cubre .env. El unico
+fichero de entorno versionado es la plantilla .env.example, con valores CAMBIAME.
+Anotacion (no es fuga): .env.example contiene el DSN de migraciones con
+credenciales del contenedor Docker LOCAL (ce_v5:ce_v5@localhost), servicio
+desechable en la maquina de Alvaro, sin exposicion.
+
+FASE 2 - REMOTO PRIVADO Y COPIA DE SEGURIDAD
+Repositorio PRIVADO github.com/alvarbonavista-del/CE_V5. Privado por norma: es
+codigo propietario y contiene el diseno de seguridad (kill switch, RLS, roles de
+DB). Empujado TODO el historial (23 commits, 548 objetos). Verificado que el HEAD
+del remoto coincide con el local (d57b8d32e47e068ed6c4a7427d5b17ef4a1eff28).
+DESDE ESTE MOMENTO EXISTE COPIA DEL PROYECTO FUERA DEL DISCO DE ALVARO.
+
+FASE 3 - PRIMER ESTRENO DE GITHUB ACTIONS (sin maquillar)
+El ci.yml se ejecuto por PRIMERA VEZ en la vida del proyecto, sobre el commit
+d57b8d3. RESULTADO: ROJO. Estaba roto.
+- Backend (lint, format, types, fronteras, tests): VERDE a la primera.
+- Backend integration (PostgreSQL 18.4 + Redis + tenancy + RLS): VERDE a la
+  primera. El sustrato completo de siete piezas funciona en una maquina limpia.
+- Frontend: ROJO. Causa: ERR_PNPM_BAD_PM_VERSION. La version de pnpm estaba
+  declarada DOS VECES (la clave "version: 11" del workflow y "packageManager":
+  "pnpm@11.10.0" del package.json). pnpm aborta ante la doble declaracion.
+  FIX (commit fff7788): se retira la clave "version" del workflow; package.json
+  queda como UNICA fuente de verdad. Actions VERDE en los tres jobs.
+- Warnings de deprecacion (no errores): cuatro actions corrian sobre Node 20, que
+  GitHub va a retirar; el CI se habria roto solo, sin tocar el repo. Se adelanto el
+  cambio (commit 64330c7) con versiones VERIFICADAS contra sus paginas de releases:
+  actions/checkout v4 -> v6; actions/setup-node v4 -> v6; pnpm/action-setup v4 ->
+  v6; astral-sh/setup-uv v5 -> v8.1.0.
+  REGLA DE SEGURIDAD: setup-uv se fija con VERSION EXACTA porque desde su v8.0.0 el
+  proyecto DEJO DE PUBLICAR etiquetas moviles, a proposito: una etiqueta movil
+  comprometida ejecutaria codigo ajeno en el CI sin que nadie cambie nada en el
+  repositorio (ataque de cadena de suministro tipo tj-actions).
+RESULTADO FINAL: Actions VERDE en los TRES jobs sobre el commit 64330c7, sin un
+solo warning. Total: dos fixes, ninguno en codigo de producto.
+
+CONCLUSION HONESTA: el ci.yml estaba roto y nadie lo sabia. El backend no. La
+sospecha de que el estreno saldria rojo se cumplio, y se cumplio en el sitio menos
+peligroso. Descubrirlo ahora, y no en M5 con dinero real, es exactamente el motivo
+de T-01.
+
+REGLA NUEVA: 5.13 (ver seccion 5). El barrido local NO sustituye a Actions.
