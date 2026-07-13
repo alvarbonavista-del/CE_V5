@@ -11,6 +11,7 @@ datos reales: base de juguete (DOC_ENTREGABLES sec.5).
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 from uuid import UUID, uuid4
 
 import pytest
@@ -145,9 +146,9 @@ def test_check_rechaza_usuario_sin_user_id(
 
 
 def test_sensitive_audit_insert_y_lectura_propio_tenant(
-    app_db: PsycopgDatabase,
+    app_db: PsycopgDatabase, crear_usuario: Callable[[], UUID]
 ) -> None:
-    user = uuid4()
+    user = crear_usuario()
     tenant = provision_tenant_for_user(app_db, user)
     scoped_db = TenantScopedDatabase(app_db)
     audit_id = uuid4()
@@ -170,9 +171,9 @@ def test_sensitive_audit_insert_y_lectura_propio_tenant(
 
 
 def test_sensitive_audit_sin_update_ni_delete(
-    app_db: PsycopgDatabase,
+    app_db: PsycopgDatabase, crear_usuario: Callable[[], UUID]
 ) -> None:
-    user = uuid4()
+    user = crear_usuario()
     tenant = provision_tenant_for_user(app_db, user)
     scoped_db = TenantScopedDatabase(app_db)
     audit_id = uuid4()
@@ -203,11 +204,11 @@ def test_sensitive_audit_sin_update_ni_delete(
 
 
 def test_sensitive_audit_fuga_cross_tenant_bloqueada(
-    app_db: PsycopgDatabase,
+    app_db: PsycopgDatabase, crear_usuario: Callable[[], UUID]
 ) -> None:
-    user_a = uuid4()
+    user_a = crear_usuario()
     tenant_a = provision_tenant_for_user(app_db, user_a)
-    user_b = uuid4()
+    user_b = crear_usuario()
     provision_tenant_for_user(app_db, user_b)
     scoped_db = TenantScopedDatabase(app_db)
     audit_id = uuid4()

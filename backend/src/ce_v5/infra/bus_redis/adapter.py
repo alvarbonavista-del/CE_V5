@@ -253,6 +253,36 @@ class RedisEventBus:
             raise ConsumeError(f"xadd to DLQ {dlq!r} failed: {exc}") from exc
         self.ack(received.delivery)
 
+    def latest_offset(self, topic: str) -> Offset | None:
+        """El offset de la ULTIMA entrada del topic, o None si esta vacio.
+
+        XREVRANGE con COUNT 1: coste O(1). NO recorre el historico, que es justo lo que
+        esta primitiva viene a evitar.
+
+        COHERENCIA CON replay (regla dura): un cursor de replay apunta a UNA particion
+        (el offset la lleva codificada y replay solo lee ese stream). Con varias
+        particiones, "el ultimo del topic" no existe como posicion unica: habria que
+        elegir uno de N finales, y el cursor resultante saltaria las demas particiones
+        en silencio. Antes que devolver un offset que no significa nada, se FALLA
+        RUIDOSO: un cursor silenciosamente incorrecto entrega eventos antiguos como si
+        fueran nuevos, que es la bomba que esta primitiva desactiva.
+        """
+        if self._partitions != 1:
+            raise ConsumeError(
+                "latest_offset no esta definido con varias particiones: el cursor de "
+                f"replay apunta a UNA sola ({self._partitions} configuradas). Devolver "
+                "el final de una de ellas saltaria las demas en silencio."
+            )
+        stream = self._stream(topic, 0)
+        try:
+            raw: Any = self._client.xrevrange(stream, max="+", min="-", count=1)
+        except RedisError as exc:
+            raise ConsumeError(f"xrevrange on {stream!r} failed: {exc}") from exc
+        if not raw:
+            return None
+        entry_id = raw[0][0].decode("utf-8")
+        return self._encode_offset(0, entry_id)
+
     def replay(
         self,
         topic: str,

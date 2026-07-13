@@ -9,7 +9,8 @@ adapter (REST-15). DATOS FALSOS SIEMPRE.
 from __future__ import annotations
 
 import os
-from uuid import UUID, uuid4
+from collections.abc import Callable
+from uuid import UUID
 
 import pytest
 
@@ -39,8 +40,10 @@ def _record(
     )
 
 
-def test_escribe_y_lee_solo_su_tenant(app_db: PsycopgDatabase) -> None:
-    user = uuid4()
+def test_escribe_y_lee_solo_su_tenant(
+    app_db: PsycopgDatabase, crear_usuario: Callable[[], UUID]
+) -> None:
+    user = crear_usuario()
     tenant = provision_tenant_for_user(app_db, user)
     PostgresSensitiveActionAudit(app_db).record(_record(tenant, user, "execute_order"))
 
@@ -53,9 +56,9 @@ def test_escribe_y_lee_solo_su_tenant(app_db: PsycopgDatabase) -> None:
 
 
 def test_update_y_delete_de_la_propia_traza_rechazados(
-    app_db: PsycopgDatabase,
+    app_db: PsycopgDatabase, crear_usuario: Callable[[], UUID]
 ) -> None:
-    user = uuid4()
+    user = crear_usuario()
     tenant = provision_tenant_for_user(app_db, user)
     PostgresSensitiveActionAudit(app_db).record(_record(tenant, user, "manual_order"))
 
@@ -70,10 +73,12 @@ def test_update_y_delete_de_la_propia_traza_rechazados(
             scoped.session.execute("DELETE FROM sensitive_action_audit")
 
 
-def test_un_tenant_no_ve_la_auditoria_de_otro(app_db: PsycopgDatabase) -> None:
-    user_a = uuid4()
+def test_un_tenant_no_ve_la_auditoria_de_otro(
+    app_db: PsycopgDatabase, crear_usuario: Callable[[], UUID]
+) -> None:
+    user_a = crear_usuario()
     tenant_a = provision_tenant_for_user(app_db, user_a)
-    user_b = uuid4()
+    user_b = crear_usuario()
     provision_tenant_for_user(app_db, user_b)
     PostgresSensitiveActionAudit(app_db).record(
         _record(tenant_a, user_a, "activate_autotrade")

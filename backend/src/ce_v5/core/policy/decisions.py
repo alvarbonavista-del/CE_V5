@@ -42,3 +42,18 @@ class ReasonCode(StrEnum):
     # recomputo de politica: aqui la politica decidio, lo que fallo fue auditar.
     DENIED_AUDIT_UNAVAILABLE = "denied_audit_unavailable"
     NOT_APPLICABLE_UNKNOWN_CAPABILITY = "not_applicable_unknown_capability"
+    # --- Hechos de AUTENTICACION (CA-11). No son decisiones de politica: describen lo
+    # que PASO en la puerta. Viven en el mismo enum porque comparten tabla (auditoria de
+    # seguridad POR SUJETO), pero se distinguen por la columna audit_kind: sin ese
+    # discriminador, un filtro por reason_code mezclaria dos vocabularios distintos.
+    #
+    # AUTH_SESSION_REVOKED se retiro antes de existir: NADIE lo emitia. La revocacion de
+    # la familia por reuso ya se registra como auth_refresh_reused, y el logout como
+    # auth_logged_out. Un miembro de enum que nadie emite es vocabulario sin hablante:
+    # codigo muerto. Se anadira cuando una pieza revoque sesiones por otro motivo (por
+    # ejemplo, una revocacion administrativa, via v5.1).
+    AUTH_REGISTERED = "auth_registered"
+    AUTH_LOGIN_SUCCEEDED = "auth_login_succeeded"
+    AUTH_REFRESH_ROTATED = "auth_refresh_rotated"
+    AUTH_REFRESH_REUSED = "auth_refresh_reused"
+    AUTH_LOGGED_OUT = "auth_logged_out"

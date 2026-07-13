@@ -48,6 +48,9 @@ _REQUIRED_COLUMNS: dict[str, frozenset[str]] = {
             "sensitive",
             "context",
             "evaluated_at",
+            # Discriminador de CA-11: sin el, los dos vocabularios de reason_code
+            # (politica y auth) se confundirian en la misma columna.
+            "audit_kind",
         }
     ),
     _OPERATOR_AUDIT: frozenset(

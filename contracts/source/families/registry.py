@@ -34,6 +34,7 @@ from source.families.policy import (
     PolicyVersionPublishedPayload,
     SubjectInvalidatedPayload,
 )
+from source.families.user import UserEventType, UserRegisteredPayload
 
 
 class EventPayloadRegistryError(RuntimeError):
@@ -69,6 +70,9 @@ EVENT_PAYLOAD_REGISTRY: dict[str, tuple[type[EventPayload], int]] = {
     PolicyEventType.KILL_SWITCH_DEACTIVATED.value: (KillSwitchPayload, 1),
     PolicyEventType.VERSION_PUBLISHED.value: (PolicyVersionPublishedPayload, 1),
     PolicyEventType.SUBJECT_INVALIDATED.value: (SubjectInvalidatedPayload, 1),
+    # NO va a DEFERRED_EVENT_TYPES: tiene payload y tiene PRODUCTOR REAL desde hoy (el
+    # alta de la API, P06b).
+    UserEventType.REGISTERED.value: (UserRegisteredPayload, 1),
 }
 
 # Estado unico y constante de un tipo diferido: diferido HASTA que cierre su

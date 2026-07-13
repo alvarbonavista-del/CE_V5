@@ -9,8 +9,13 @@ Que siembra (idempotente: si ya existe, no duplica):
 - policy_version 'pv_demo' en estado 'current' (rol de MIGRACIONES).
 - Dos reglas ALLOW sin condiciones (match_* nulos = comodin): 'execute_order'
   (sensible) y 'view_dashboard' (no sensible).
-- Un tenant y un usuario (reusa provision_tenant_for_user, rol de APLICACION bajo
-  RLS). El user_id es FIJO e inventado para que re-sembrar reutilice su tenant.
+- Un usuario REAL del canon de identidad, dado de alta por la ventanilla
+  auth_register_user (P06b, CA-07): desde la 0010 la pertenencia exige un usuario
+  existente (FK), asi que ya no vale inventarse un user_id. El EMAIL de demo es FIJO
+  para que re-sembrar reutilice el mismo usuario (y su tenant) en vez de crear otro;
+  el user_id lo asigna la ventanilla.
+- Un tenant para ese usuario (reusa provision_tenant_for_user, rol de APLICACION bajo
+  RLS).
 - Un entitlement de 'execute_order' para ese sujeto: sin el, el gate denegaria por
   entitlement ausente (D6), y la demo no arrancaria en ALLOW.
 
@@ -32,14 +37,17 @@ sys.path.insert(0, str(REPO_ROOT / "backend" / "src"))
 sys.path.insert(0, str(REPO_ROOT / "contracts"))
 
 from ce_v5.infra.db.config import DbConfig  # noqa: E402
+from ce_v5.infra.db.identity import register_user  # noqa: E402
 from ce_v5.infra.db.ports import Database  # noqa: E402
 from ce_v5.infra.db.psycopg_adapter import PsycopgDatabase  # noqa: E402
 from ce_v5.infra.db.tenancy import provision_tenant_for_user  # noqa: E402
 
 _POLICY_VERSION = "pv_demo"
 _ACTOR = "seed-p06-fake"
-# user_id FIJO e INVENTADO: re-sembrar reutiliza su tenant en vez de crear otro.
-_DEMO_USER_ID = UUID("dede0000-0000-4000-8000-000000000001")
+# EMAIL de demo FIJO e INVENTADO: re-sembrar reutiliza el mismo usuario (y su tenant)
+# en vez de crear otro. El user_id ya no se inventa: lo asigna auth_register_user.
+_DEMO_EMAIL = "fake-p06-demo@ejemplo.test"
+_DEMO_PASSWORD_HASH = "hash-de-prueba-no-es-argon2"
 _ALLOW_CAPS = ("execute_order", "view_dashboard")
 _ENTITLED_CAP = "execute_order"
 
@@ -69,6 +77,21 @@ def _seed_policy(migrations_db: Database) -> None:
                 "VALUES (%s, %s, %s, 'allow', 'allowed_by_policy')",
                 (str(uuid4()), _POLICY_VERSION, capability_id),
             )
+
+
+def _user_for_demo_email(migrations_db: Database, app_db: Database) -> UUID:
+    """El usuario de demo, dado de alta por la ventanilla si aun no existe.
+
+    La busqueda va con el rol de MIGRACIONES: el de aplicacion no tiene ningun
+    privilegio de tabla sobre app_user (CA-07), solo puede EJECUTAR la ventanilla.
+    """
+    with migrations_db.transaction() as session:
+        row = session.fetchone(
+            "SELECT user_id FROM app_user WHERE email = %s", (_DEMO_EMAIL,)
+        )
+    if row is not None:
+        return UUID(str(row[0]))
+    return register_user(app_db, _DEMO_EMAIL, _DEMO_PASSWORD_HASH)
 
 
 def _tenant_for_user(migrations_db: Database, app_db: Database, user_id: UUID) -> UUID:
@@ -102,8 +125,9 @@ def main() -> None:
     migrations_db = PsycopgDatabase(DbConfig.migrations_from_env())
     try:
         _seed_policy(migrations_db)
-        tenant_id = _tenant_for_user(migrations_db, app_db, _DEMO_USER_ID)
-        _seed_entitlement(migrations_db, tenant_id, _DEMO_USER_ID)
+        user_id = _user_for_demo_email(migrations_db, app_db)
+        tenant_id = _tenant_for_user(migrations_db, app_db, user_id)
+        _seed_entitlement(migrations_db, tenant_id, user_id)
     finally:
         app_db.close()
         migrations_db.close()
@@ -112,13 +136,14 @@ def main() -> None:
     print(f"  policy_version : {_POLICY_VERSION} (current)")
     print("  reglas ALLOW   : execute_order (sensible), view_dashboard (no sensible)")
     print(f"  entitlement    : {_ENTITLED_CAP} para el sujeto")
+    print(f"  usuario        : {_DEMO_EMAIL} (alta por la ventanilla, P06b)")
     print()
     print("Copia-pega para la validacion en caliente:")
     print(f"  tenant_id = {tenant_id}")
-    print(f"  user_id   = {_DEMO_USER_ID}")
+    print(f"  user_id   = {user_id}")
     print()
     print("  python -m ce_v5.entrypoints.hot_validation_policy \\")
-    print(f"      {tenant_id} {_DEMO_USER_ID}")
+    print(f"      {tenant_id} {user_id}")
 
 
 if __name__ == "__main__":

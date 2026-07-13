@@ -13,8 +13,9 @@ from typing import Any
 import pytest
 import redis
 
-from ce_v5.core.bus import BusMessage, DlqReason, UnknownOffsetError
+from ce_v5.core.bus import BusMessage, DlqReason, EventBus, UnknownOffsetError
 from ce_v5.infra.bus_redis import RedisBusConfig, RedisEventBus, create_client
+from support.inmemory_bus import InMemoryEventBus, LogicalClock
 
 _URL = os.environ.get("CE_V5_REDIS_URL")
 pytestmark = pytest.mark.skipif(
@@ -45,6 +46,12 @@ def client(config: RedisBusConfig) -> Iterator[redis.Redis]:
 @pytest.fixture
 def bus(client: redis.Redis, config: RedisBusConfig) -> RedisEventBus:
     return RedisEventBus(client, config)
+
+
+@pytest.fixture
+def in_memory_bus() -> EventBus:
+    """El MISMO doble que usan los tests unitarios (no una copia que se separe)."""
+    return InMemoryEventBus(clock=LogicalClock())
 
 
 def _message(seq: int, stream_key: str) -> BusMessage:
@@ -161,3 +168,56 @@ def test_dlq_entrada_tiene_todos_los_campos_adr013(
     assert int(fields[b"first_seen_at"]) > 0
     assert int(fields[b"last_seen_at"]) > 0
     assert fields[b"origin_topic"] == _TOPIC.encode()
+
+
+# --- latest_offset (CA-12) ----------------------------------------------------------
+
+
+def test_latest_offset_de_un_topic_vacio_es_none(bus: RedisEventBus) -> None:
+    assert bus.latest_offset(_TOPIC) is None
+
+
+def test_latest_offset_apunta_al_ultimo_publicado(bus: RedisEventBus) -> None:
+    offsets = [bus.publish(_TOPIC, _message(seq, "A")) for seq in range(1, 6)]
+    assert bus.latest_offset(_TOPIC) == offsets[-1]
+
+    # Y el cursor es EXCLUSIVO: desde el final no llega nada... hasta que llega algo.
+    cursor = bus.latest_offset(_TOPIC)
+    assert bus.replay(_TOPIC, start=cursor, max_messages=10) == ()
+    bus.publish(_TOPIC, _message(99, "A"))
+    nuevos = bus.replay(_TOPIC, start=cursor, max_messages=10)
+    assert [r.message.idempotency_key for r in nuevos] == ["A:99"]
+
+
+def test_equivalencia_de_latest_offset_entre_los_dos_buses(
+    bus: RedisEventBus, in_memory_bus: EventBus
+) -> None:
+    """Punto 5 de CA-12: el doble en memoria y el motor real dicen LO MISMO.
+
+    No se comparan las cadenas de offset (son especificas de cada backend: Redis usa
+    'particion|id-de-entrada' y el doble un numero de secuencia), sino la POSICION que
+    designan: el ultimo mensaje publicado, y nada mas que el.
+    """
+    assert bus.latest_offset(_TOPIC) is None
+    assert in_memory_bus.latest_offset(_TOPIC) is None
+
+    for seq in range(1, 8):
+        bus.publish(_TOPIC, _message(seq, "A"))
+        in_memory_bus.publish(_TOPIC, _message(seq, "A"))
+
+    cursor_redis = bus.latest_offset(_TOPIC)
+    cursor_memoria = in_memory_bus.latest_offset(_TOPIC)
+    assert cursor_redis is not None
+    assert cursor_memoria is not None
+
+    # Misma posicion: desde ella, los dos buses estan al dia...
+    assert bus.replay(_TOPIC, start=cursor_redis, max_messages=10) == ()
+    assert in_memory_bus.replay(_TOPIC, start=cursor_memoria, max_messages=10) == ()
+
+    # ...y los dos entregan exactamente el siguiente, y solo ese.
+    bus.publish(_TOPIC, _message(42, "A"))
+    in_memory_bus.publish(_TOPIC, _message(42, "A"))
+    desde_redis = bus.replay(_TOPIC, start=cursor_redis, max_messages=10)
+    desde_memoria = in_memory_bus.replay(_TOPIC, start=cursor_memoria, max_messages=10)
+    assert [r.message.idempotency_key for r in desde_redis] == ["A:42"]
+    assert [r.message.idempotency_key for r in desde_memoria] == ["A:42"]

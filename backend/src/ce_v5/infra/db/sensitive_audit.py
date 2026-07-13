@@ -24,8 +24,8 @@ from ce_v5.infra.db.tenancy import TenantScopedDatabase
 _INSERT_SQL = (
     "INSERT INTO sensitive_action_audit "
     "(audit_id, tenant_id, user_id, capability_id, decision, reason_code, "
-    "policy_version, sensitive, context) "
-    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)"
+    "policy_version, sensitive, context, audit_kind) "
+    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s)"
 )
 
 
@@ -58,5 +58,6 @@ class PostgresSensitiveActionAudit:
                     entry.policy_version,
                     entry.sensitive,
                     json.dumps(dict(entry.context)),
+                    entry.audit_kind,
                 ),
             )

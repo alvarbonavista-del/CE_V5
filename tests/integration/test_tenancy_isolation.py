@@ -9,6 +9,7 @@ datos reales: base de juguete (DOC_ENTREGABLES sec.5).
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 from dataclasses import dataclass
 from uuid import UUID, uuid4
 
@@ -39,17 +40,17 @@ class _TwoTenants:
 
 
 @pytest.fixture
-def tenants(app_db: PsycopgDatabase) -> _TwoTenants:
-    user_a, user_b = uuid4(), uuid4()
+def tenants(app_db: PsycopgDatabase, crear_usuario: Callable[[], UUID]) -> _TwoTenants:
+    user_a, user_b = crear_usuario(), crear_usuario()
     tenant_a = provision_tenant_for_user(app_db, user_a)
     tenant_b = provision_tenant_for_user(app_db, user_b)
     return _TwoTenants(user_a, tenant_a, user_b, tenant_b)
 
 
 def test_provision_crea_pertenencia_unica_y_rechaza_segundo(
-    app_db: PsycopgDatabase,
+    app_db: PsycopgDatabase, crear_usuario: Callable[[], UUID]
 ) -> None:
-    user = uuid4()
+    user = crear_usuario()
     provision_tenant_for_user(app_db, user)
 
     scoped_db = TenantScopedDatabase(app_db)

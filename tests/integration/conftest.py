@@ -12,7 +12,8 @@ Base de datos de JUGUETE: nunca datos reales (DOC_ENTREGABLES sec.5).
 from __future__ import annotations
 
 import os
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -21,6 +22,7 @@ from ce_v5.infra.db.config import (
     DbConfig,
     OperatorDbConfig,
 )
+from ce_v5.infra.db.identity import register_user
 from ce_v5.infra.db.migrations.runner import apply_migrations
 from ce_v5.infra.db.provision import (
     OPERATOR_PASSWORD_ENV_VAR,
@@ -95,3 +97,40 @@ def operator_db() -> Iterator[PsycopgDatabase]:
         yield database
     finally:
         database.close()
+
+
+def _wipe_identidad(migrator_db: PsycopgDatabase) -> None:
+    with migrator_db.transaction() as session:
+        # Identidad (P06b): se limpia con el rol de MIGRACIONES porque el rol de
+        # aplicacion no tiene ningun privilegio sobre estas tablas (CA-07) y tienen
+        # FORCE RLS. El borrado de app_user arrastra en cascada credenciales, sesiones
+        # y pertenencias (FK ON DELETE CASCADE de las migraciones 0005 y 0010).
+        session.execute("DELETE FROM app_user")
+
+
+@pytest.fixture(autouse=True)
+def _limpiar_identidad(migrator_db: PsycopgDatabase) -> Iterator[None]:
+    """Aisla cada test: los usuarios de prueba no se acumulan entre ejecuciones.
+
+    Sin esto, refresh_token_hash (UNIQUE) y email (UNIQUE) chocarian contra las filas
+    que dejo la ejecucion anterior, y un test solo funcionaria la primera vez.
+    """
+    _wipe_identidad(migrator_db)
+    yield
+    _wipe_identidad(migrator_db)
+
+
+@pytest.fixture
+def crear_usuario(app_db: PsycopgDatabase) -> Callable[[], UUID]:
+    """Fabrica de usuarios REALES por la ventanilla de identidad (P06b).
+
+    Desde la migracion 0010 la pertenencia a un tenant exige un usuario existente
+    (FK): inventar un uuid4() ya no vale. El alta va por la ventanilla porque el rol
+    de aplicacion no puede INSERT en app_user.
+    """
+
+    def _crear() -> UUID:
+        email = f"test-{uuid4().hex}@ejemplo.test"
+        return register_user(app_db, email, "hash-de-prueba-no-es-argon2")
+
+    return _crear

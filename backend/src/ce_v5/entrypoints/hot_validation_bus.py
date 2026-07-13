@@ -91,6 +91,9 @@ class _CrashBeforeAckBus:
     def dead_letter(self, received: ReceivedMessage, reason: DlqReason) -> None:
         self._inner.dead_letter(received, reason)
 
+    def latest_offset(self, topic: str) -> Offset | None:
+        return self._inner.latest_offset(topic)
+
     def replay(
         self, topic: str, *, start: Offset | None, max_messages: int
     ) -> tuple[ReceivedMessage, ...]:

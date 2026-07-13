@@ -23,14 +23,23 @@ from ce_v5.core.policy.decisions import Decision, ReasonCode
 from ce_v5.core.policy.evaluator import CapabilityDecision
 from ce_v5.core.policy.inputs import PolicyInputs
 
+# Discriminador de la fila (CA-11). Una decision del PolicyEvaluator y un hecho de
+# autenticacion comparten tabla, pero NO comparten vocabulario de reason_code: sin este
+# discriminador, un filtro por motivo mezclaria dos idiomas en la misma columna.
+AUDIT_KIND_POLICY = "policy"
+AUDIT_KIND_AUTH = "auth"
+
 
 @dataclass(frozen=True, slots=True)
 class SensitiveActionRecord:
     """Una fila de auditoria de accion sensible lista para escribir (CA-05).
 
-    policy_version es obligatorio: una decision sensible sin reglamento en vigor
-    no debe llegar a auditarse (el motor la resuelve antes). context lleva solo
-    veredictos y referencias (ver la regla dura del modulo).
+    policy_version es obligatorio: para audit_kind=policy es la version que FUNDAMENTA
+    la decision; para audit_kind=auth es la que estaba VIGENTE, como contexto. context
+    lleva solo veredictos y referencias (ver la regla dura del modulo).
+
+    audit_kind por defecto es "policy": TODOS los llamadores de P06 (el gate) siguen
+    funcionando sin tocarlos, que es lo que exige una ampliacion aditiva.
     """
 
     tenant_id: str
@@ -41,6 +50,7 @@ class SensitiveActionRecord:
     policy_version: str
     sensitive: bool
     context: Mapping[str, object]
+    audit_kind: str = AUDIT_KIND_POLICY
 
 
 @runtime_checkable

@@ -11,7 +11,7 @@ captura Exception.
 from __future__ import annotations
 
 import os
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from uuid import UUID, uuid4
 
 import pytest
@@ -170,12 +170,14 @@ def test_rules_solo_de_la_version_pedida(
 
 
 def test_entitlements_del_sujeto_y_aislamiento(
-    app_db: PsycopgDatabase, migrator_db: PsycopgDatabase
+    app_db: PsycopgDatabase,
+    migrator_db: PsycopgDatabase,
+    crear_usuario: Callable[[], UUID],
 ) -> None:
     _seed_version(migrator_db, "pv1", status="current")
-    user_a = uuid4()
+    user_a = crear_usuario()
     tenant_a = provision_tenant_for_user(app_db, user_a)
-    user_b = uuid4()
+    user_b = crear_usuario()
     tenant_b = provision_tenant_for_user(app_db, user_b)
     _seed_entitlement(migrator_db, tenant_a, None, "cap_tenant")
     _seed_entitlement(migrator_db, tenant_a, user_a, "cap_user")
@@ -187,12 +189,14 @@ def test_entitlements_del_sujeto_y_aislamiento(
 
 
 def test_overrides_del_sujeto_y_aislamiento(
-    app_db: PsycopgDatabase, migrator_db: PsycopgDatabase
+    app_db: PsycopgDatabase,
+    migrator_db: PsycopgDatabase,
+    crear_usuario: Callable[[], UUID],
 ) -> None:
     _seed_version(migrator_db, "pv1", status="current")
-    user_a = uuid4()
+    user_a = crear_usuario()
     tenant_a = provision_tenant_for_user(app_db, user_a)
-    user_b = uuid4()
+    user_b = crear_usuario()
     tenant_b = provision_tenant_for_user(app_db, user_b)
     _seed_override(migrator_db, tenant_a, None, "cap_tenant", "deny", "denied_by_plan")
     _seed_override(
@@ -247,12 +251,14 @@ def test_policy_data_error_reason_code_fuera_de_catalogo(
 
 
 def test_end_to_end_allow_no_sensible_deny_sensible_sin_entitlement(
-    app_db: PsycopgDatabase, migrator_db: PsycopgDatabase
+    app_db: PsycopgDatabase,
+    migrator_db: PsycopgDatabase,
+    crear_usuario: Callable[[], UUID],
 ) -> None:
     _seed_version(migrator_db, "pv1", status="current")
     _seed_rule(migrator_db, "pv1", "view_dashboard", "allow", "allowed_by_policy")
     _seed_rule(migrator_db, "pv1", "execute_order", "allow", "allowed_by_policy")
-    user = uuid4()
+    user = crear_usuario()
     tenant = provision_tenant_for_user(app_db, user)
 
     evaluator = PolicyEvaluator(PostgresPolicyStore(app_db), SystemClock())

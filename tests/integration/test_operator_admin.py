@@ -9,7 +9,7 @@ policy_version se siembran con el rol de MIGRACIONES (superusuario).
 from __future__ import annotations
 
 import os
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from uuid import UUID, uuid4
 
 import pytest
@@ -125,11 +125,14 @@ def test_activate_escribe_tres_filas_y_event_id_coincide(
 
 
 def test_evaluador_ve_el_switch_y_deniega(
-    operator_db: PsycopgDatabase, app_db: PsycopgDatabase, migrator_db: PsycopgDatabase
+    operator_db: PsycopgDatabase,
+    app_db: PsycopgDatabase,
+    migrator_db: PsycopgDatabase,
+    crear_usuario: Callable[[], UUID],
 ) -> None:
     _seed_version(migrator_db, "pv1", "current")
     _seed_rule(migrator_db, "pv1", "view_dashboard")
-    user = uuid4()
+    user = crear_usuario()
     tenant = provision_tenant_for_user(app_db, user)
     evaluator = PolicyEvaluator(PostgresPolicyStore(app_db), SystemClock())
     before = evaluator.evaluate(_inputs(tenant, user), ["view_dashboard"])
@@ -151,11 +154,14 @@ def test_evaluador_ve_el_switch_y_deniega(
 
 
 def test_deactivate_devuelve_la_capability(
-    operator_db: PsycopgDatabase, app_db: PsycopgDatabase, migrator_db: PsycopgDatabase
+    operator_db: PsycopgDatabase,
+    app_db: PsycopgDatabase,
+    migrator_db: PsycopgDatabase,
+    crear_usuario: Callable[[], UUID],
 ) -> None:
     _seed_version(migrator_db, "pv1", "current")
     _seed_rule(migrator_db, "pv1", "view_dashboard")
-    user = uuid4()
+    user = crear_usuario()
     tenant = provision_tenant_for_user(app_db, user)
     admin = _admin(operator_db)
     activated = admin.activate_kill_switch(

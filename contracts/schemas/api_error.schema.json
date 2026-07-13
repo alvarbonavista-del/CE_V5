@@ -1,0 +1,20 @@
+{
+  "additionalProperties": false,
+  "description": "Error devuelto por la API.",
+  "properties": {
+    "code": {
+      "title": "Code",
+      "type": "string"
+    },
+    "message": {
+      "title": "Message",
+      "type": "string"
+    }
+  },
+  "required": [
+    "code",
+    "message"
+  ],
+  "title": "ApiError",
+  "type": "object"
+}

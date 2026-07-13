@@ -1,0 +1,21 @@
+{
+  "additionalProperties": false,
+  "description": "Primer mensaje: la sesion. El token JAMAS en la URL.",
+  "properties": {
+    "access_token": {
+      "title": "Access Token",
+      "type": "string"
+    },
+    "type": {
+      "const": "auth",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "type",
+    "access_token"
+  ],
+  "title": "RealtimeAuth",
+  "type": "object"
+}

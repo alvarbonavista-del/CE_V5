@@ -1,0 +1,33 @@
+{
+  "additionalProperties": false,
+  "description": "Suscripcion a un topic, opcionalmente desde un checkpoint.",
+  "properties": {
+    "checkpoint": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Checkpoint"
+    },
+    "topic": {
+      "title": "Topic",
+      "type": "string"
+    },
+    "type": {
+      "const": "subscribe",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "type",
+    "topic"
+  ],
+  "title": "RealtimeSubscribe",
+  "type": "object"
+}

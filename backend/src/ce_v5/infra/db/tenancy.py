@@ -138,6 +138,31 @@ class MembershipRepository:
         )
 
 
+def create_tenant_for_user_in_session(session: Session, user_id: UUID) -> UUID:
+    """Crea el tenant de un usuario y su pertenencia DENTRO de la transaccion en curso.
+
+    Existe aparte de provision_tenant_for_user para que el ALTA de un usuario pueda ser
+    atomica: si el usuario naciera en una transaccion y su tenant en otra, un fallo en
+    medio dejaria un usuario SIN tenant, es decir, un usuario que no puede entrar a
+    ninguna parte y que el resolver rechazaria para siempre (fail-closed).
+    """
+    session.execute(_SET_CURRENT_USER, (str(user_id),))
+    existing = session.fetchall(_MEMBERSHIPS_OF_USER, (str(user_id),))
+    if existing:
+        raise TenancyError(
+            f"El usuario {user_id} ya tiene pertenencia a un tenant: no se "
+            "crea otro (la resolucion quedaria ambigua)."
+        )
+    tenant_id = uuid4()
+    session.execute(_SET_CURRENT_TENANT, (str(tenant_id),))
+    session.execute("INSERT INTO tenant (tenant_id) VALUES (%s)", (str(tenant_id),))
+    session.execute(
+        "INSERT INTO user_tenant_membership (user_id, tenant_id) VALUES (%s, %s)",
+        (str(user_id), str(tenant_id)),
+    )
+    return tenant_id
+
+
 def provision_tenant_for_user(database: Database, user_id: UUID) -> UUID:
     """Crea el tenant de un usuario nuevo y su pertenencia unica (ADR-011).
 
@@ -150,20 +175,6 @@ def provision_tenant_for_user(database: Database, user_id: UUID) -> UUID:
     alguna al RLS. Si el usuario ya tuviera pertenencia, falla: crear un
     segundo tenant lo dejaria en resolucion ambigua.
     """
-    tenant_id = uuid4()
     with database.transaction() as session:
         assert_app_role_cannot_bypass_rls(session)
-        session.execute(_SET_CURRENT_USER, (str(user_id),))
-        existing = session.fetchall(_MEMBERSHIPS_OF_USER, (str(user_id),))
-        if existing:
-            raise TenancyError(
-                f"El usuario {user_id} ya tiene pertenencia a un tenant: no se "
-                "crea otro (la resolucion quedaria ambigua)."
-            )
-        session.execute(_SET_CURRENT_TENANT, (str(tenant_id),))
-        session.execute("INSERT INTO tenant (tenant_id) VALUES (%s)", (str(tenant_id),))
-        session.execute(
-            "INSERT INTO user_tenant_membership (user_id, tenant_id) VALUES (%s, %s)",
-            (str(user_id), str(tenant_id)),
-        )
-    return tenant_id
+        return create_tenant_for_user_in_session(session, user_id)

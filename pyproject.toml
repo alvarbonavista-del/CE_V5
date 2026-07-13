@@ -4,9 +4,19 @@ version = "0.0.0"
 description = "Crypto Engine V5 - plataforma cuantitativa multiusuario (esqueleto P00)."
 requires-python = ">=3.13"
 dependencies = [
+    "argon2-cffi==25.1.0",
+    "fastapi==0.139.0",
     "psycopg[binary]==3.3.4",
     "pydantic==2.13.4",
+    "pyjwt==2.13.0",
     "redis==8.0.1",
+    "uvicorn==0.51.0",
+    # Uvicorn necesita una implementacion de WebSocket INSTALADA para servir el
+    # protocolo: sin ella, el proceso real de la API rechaza toda conexion WS. Los tests
+    # no lo cazaron porque el TestClient de Starlette no pasa por Uvicorn (habla con la
+    # app ASGI directamente): tests verdes, proceso real roto. Lo destapo la validacion
+    # en caliente, que es justo para lo que existe.
+    "websockets==16.1",
 ]
 
 [project.optional-dependencies]
@@ -15,6 +25,7 @@ dev = [
     "mypy==2.2.0",
     "pytest==9.1.1",
     "import-linter==2.7",
+    "httpx2==2.5.0",
 ]
 
 [build-system]
@@ -36,13 +47,13 @@ select = ["E", "F", "I", "UP", "B"]
 python_version = "3.13"
 strict = true
 plugins = ["pydantic.mypy"]
-mypy_path = ["backend/src", "contracts", "tools"]
+mypy_path = ["backend/src", "contracts", "tools", "tests"]
 explicit_package_bases = true
 files = ["backend/src/ce_v5", "contracts/source", "tools", "tests"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests", "backend/src/ce_v5/components"]
-pythonpath = ["backend/src", "contracts", "tools"]
+pythonpath = ["backend/src", "contracts", "tools", "tests"]
 
 [tool.importlinter]
 root_packages = ["ce_v5"]

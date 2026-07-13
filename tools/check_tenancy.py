@@ -45,6 +45,16 @@ TABLAS_SIN_TENANT_PERMITIDAS: dict[str, str] = {
     "policy_rule": "system",  # reglamento de negocio de Alvaro (ADR-012).
     "kill_switch": "system",  # artefacto de operador (CA-03); no es de tenant.
     "operator_audit": "system",  # auditoria canonica de operador (CA-05).
+    # Canon de IDENTIDAD (P06b, CA-07 opcion A). El canon de identidad PRECEDE al
+    # tenant: el tenant se DERIVA de la pertenencia user->tenant (ADR-011). Darles
+    # tenant_id invertiria la causalidad (haria falta un tenant para autenticar,
+    # cuando el tenant se obtiene DESPUES de autenticar y resolver pertenencia).
+    # Compensacion: el rol de aplicacion NO tiene NINGUN privilegio de tabla sobre
+    # ellas; solo ejecuta las cinco ventanillas SECURITY DEFINER. Lo verifica el
+    # check bloqueante tools/check_identity_access.py.
+    "app_user": "system",
+    "user_credential": "system",
+    "user_session": "system",
 }
 
 _TENANT_SCOPES = ("tenant", "user")

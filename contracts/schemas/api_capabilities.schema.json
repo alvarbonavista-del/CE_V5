@@ -1,0 +1,85 @@
+{
+  "$defs": {
+    "CapabilityDecisionView": {
+      "additionalProperties": false,
+      "description": "Una decision, tal como la ve el cliente. No autoriza: informa.",
+      "properties": {
+        "capability_id": {
+          "title": "Capability Id",
+          "type": "string"
+        },
+        "decision": {
+          "title": "Decision",
+          "type": "string"
+        },
+        "kill_switch_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Kill Switch Id"
+        },
+        "reason_code": {
+          "title": "Reason Code",
+          "type": "string"
+        },
+        "sensitive": {
+          "title": "Sensitive",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "capability_id",
+        "decision",
+        "reason_code",
+        "sensitive"
+      ],
+      "title": "CapabilityDecisionView",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "El capability set de CORTESIA (D9). Jamas una autorizacion.",
+  "properties": {
+    "advisory": {
+      "const": true,
+      "default": true,
+      "title": "Advisory",
+      "type": "boolean"
+    },
+    "decisions": {
+      "items": {
+        "$ref": "#/$defs/CapabilityDecisionView"
+      },
+      "title": "Decisions",
+      "type": "array"
+    },
+    "evaluated_at": {
+      "title": "Evaluated At",
+      "type": "integer"
+    },
+    "policy_version": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Policy Version"
+    }
+  },
+  "required": [
+    "policy_version",
+    "evaluated_at",
+    "decisions"
+  ],
+  "title": "CapabilitiesResponse",
+  "type": "object"
+}

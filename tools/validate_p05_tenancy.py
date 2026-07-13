@@ -6,7 +6,9 @@ escrituras de A sobre el tenant de B quedan bloqueados por RLS; sin
 pertenencia se falla cerrado; y un rol capaz de saltarse el RLS es rechazado.
 
 Sandbox/local, NUNCA datos reales: base de juguete (DOC_ENTREGABLES sec.5).
-Los usuarios son uuid4 generados en la ejecucion.
+Los usuarios son FALSOS y se dan de alta en cada ejecucion por la ventanilla
+auth_register_user (P06b, CA-07): desde la migracion 0010 la pertenencia exige un
+usuario existente (FK), asi que ya no vale inventarse un uuid4.
 
 Uso: python tools/validate_p05_tenancy.py
 Exige CE_V5_DATABASE_URL (rol de aplicacion) y CE_V5_MIGRATIONS_DATABASE_URL
@@ -19,6 +21,7 @@ from uuid import uuid4
 
 from ce_v5.core.tenancy import TenantResolutionError
 from ce_v5.infra.db.config import DbConfig
+from ce_v5.infra.db.identity import register_user
 from ce_v5.infra.db.psycopg_adapter import PsycopgDatabase
 from ce_v5.infra.db.tenancy import (
     AppRoleError,
@@ -27,14 +30,27 @@ from ce_v5.infra.db.tenancy import (
     provision_tenant_for_user,
 )
 
+# Credencial FALSA de validacion: la ventanilla recibe el hash ya calculado, y este
+# no es un Argon2id real (aqui no se autentica a nadie, solo se necesita un usuario).
+_PASSWORD_HASH = "hash-de-prueba-no-es-argon2"
+
+
+def _fake_email() -> str:
+    """Email FALSO y unico por ejecucion (jamas un buzon real)."""
+    return f"fake-{uuid4().hex}@ejemplo.test"
+
 
 def main() -> None:
     failures: list[str] = []
-    user_a, user_b = uuid4(), uuid4()
 
     app_db = PsycopgDatabase(DbConfig.from_env())
     try:
         scoped_db = TenantScopedDatabase(app_db)
+
+        # 0. CANON: los usuarios existen de verdad (ventanilla auth_register_user).
+        # Sin esto, la pertenencia violaria la FK de la 0010.
+        user_a = register_user(app_db, _fake_email(), _PASSWORD_HASH)
+        user_b = register_user(app_db, _fake_email(), _PASSWORD_HASH)
 
         # 1. ALTA: cada usuario obtiene su propio tenant.
         tenant_a = provision_tenant_for_user(app_db, user_a)

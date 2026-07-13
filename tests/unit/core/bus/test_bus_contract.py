@@ -54,12 +54,21 @@ class _RecordingBus:
 
     def __init__(self) -> None:
         self.published: list[tuple[str, BusMessage]] = []
+        self.latest_offset_calls: list[str] = []
 
     def publish(self, topic: str, message: BusMessage) -> Offset:
         self.published.append((topic, message))
         return Offset(str(len(self.published)))
 
     def ensure_group(self, topic: str, consumer_group: str) -> None:
+        return None
+
+    def latest_offset(self, topic: str) -> Offset | None:
+        """El offset de la ULTIMA entrada de ese topic, o None si no hay ninguna."""
+        self.latest_offset_calls.append(topic)
+        for posicion in range(len(self.published), 0, -1):
+            if self.published[posicion - 1][0] == topic:
+                return Offset(str(posicion))
         return None
 
     def poll(
@@ -110,3 +119,18 @@ def test_recording_bus_satisfies_port() -> None:
     offset = _use_port(bus, _sample_message())
     assert offset == Offset("1")
     assert bus.published[0][0] == "market"
+
+
+def test_recording_bus_latest_offset() -> None:
+    # Un implementador del puerto no puede quedarse a medias: latest_offset (CA-12) es
+    # parte del contrato, y el isinstance de arriba lo caza si falta.
+    bus = _RecordingBus()
+    assert bus.latest_offset("market") is None
+
+    _use_port(bus, _sample_message())
+    _use_port(bus, _sample_message())
+
+    assert bus.latest_offset("market") == Offset("2")
+    # Un topic sin entradas propias no hereda el offset de otro.
+    assert bus.latest_offset("signal") is None
+    assert bus.latest_offset_calls == ["market", "market", "signal"]

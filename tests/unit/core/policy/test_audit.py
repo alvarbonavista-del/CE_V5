@@ -11,8 +11,10 @@ from ce_v5.core.policy import (
     PolicyInputs,
     ReasonCode,
     ResolvedJurisdiction,
+    SensitiveActionRecord,
     build_context,
 )
+from ce_v5.core.policy.audit import AUDIT_KIND_AUTH, AUDIT_KIND_POLICY
 from ce_v5.core.policy.evaluator import CapabilityDecision
 
 _EXPECTED_KEYS = {
@@ -74,3 +76,38 @@ def test_build_context_no_incluye_ip_ni_datos_crudos() -> None:
     serialized = json.dumps(context)
     assert "192.168" not in serialized
     assert "@" not in serialized  # ni correos ni credenciales crudas
+
+
+# --- Discriminador de auditoria (CA-11) --------------------------------------------
+
+
+def test_una_fila_sin_audit_kind_sigue_siendo_de_politica() -> None:
+    # REGRESION: los llamadores de P06 (el gate) NO cambian. La ampliacion es aditiva.
+    entrada = SensitiveActionRecord(
+        tenant_id="t1",
+        user_id="u1",
+        capability_id="execute_order",
+        decision=Decision.DENY,
+        reason_code=ReasonCode.DENIED_BY_KILL_SWITCH,
+        policy_version="pv1",
+        sensitive=True,
+        context={},
+    )
+    assert entrada.audit_kind == AUDIT_KIND_POLICY
+
+
+def test_un_hecho_de_auth_declara_su_tipo() -> None:
+    entrada = SensitiveActionRecord(
+        tenant_id="t1",
+        user_id="u1",
+        capability_id="auth.login",
+        decision=Decision.ALLOW,
+        reason_code=ReasonCode.AUTH_LOGIN_SUCCEEDED,
+        policy_version="none",
+        sensitive=False,
+        context={"event": "login"},
+        audit_kind=AUDIT_KIND_AUTH,
+    )
+    assert entrada.audit_kind == AUDIT_KIND_AUTH
+    # Y su motivo es del vocabulario de AUTH, no uno de politica prestado.
+    assert entrada.reason_code.value.startswith("auth_")

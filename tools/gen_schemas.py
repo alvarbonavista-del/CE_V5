@@ -20,6 +20,19 @@ sys.path.insert(0, str(REPO_ROOT / "contracts"))
 
 from pydantic import TypeAdapter  # noqa: E402
 
+from source.api import (  # noqa: E402
+    ApiError,
+    CapabilitiesResponse,
+    LoginRequest,
+    MeResponse,
+    RealtimeAck,
+    RealtimeAuth,
+    RealtimeErrorMessage,
+    RealtimeEvent,
+    RealtimeSubscribe,
+    RegisterRequest,
+    SessionResponse,
+)
 from source.envelope import Envelope, EventPayload  # noqa: E402
 from source.families import Family  # noqa: E402
 from source.families.component import ComponentLifecyclePayload  # noqa: E402
@@ -28,6 +41,7 @@ from source.families.policy import (  # noqa: E402
     PolicyVersionPublishedPayload,
     SubjectInvalidatedPayload,
 )
+from source.families.user import UserRegisteredPayload  # noqa: E402
 
 
 def serialize(schema: dict[str, object]) -> str:
@@ -52,6 +66,30 @@ def build_schemas() -> dict[str, dict[str, object]]:
     version_published_schema["title"] = "PolicyVersionPublishedPayload"
     subject_invalidated_schema = SubjectInvalidatedPayload.model_json_schema()
     subject_invalidated_schema["title"] = "SubjectInvalidatedPayload"
+    register_request_schema = RegisterRequest.model_json_schema()
+    register_request_schema["title"] = "RegisterRequest"
+    login_request_schema = LoginRequest.model_json_schema()
+    login_request_schema["title"] = "LoginRequest"
+    session_schema = SessionResponse.model_json_schema()
+    session_schema["title"] = "SessionResponse"
+    me_schema = MeResponse.model_json_schema()
+    me_schema["title"] = "MeResponse"
+    api_error_schema = ApiError.model_json_schema()
+    api_error_schema["title"] = "ApiError"
+    capabilities_schema = CapabilitiesResponse.model_json_schema()
+    capabilities_schema["title"] = "CapabilitiesResponse"
+    realtime_auth_schema = RealtimeAuth.model_json_schema()
+    realtime_auth_schema["title"] = "RealtimeAuth"
+    realtime_subscribe_schema = RealtimeSubscribe.model_json_schema()
+    realtime_subscribe_schema["title"] = "RealtimeSubscribe"
+    realtime_ack_schema = RealtimeAck.model_json_schema()
+    realtime_ack_schema["title"] = "RealtimeAck"
+    realtime_error_schema = RealtimeErrorMessage.model_json_schema()
+    realtime_error_schema["title"] = "RealtimeErrorMessage"
+    realtime_event_schema = RealtimeEvent.model_json_schema()
+    realtime_event_schema["title"] = "RealtimeEvent"
+    user_registered_schema = UserRegisteredPayload.model_json_schema()
+    user_registered_schema["title"] = "UserRegisteredPayload"
     return {
         "envelope.schema.json": envelope_schema,
         "family.schema.json": family_schema,
@@ -59,6 +97,18 @@ def build_schemas() -> dict[str, dict[str, object]]:
         "policy_kill_switch.schema.json": kill_switch_schema,
         "policy_version_published.schema.json": version_published_schema,
         "policy_subject_invalidated.schema.json": subject_invalidated_schema,
+        "api_register_request.schema.json": register_request_schema,
+        "api_login_request.schema.json": login_request_schema,
+        "api_session.schema.json": session_schema,
+        "api_me.schema.json": me_schema,
+        "api_error.schema.json": api_error_schema,
+        "api_capabilities.schema.json": capabilities_schema,
+        "api_realtime_auth.schema.json": realtime_auth_schema,
+        "api_realtime_subscribe.schema.json": realtime_subscribe_schema,
+        "api_realtime_ack.schema.json": realtime_ack_schema,
+        "api_realtime_error.schema.json": realtime_error_schema,
+        "api_realtime_event.schema.json": realtime_event_schema,
+        "user_registered.schema.json": user_registered_schema,
     }
 
 

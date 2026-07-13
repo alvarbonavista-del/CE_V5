@@ -2,7 +2,9 @@ from check_generated import _problems
 from gen_schemas import build_schemas, serialize
 
 
-def test_build_schemas_incluye_envelope_y_family() -> None:
+def test_build_schemas_incluye_todos_los_contratos() -> None:
+    # Lista CERRADA a proposito: un contrato nuevo no se cuela sin que alguien lo vea
+    # en el diff de este test.
     schemas = build_schemas()
     assert set(schemas) == {
         "envelope.schema.json",
@@ -11,6 +13,18 @@ def test_build_schemas_incluye_envelope_y_family() -> None:
         "policy_kill_switch.schema.json",
         "policy_version_published.schema.json",
         "policy_subject_invalidated.schema.json",
+        "api_register_request.schema.json",
+        "api_login_request.schema.json",
+        "api_session.schema.json",
+        "api_me.schema.json",
+        "api_error.schema.json",
+        "api_capabilities.schema.json",
+        "api_realtime_auth.schema.json",
+        "api_realtime_subscribe.schema.json",
+        "api_realtime_ack.schema.json",
+        "api_realtime_error.schema.json",
+        "api_realtime_event.schema.json",
+        "user_registered.schema.json",
     }
 
 

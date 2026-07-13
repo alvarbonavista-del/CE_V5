@@ -1,0 +1,26 @@
+{
+  "additionalProperties": false,
+  "description": "Error del canal. Codigo estable; mensaje sin pistas.",
+  "properties": {
+    "code": {
+      "title": "Code",
+      "type": "string"
+    },
+    "message": {
+      "title": "Message",
+      "type": "string"
+    },
+    "type": {
+      "const": "error",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "type",
+    "code",
+    "message"
+  ],
+  "title": "RealtimeErrorMessage",
+  "type": "object"
+}

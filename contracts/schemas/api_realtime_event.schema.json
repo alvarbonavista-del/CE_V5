@@ -1,0 +1,32 @@
+{
+  "additionalProperties": false,
+  "description": "Un evento del bus. El envelope se entrega TAL CUAL (ADR-013).\n\nEl cliente consume el envelope canonico y no inventa campos: es el mismo\ncontrato que viaja por el bus, no una version recortada que habria que mantener en\ndos sitios.",
+  "properties": {
+    "checkpoint": {
+      "title": "Checkpoint",
+      "type": "string"
+    },
+    "envelope": {
+      "additionalProperties": true,
+      "title": "Envelope",
+      "type": "object"
+    },
+    "topic": {
+      "title": "Topic",
+      "type": "string"
+    },
+    "type": {
+      "const": "event",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "type",
+    "topic",
+    "checkpoint",
+    "envelope"
+  ],
+  "title": "RealtimeEvent",
+  "type": "object"
+}

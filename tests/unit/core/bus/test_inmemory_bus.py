@@ -107,3 +107,29 @@ def test_dead_letter_removes_from_pending(
         "market", "rules", "c2", min_idle_ms=30_000, max_messages=10
     )
     assert reclaimed == ()
+
+
+# --- latest_offset (CA-12) ----------------------------------------------------------
+
+
+def test_latest_offset_de_un_topic_vacio_es_none(in_memory_bus: EventBus) -> None:
+    assert in_memory_bus.latest_offset("market") is None
+
+
+def test_latest_offset_apunta_al_ultimo_publicado(in_memory_bus: EventBus) -> None:
+    offsets = [in_memory_bus.publish("market", _message(i, "A")) for i in range(1, 6)]
+    assert in_memory_bus.latest_offset("market") == offsets[-1]
+
+
+def test_el_cursor_es_exclusivo_y_solo_trae_lo_nuevo(in_memory_bus: EventBus) -> None:
+    # latest_offset significa "ya visto": replay desde el NO reentrega el ultimo...
+    for seq in range(1, 4):
+        in_memory_bus.publish("market", _message(seq, "A"))
+    cursor = in_memory_bus.latest_offset("market")
+    assert cursor is not None
+    assert in_memory_bus.replay("market", start=cursor, max_messages=10) == ()
+
+    # ...pero SI trae el siguiente que se publique.
+    in_memory_bus.publish("market", _message(99, "A"))
+    nuevos = in_memory_bus.replay("market", start=cursor, max_messages=10)
+    assert [r.message.idempotency_key for r in nuevos] == ["A:99"]

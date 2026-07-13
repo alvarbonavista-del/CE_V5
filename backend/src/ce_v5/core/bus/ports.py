@@ -25,6 +25,23 @@ class EventBus(Protocol):
     Ordering is guaranteed per ``stream_key``. Consumers are idempotent
     (ADR-013): they ACK only after persisting the effect, so redelivery
     is safe.
+
+    DOS MODOS DE CONSUMO, Y NO SON INTERCAMBIABLES:
+
+    poll + ack (consumer group): consumo COORDINADO y COMPARTIDO entre varios
+    workers. El bus lleva el estado de quien ha confirmado que. Es lo que quieren los
+    workers (at-least-once, reparto de carga, DLQ).
+
+    replay + cursor privado: consumo INDIVIDUAL y reanudable. El estado (por donde voy)
+    lo lleva el CLIENTE, en su checkpoint. Es lo que quiere un canal realtime por
+    usuario.
+
+    Un consumer group POR USUARIO seria un error de diseno: crearia miles de grupos con
+    estado de ACK que el bus tendria que mantener para siempre, incluso para clientes
+    que no volveran. El cursor privado no le cuesta nada al bus.
+
+    latest_offset existe para que una suscripcion SIN checkpoint arranque en el final
+    REAL del topic. Sin el, habria que recorrer el historico para saber donde termina.
     """
 
     def publish(self, topic: str, message: BusMessage) -> Offset:
@@ -73,6 +90,15 @@ class EventBus(Protocol):
 
     def dead_letter(self, received: ReceivedMessage, reason: DlqReason) -> None:
         """Route a message to the observable DLQ and ACK the original."""
+        ...
+
+    def latest_offset(self, topic: str) -> Offset | None:
+        """Position of the LAST entry in ``topic``, or None if it is empty.
+
+        Lets a subscription with no checkpoint start at the REAL end of the topic,
+        without walking the history to find out where it ends. The returned offset means
+        "already seen": ``replay`` from it is EXCLUSIVE, so nothing old is redelivered.
+        """
         ...
 
     def replay(

@@ -1,0 +1,20 @@
+{
+  "additionalProperties": false,
+  "description": "Quien eres y en que tenant operas, SEGUN EL BACKEND.\n\nEl tenant no lo mando el cliente: lo resolvio el backend desde la pertenencia.",
+  "properties": {
+    "tenant_id": {
+      "title": "Tenant Id",
+      "type": "string"
+    },
+    "user_id": {
+      "title": "User Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "user_id",
+    "tenant_id"
+  ],
+  "title": "MeResponse",
+  "type": "object"
+}

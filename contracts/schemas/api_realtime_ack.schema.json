@@ -1,0 +1,33 @@
+{
+  "additionalProperties": false,
+  "description": "Confirmacion del servidor: suscrito, y desde donde.",
+  "properties": {
+    "checkpoint": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Checkpoint"
+    },
+    "topic": {
+      "title": "Topic",
+      "type": "string"
+    },
+    "type": {
+      "const": "ack",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "type",
+    "topic",
+    "checkpoint"
+  ],
+  "title": "RealtimeAck",
+  "type": "object"
+}

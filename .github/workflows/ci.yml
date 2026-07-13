@@ -102,6 +102,8 @@ jobs:
         run: uv run python tools/check_tenancy.py
       - name: Auditoria de seguridad (check audit, P06)
         run: uv run python tools/check_audit.py
+      - name: Identidad - ventanillas estrechas (check identity, P06b/CA-07)
+        run: uv run python tools/check_identity_access.py
       - name: Tests de integracion (DB + bus + policy)
         # El DSN de operador va SOLO en este paso (CA-03): ningun codigo que
         # corra aqui llama a DbConfig.from_env, que abortaria si lo viera.
