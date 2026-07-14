@@ -103,9 +103,22 @@ def _wipe_identidad(migrator_db: PsycopgDatabase) -> None:
     with migrator_db.transaction() as session:
         # Identidad (P06b): se limpia con el rol de MIGRACIONES porque el rol de
         # aplicacion no tiene ningun privilegio sobre estas tablas (CA-07) y tienen
-        # FORCE RLS. El borrado de app_user arrastra en cascada credenciales, sesiones
-        # y pertenencias (FK ON DELETE CASCADE de las migraciones 0005 y 0010).
+        # FORCE RLS.
+        #
+        # ORDEN OBLIGATORIO: policy_entitlement, policy_override y
+        # sensitive_action_audit REFERENCIAN tenant sin cascada (migracion 0007);
+        # borrar el tenant primero fallaria por clave foranea. Y app_user arrastra
+        # en cascada credenciales, sesiones y pertenencias (0005/0010), asi que va
+        # antes que tenant.
+        #
+        # Esto lo hace el rol de MIGRACIONES en una base de JUGUETE. Los roles de
+        # RUNTIME NO pueden borrar auditoria: se lo prohibe el motor, y el check
+        # "audit" lo verifica en cada build. Esa garantia NO se toca.
+        session.execute("DELETE FROM sensitive_action_audit")
+        session.execute("DELETE FROM policy_entitlement")
+        session.execute("DELETE FROM policy_override")
         session.execute("DELETE FROM app_user")
+        session.execute("DELETE FROM tenant")
 
 
 @pytest.fixture(autouse=True)
