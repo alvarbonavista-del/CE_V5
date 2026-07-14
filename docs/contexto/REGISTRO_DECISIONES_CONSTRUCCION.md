@@ -118,6 +118,32 @@ que no vivan solo en el chat (anti-deriva, DOC_ENTREGABLES sec.9).
      La formula "Actions pendiente por ausencia de remoto" (5.6) queda
      derogada. Los cierres historicos que la contienen NO se reescriben: eran
      ciertos cuando se escribieron.
+5.14 CORRECCION DE UNA MIGRACION PRE-COMMIT. Una migracion puede corregirse EN
+     SITIO solo si se cumplen TODAS estas condiciones: (a) NO esta commiteada (no
+     existe en la historia de git); (b) la pieza NO esta entregada; (c) solo existe
+     en una base local desechable; (d) ningun otro entorno la ha aplicado y el CI
+     recrea la base desde cero; (e) la base local se RECREA desde cero, de modo que
+     el guardia de checksum NUNCA ve una discrepancia y JAMAS se silencia ni se
+     parchea. Si falla CUALQUIERA de las cinco, se crea una migracion SUCESORA, sin
+     excepcion. Desde el instante en que una migracion se COMMITEA, es HISTORIA: no
+     se edita nunca. Precedentes: CA-05 (0007) y CA-09 (0010).
+5.15 BARRIDO DE LINEA BASE DE SEGURIDAD POR SUPERFICIE NUEVA. Toda pieza que
+     ABRA UNA SUPERFICIE EXTERNA NUEVA (internet, exchange, wallet, proveedor de
+     terceros, dispositivo) incluye en su DoD un BARRIDO EXPLICITO de la linea
+     base de seguridad de esa superficie. Para CADA control: se construye ahora,
+     o se registra con PIEZA DUENA y justificacion bajo la regla 5.11. No se
+     cierra la pieza sin ese barrido escrito. Motivo: el ROADMAP enumero
+     capacidades, no lineas base de seguridad; los huecos aparecieron uno a uno
+     (T-01, CA-10) y eso no escala. Afecta como minimo a P06b (internet), P07
+     (exchanges), P10a (credenciales de terceros) y P10b (dinero real).
+5.16 CENTRAL FIJA EL INVARIANTE, NO EL RECIPIENTE. Cuando Central ordene que un
+     hecho quede REGISTRADO, no designara un artefacto concreto (tabla, enum,
+     registro) sin haber verificado su esquema y su vocabulario reales. Por
+     defecto, Central expresara el REQUISITO como INVARIANTE (append-only, por
+     sujeto, no editable por el auditado, con motivo veraz) y sera el periferico
+     quien elija o adapte el recipiente, ELEVANDO si ninguno encaja. Motivo: dos
+     correcciones de Central (CA-04 p.5 y CA-10 c.1) prescribieron destino sin
+     leer el molde, y ambas hubo que enmendarlas (CA-05, CA-11).
 5.17 EL COMMIT NO ES LA ENTREGA. El commit de pieza se hace ANTES de la firma,
      porque la regla 5.13 exige Actions en verde y Actions no puede correr sin un
      commit empujado. La FIRMA de Alvaro no gatea el commit: gatea la TANDA DE
@@ -705,14 +731,19 @@ ACTIONS VERDE 3/3 (backend, backend-integration, frontend) sobre el commit FINAL
 598 tests en verde con CERO SKIPS (regla 5.18).
 Doble revision Central + CSA conforme; firmado por Alvaro. Fecha: 2026-07-14.
 
-NOTA DE REGISTRO (hueco detectado en este cierre, se deja escrito en vez de
-disimularlo): las reglas 5.14, 5.15 y 5.16, que esta seccion referencia (CA-09,
-CA-10 y CA-11 respectivamente), se acordaron durante la construccion de P06b pero
-NO figuran en la seccion 5 de este archivo. Es el MISMO fallo que el cierre de P04
-registro sobre la regla 5.11 ("no estaba en disco; no se anadio en el cierre de
-M1"). Pendiente: Alvaro dicta su texto VERBATIM y se anaden a la seccion 5. No se
-redactan aqui de memoria: una norma inventada por el periferico es peor que una
-norma ausente.
+NOTA DE REGISTRO (hueco detectado y CERRADO; se deja escrito en vez de disimularlo).
+Las reglas 5.14, 5.15 y 5.16 que esta seccion referencia se DICTARON en los
+dictamenes de CA-09, CA-10 y CA-11 respectivamente. El PERIFERICO LAS OMITIO en la
+primera tanda de cierre de P06b: no llegaron a la seccion 5 de este archivo, que
+saltaba de 5.13 a 5.17 dejando tres referencias colgantes. Claude Code lo DETECTO al
+no encontrarlas en disco (ni en docs/, ni en el historial de git) y se NEGO A
+REDACTARLAS DE MEMORIA: una norma inventada por el periferico es peor que una norma
+ausente, porque se lee como acordada sin haberlo sido. Alvaro dicto su texto y las
+tres se anadieron VERBATIM a la seccion 5 en un commit posterior
+("docs(contexto): reglas 5.14, 5.15 y 5.16 (omitidas en el cierre)").
+Es el MISMO fallo que el cierre de P04 registro sobre la regla 5.11 ("no estaba en
+disco; no se anadio en el cierre de M1"): las normas que solo viven en el chat se
+pierden. Queda escrito para que la reincidencia sea visible.
 
 LAS SEIS CONSULTAS ARQUITECTONICAS ELEVADAS Y FIRMADAS
 - CA-07: VENTANILLAS DE IDENTIDAD (SECURITY DEFINER). Existio porque el canon de
