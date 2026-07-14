@@ -34,6 +34,10 @@ P06b - API/Auth/Realtime Gateway (ADR-002/006/011/012/013/019): ENTREGADA.
   de frontera con lista cerrada de rutas).
   Cierre de contexto en el commit "docs(contexto): cierre P06b y M2" (regla 5.9);
   su hash se registra en el commit inmediato posterior.
+  Hash del commit de cierre de contexto: ee8647e0c213c38cb4dddb01a4b955e1b08577fe.
+  (Un commit no puede contener su propio hash: por eso el hash del cierre se
+  registra en el commit inmediato posterior. Regla 5.9 cumplida: cero cola en el
+  arbol.)
 
 ## Proxima pieza
 P07 - Ingesta de market data (hibrida), ADR-014. ABRE el hito M3.
