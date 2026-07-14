@@ -214,3 +214,65 @@ P05 y P06); que la API NO evalua reglas ni ejecuta ordenes; que las capabilities
 exponen como INFORMATIVAS (la decision autoritativa es el PolicyGate en el punto
 sensible); y que el enforcement de politica en los bordes usa el PolicyGate de P06.
 P06b CIERRA M2.
+=====================================================================
+REVISION CSA - PIEZA P06b + CIERRE DEL HITO M2 - 2026-07-14
+=====================================================================
+Veredicto: CONFORME (Central y CSA). Firmado por Alvaro.
+P06b ENTREGADA (4/4 de M2). M2 CERRADO.
+Commit de pieza: 6864c2af23dbaca1b04f41a0cfff3c0323247223.
+Commit final (PASO 0 del cierre): 52b26dba7e291611bfa6c050a6cba657fad477b9.
+ACTIONS VERDE 3/3 sobre el commit FINAL. 598 tests en verde con CERO SKIPS.
+
+LA PRUEBA DEL HITO M2. El operador activa un kill switch desde OTRO PROCESO y con
+OTRA CREDENCIAL, y la capability pasa a DENY EN EL BORDE DE LA API en 0,52 s, SIN
+reiniciar nada (mismo PID) y POR EVENTO: operador -> DB -> outbox -> bus ->
+invalidacion de cache -> DENY. El TTL del cache (60 s) queda DESCARTADO POR DISENO
+DEL ARNES, que ABORTA si el corte tarda lo que dura el TTL: la demostracion NO PUEDE
+MENTIR. Al soltar el switch, vuelve a ALLOW en 0,52 s.
+
+REGLAS DE PROCESO NUEVAS (detalle verbatim en REGISTRO_DECISIONES sec.5)
+- 5.17 EL COMMIT NO ES LA ENTREGA. El commit de pieza va ANTES de la firma (5.13
+  exige Actions verde, y Actions no corre sin commit empujado). La firma no gatea el
+  commit: gatea la TANDA DE CIERRE y el estado ENTREGADA.
+- 5.18 CERO SKIPS, O SKIPS DECLARADOS. Un test que se salta en silencio es un test
+  que no existe. El barrido de cierre DEBE reportar el numero de skips; CERO es el
+  valor por defecto. Origen: 21 tests de integracion nunca ejecutados en local y DOS
+  rotos.
+- 5.19 TABLAS CON SECRETOS: VENTANILLAS ESTRECHAS. Patron CA-07 (sin privilegios de
+  tabla para el rol de aplicacion; acceso por SECURITY DEFINER minimas; check
+  bloqueante). VINCULANTE para P10a (credenciales BYOC).
+
+NO CONSTRUIDOS, CON DUENO O CONDICION (que el CSA debe seguir vigilando)
+- El REGISTRO revela existencia con un 409. DUENO: P09a (cerrarlo exige verificacion
+  por email, que exige el router de notificaciones). Junto con el password reset.
+- Contador GLOBAL de rate limit: DESCARTADO con motivo, no diferido: seria una
+  palanca de DoS de plataforma (un atacante barato deja fuera a TODOS).
+- Contador de conexiones WS compartido entre replicas: CONDICION DISPARADORA, no
+  pieza. PRERREQUISITO DURO antes de CUALQUIER despliegue multi-replica.
+- require_capability en el primer endpoint SENSIBLE: VINCULANTE para P10a/P10b (las
+  cinco capacidades sensibles son suyas).
+- plan y role en PolicyInputs: hoy None (lo que DENIEGA lo sensible). P11 y via v5.1.
+- Proveedores reales de geo/KYC/VPN: seleccion COMERCIAL de Alvaro.
+
+T-02 - BASELINE DE DESPLIEGUE (trabajo transversal registrado en este cierre)
+El ROADMAP no tiene pieza de despliegue: hueco OPERATIVO que nadie reclamaria como
+suyo. DISPARADOR: antes de cualquier entorno compartido, staging real, multi-replica
+o demo externa persistente. CONTENIDO MINIMO: lock de aplicacion de migraciones (de
+P02b), validacion de configuracion de produccion, contador WS compartido si hay mas
+de una replica, verificacion de secretos y entorno, backup/restore basico, smoke test
+de API/WS, y despliegue reproducible con Actions. No modifica el Roadmap funcional.
+Decide Alvaro cuando abordarlo.
+
+PARA LA PROXIMA REVISION (P07 - INGESTA DE MARKET DATA HIBRIDA, ADR-014)
+El CSA debe comprobar:
+- Streams PUBLICOS compartidos por MarketStreamKey, SIN tenant_id (el dato de mercado
+  no es de nadie; meterle tenant_id lo duplicaria por cliente).
+- Streams PRIVADOS BYOC con RLS y geo.
+- Ref-count RECONSTRUIBLE (no un contador en memoria que se pierda al reiniciar).
+- Primer market.* END-TO-END.
+- TAREA VINCULANTE DE CA-06: mover los TRES market.* de DEFERRED_EVENT_TYPES a
+  EVENT_PAYLOAD_REGISTRY con su payload REAL (OHLCV/timeframe). El check
+  tools/check_event_payload_registry.py NO LE DEJARA OLVIDARLO.
+- REGLA 5.15: P07 ABRE UNA SUPERFICIE EXTERNA NUEVA (los exchanges) y por tanto DEBE
+  TRAER SU BARRIDO DE LINEA BASE DE SEGURIDAD ESCRITO, CONTROL POR CONTROL, con lo no
+  construido asignado a una pieza DUENA.

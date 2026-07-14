@@ -118,6 +118,29 @@ que no vivan solo en el chat (anti-deriva, DOC_ENTREGABLES sec.9).
      La formula "Actions pendiente por ausencia de remoto" (5.6) queda
      derogada. Los cierres historicos que la contienen NO se reescriben: eran
      ciertos cuando se escribieron.
+5.17 EL COMMIT NO ES LA ENTREGA. El commit de pieza se hace ANTES de la firma,
+     porque la regla 5.13 exige Actions en verde y Actions no puede correr sin un
+     commit empujado. La FIRMA de Alvaro no gatea el commit: gatea la TANDA DE
+     CIERRE y el estado ENTREGADA. Orden correcto: commit de pieza -> push ->
+     Actions verde -> revision Central -> revision CSA -> firma de Alvaro ->
+     tanda de cierre -> commit de contexto -> arbol limpio. Cualquier cambio que
+     pida la doble revision entra como commits adicionales ANTES de la tanda.
+     Precisa 5.7 y 5.13.
+5.18 CERO SKIPS, O SKIPS DECLARADOS. Un test que se salta en silencio es un test
+     que no existe. El barrido de cierre DEBE reportar el numero de tests
+     saltados. CERO es el valor por defecto. Todo skip se declara EXPLICITAMENTE
+     en el informe con motivo, condicion de salida y dueno; skip sin motivo =
+     fallo de suite. Si Actions ejecuta mas que el barrido local, el informe debe
+     decirlo. Origen: 21 tests de integracion nunca ejecutados en local y DOS
+     rotos, salvados solo por Actions (T-01).
+5.19 TABLAS CON SECRETOS: VENTANILLAS ESTRECHAS. Toda tabla que contenga SECRETOS
+     (hashes de contrasena, tokens, credenciales de terceros, claves de API,
+     material criptografico) sigue el patron firmado en CA-07: el rol de
+     aplicacion NO tiene privilegios directos de tabla; el acceso va por funciones
+     SECURITY DEFINER minimas (search_path fijo, sin SQL dinamico, sin comodines,
+     retorno minimo, EXECUTE revocado a PUBLIC, convencion p_/v_), y un CHECK
+     BLOQUEANTE lo hace cumplir. Cero logica de negocio en la DB. VINCULANTE para
+     P10a (credenciales BYOC de exchange).
 =====================================================================
 6. CIERRE DE PIEZA P01 - CONTRATOS BASE Y ENVELOPE
 =====================================================================
@@ -670,3 +693,190 @@ peligroso. Descubrirlo ahora, y no en M5 con dinero real, es exactamente el moti
 de T-01.
 
 REGLA NUEVA: 5.13 (ver seccion 5). El barrido local NO sustituye a Actions.
+=====================================================================
+15. CIERRE DE PIEZA P06b - API/AUTH/REALTIME GATEWAY (LA PUERTA PUBLICA)
+=====================================================================
+Estado: ENTREGADA. CIERRA EL HITO M2 (4 de 4).
+Commit de pieza: 6864c2af23dbaca1b04f41a0cfff3c0323247223
+  ("feat(p06b): API/Auth/Realtime Gateway").
+Commit final: 52b26dba7e291611bfa6c050a6cba657fad477b9
+  ("fix(p06b): la limpieza de tests dejaba tenants huerfanos", PASO 0 del cierre).
+ACTIONS VERDE 3/3 (backend, backend-integration, frontend) sobre el commit FINAL.
+598 tests en verde con CERO SKIPS (regla 5.18).
+Doble revision Central + CSA conforme; firmado por Alvaro. Fecha: 2026-07-14.
+
+NOTA DE REGISTRO (hueco detectado en este cierre, se deja escrito en vez de
+disimularlo): las reglas 5.14, 5.15 y 5.16, que esta seccion referencia (CA-09,
+CA-10 y CA-11 respectivamente), se acordaron durante la construccion de P06b pero
+NO figuran en la seccion 5 de este archivo. Es el MISMO fallo que el cierre de P04
+registro sobre la regla 5.11 ("no estaba en disco; no se anadio en el cierre de
+M1"). Pendiente: Alvaro dicta su texto VERBATIM y se anaden a la seccion 5. No se
+redactan aqui de memoria: una norma inventada por el periferico es peor que una
+norma ausente.
+
+LAS SEIS CONSULTAS ARQUITECTONICAS ELEVADAS Y FIRMADAS
+- CA-07: VENTANILLAS DE IDENTIDAD (SECURITY DEFINER). Existio porque el canon de
+  identidad no se puede proteger solo con RLS: el LOGIN busca por email ANTES de
+  que exista identidad alguna (no hay sesion, no hay usuario, no hay tenant), y una
+  policy RLS atada al tenant devolveria CERO FILAS, con lo que nadie podria entrar
+  jamas. Solucion firmada: el rol de aplicacion NO tiene privilegios de tabla sobre
+  app_user/user_credential/user_session; el acceso va por funciones SECURITY
+  DEFINER minimas. Origen de la regla 5.19.
+- CA-08: ubicacion de los contratos de la API en contracts/source/api.
+- CA-09: correccion PRE-COMMIT del defecto de auth_rotate_session (ver DEFECTOS,
+  n.1) + regla 5.14 + convencion de nombres p_/v_/out_ que hace la colision entre
+  parametro y columna ESTRUCTURALMENTE IMPOSIBLE, no solo "corregida".
+- CA-10: LINEA BASE DE SEGURIDAD de la puerta publica (rate limiting, CSRF, CORS,
+  cabeceras, limites, logs sin secretos, guardias de arranque) + regla 5.15.
+- CA-11: discriminador audit_kind en la auditoria + regla 5.16.
+- CA-12: latest_offset en el cursor del realtime (ver DEFECTOS, n.3).
+
+DECISIONES DE CONSTRUCCION D1-D7 (con su motivo)
+- D1. AUTH PROPIA, no proveedor externo. CONSECUENCIA DECLARADA: los puertos
+  OAuth/PKCE y el user-agent externo de ADR-019 NO se implementan en v5.0. NO ES
+  UNA DESVIACION: ADR-019 los fija PARA EL CASO OAUTH, y no hay OAuth. Se
+  implementaran SOLO si llega el login social, que sera decision y pieza aparte.
+  Sin stubs "por si acaso" (prohibido por 5.11).
+- D2. El JWT NO LLEVA EL TENANT. Si lo llevara, una pertenencia REVOCADA seguiria
+  concediendo acceso hasta que caducara el pase: el tenant se resuelve en el
+  backend en cada peticion, contra la pertenencia viva.
+- D3. La IP sale de la CONEXION, no de X-Forwarded-For (salvo proxies PROPIOS
+  declarados explicitamente; por defecto CERO). Confiar en esa cabecera permitiria
+  FINGIR OTRO PAIS y burlar el geo-bloqueo, que es justo el control que M5 usara
+  para no ejecutar donde la regulacion lo prohibe.
+- D4. El refresh token se guarda HASHEADO con SHA-256, no con Argon2. Son 32 bytes
+  ALEATORIOS, no una contrasena adivinable: no hay diccionario que atacar. Un hash
+  lento aqui seria un AUTOATAQUE DE DoS en cada refresh, que ocurre constantemente.
+  (Las CONTRASENAS si van con Argon2id: esas si son adivinables.)
+- D5. El consumidor de policy.* usa CURSOR PRIVADO, no consumer group. Un kill
+  switch debe llegar a TODAS las instancias; un consumer group lo REPARTIRIA entre
+  ellas y solo una se enteraria: el resto seguiria concediendo la capability.
+- D6. El ALTA es ATOMICA: usuario + credencial + tenant + pertenencia + evento de
+  outbox, todo en UNA transaccion. Si no lo fuera, un fallo a medias dejaria un
+  usuario sin tenant, es decir, un usuario que no puede entrar.
+- D7. user.registered NO LLEVA EL EMAIL. Un evento acaba en logs, en replays y en
+  procesos que hoy no existen: el dato personal no se difunde por el bus.
+
+LINEA BASE DE SEGURIDAD A-N (CA-10) Y SUS 16 PRUEBAS
+Catorce controles (A-N), verificados con 16 pruebas: contrasenas con Argon2id;
+tokens de acceso cortos y firmados; refresh rotatorio con DETECCION DE REUSO
+(reusar un refresh ya rotado invalida la cadena); cookies HttpOnly/Secure/SameSite
+(el token JAMAS accesible al JS); CSRF; CORS sin comodin (un "*" impide el
+arranque); cabeceras de seguridad; limite de cuerpo rechazado ANTES de leerlo;
+rate limiting por email y por IP con huellas (el almacen no guarda emails ni IPs en
+claro); logs sin secretos; guardias de arranque (secreto corto o ausente -> NO
+ARRANCA; DSN de operador en runtime -> NO ARRANCA); enforcement fail-closed en el
+borde realtime; identidad solo desde sesion verificada; y ventanillas estrechas
+sobre las tablas de secretos. Veredicto: las 16 pruebas SUPERADAS.
+NOTA HONESTA DE LA PRUEBA 13 (comparacion en tiempo constante): la suite NO
+CERTIFICA IGUALDAD TEMPORAL ESTADISTICA. Certifica el USO DE LA PRIMITIVA CONSTANTE
+(hmac.compare_digest). Una medicion fiable de tiempos exige muchisimas repeticiones
+y una maquina sin ruido; en CI daria FALSOS ROJOS constantes. Se dice, no se
+disimula: la prueba verifica el CONTROL, no la propiedad fisica.
+
+LOS NO CONSTRUIDOS, CADA UNO CON DUENO O CONDICION DISPARADORA (regla 5.11)
+- El REGISTRO REVELA EXISTENCIA con un 409: al intentar registrar un email ya
+  existente, la respuesta permite deducir que esa cuenta existe. DUENO: P09a.
+  Cerrarlo exige verificacion por email, que exige el router de notificaciones, que
+  ES P09a. Va junto con el password reset (misma dependencia).
+- Contador GLOBAL de rate limit: DESCARTADO CON MOTIVO, no diferido. Seria una
+  PALANCA DE DoS DE PLATAFORMA: un atacante barato lo dispara y deja fuera a TODOS
+  los usuarios legitimos a la vez. El limite es por email y por IP a proposito.
+- Contador de conexiones WS COMPARTIDO entre replicas: no es una pieza, es una
+  CONDICION DISPARADORA. Hoy el contador es por proceso, lo cual es correcto con una
+  sola replica. PRERREQUISITO DURO antes de CUALQUIER despliegue multi-replica (ver
+  T-02).
+- require_capability en el primer endpoint SENSIBLE: VINCULANTE para P10a/P10b. Las
+  cinco capacidades sensibles (connect_broker, execute_order, activate_autotrade,
+  manual_order, manage_api_key) son SUYAS; hoy no existe ningun endpoint sensible al
+  que ponerselo, y construirlo seria "por si acaso".
+- plan y role en PolicyInputs: hoy None, lo que DENIEGA lo sensible (fail-closed
+  correcto). Los rellenan P11 y la via v5.1.
+- Proveedores reales de geo/KYC/VPN: SELECCION COMERCIAL DE ALVARO, no decision de
+  ingenieria.
+
+DEFECTOS HALLADOS EN P06b (sin maquillar)
+1. auth_rotate_session era AMBIGUA y LA ROTACION DE SESION NO FUNCIONABA: un
+   parametro colisionaba con una columna del mismo nombre. La cazo PostgreSQL REAL
+   en un test de integracion; NINGUN MOCK PUEDE VALIDAR SEMANTICA DE PL/pgSQL.
+   Corregida PRE-COMMIT (CA-09) y, mas importante, la CATEGORIA ENTERA de defecto se
+   elimino con la convencion de nombres p_/v_/out_, que el check verifica.
+2. EL PROCESO REAL NO PODIA SERVIR WEBSOCKETS: faltaba la dependencia que Uvicorn
+   necesita para el protocolo. 577 TESTS EN VERDE Y EL PRODUCTO ROTO, porque el
+   TestClient de Starlette NO PASA POR UVICORN: los tests probaban la aplicacion,
+   no el servidor. Lo cazo LA VALIDACION EN CALIENTE. Es la razon EXACTA por la que
+   el ROADMAP la declara NO REBAJABLE.
+3. El cursor del realtime entregaba HISTORIA RANCIA COMO NUEVA, EN SILENCIO, en
+   cuanto el topic pasaba de 100 mensajes (CA-12). Corregido con latest_offset y
+   demostrado con un test que se pone ROJO si se restaura el apano.
+4. 21 TESTS DE INTEGRACION NUNCA SE HABIAN EJECUTADO en local (se saltaban en
+   silencio por falta del DSN de operador) y DOS estaban ROTOS. Solo Actions los
+   habria cazado. ORIGEN DE LA REGLA 5.18.
+5. La limpieza de tests dejaba +71 TENANTS HUERFANOS POR EJECUCION (695 -> 766 ->
+   837, incremento DETERMINISTA medido con el rol de migraciones, con CERO usuarios
+   y CERO pertenencias en la base: la firma exacta de la fuga). La fixture autouse
+   borraba app_user (cuya cascada arrastra credenciales, sesiones y pertenencias,
+   0005/0010) pero NO el tenant, que policy_entitlement, policy_override y
+   sensitive_action_audit referencian SIN CASCADA (0007). Lo creaban los FIXTURES
+   VERSIONADOS del repo, NO la base local desechable: por eso se corrigio EN LA
+   PIEZA (PASO 0 del cierre, commit 52b26db) en vez de diferirlo. Asignarselo a otra
+   pieza habria sido DEUDA FALSA (5.11). El borrado va en el orden que exige el
+   esquema, con el rol de MIGRACIONES sobre una base de JUGUETE; los roles de
+   RUNTIME siguen SIN PODER borrar auditoria (se lo prohibe el motor y el check
+   "audit" lo verifica en cada build): esa garantia NO SE TOCA.
+=====================================================================
+16. CIERRE DE HITO M2 - SUSTRATO DE PLATAFORMA
+=====================================================================
+Estado: CERRADO. Doble revision (Central + CSA) conforme; firmado por Alvaro.
+Fecha: 2026-07-14.
+Piezas: P04 (raiz Componente/manifest/discovery/lifecycle), P05 (tenancy + RLS),
+P06 (PolicyEvaluator + kill switch), P06b (API/auth/realtime gateway).
+
+DEMOSTRACION DE LA DEFINICION DE M2: un Componente se descubre POR CARPETA (copiar
+carpeta + reiniciar, CE-14), opera AISLADO por tenant con RLS fail-closed, sus
+capacidades pasan por el GATE FAIL-CLOSED (DENY > ALLOW en sensibles, entitlement
+explicito obligatorio), la API/auth/realtime esta EN PIE como puerta publica, y el
+kill switch CORTA EN CALIENTE.
+
+LA PRUEBA DEL HITO. El operador activa un kill switch desde OTRO PROCESO y con OTRA
+CREDENCIAL, y la capability pasa a DENY EN EL BORDE DE LA API en 0,52 s, SIN
+reiniciar nada (mismo PID) y POR EVENTO, recorriendo la cadena completa: operador ->
+DB -> outbox -> bus -> invalidacion de cache -> DENY. El TTL del cache es de 60 s y
+queda DESCARTADO POR DISENO DEL ARNES, que ABORTA si el corte tarda lo que dura el
+TTL: LA DEMOSTRACION NO PUEDE MENTIR (si el corte se debiese a la caducidad del
+cache y no al evento, la prueba FALLA en vez de aprobar). Al soltar el switch, la
+capability vuelve a ALLOW en 0,52 s, tambien en caliente.
+
+LO QUE M2 NO INCLUYE (y no se finge que incluya): ejecucion de ordenes, reglas
+reales, market data real, PWA ni notificaciones. El sustrato esta en pie; encima no
+hay todavia producto.
+
+Proximo hito: M3 (datos, reglas y notificacion backend): P07 (ingesta de market
+data), P08 (motor de reglas) y P09a (router de notificaciones backend).
+=====================================================================
+17. T-02: BASELINE DE DESPLIEGUE Y PRODUCCION (TRABAJO TRANSVERSAL)
+=====================================================================
+Trabajo FUERA DEL ROADMAP de piezas funcionales, registrado en el cierre de M2.
+
+HUECO ESTRUCTURAL: el ROADMAP NO TIENE PIEZA DE DESPLIEGUE. No es un olvido de una
+pieza concreta: es un hueco OPERATIVO que ninguna ficha del roadmap reclama como
+suyo, y por tanto nadie lo pagaria nunca (el mismo patron que T-01).
+
+DISPARADOR: antes de CUALQUIER entorno compartido, staging real, despliegue
+multi-replica o demo externa persistente. Mientras todo corra en la maquina de
+Alvaro contra bases de juguete, no aplica.
+
+CONTENIDO MINIMO:
+- Lock de aplicacion de migraciones (VIENE DE P02b, sec.8: hoy dos aplicaciones
+  concurrentes podrian pisarse).
+- Validacion de configuracion de PRODUCCION (secretos presentes y largos, cookies
+  seguras, CORS sin comodin, sin DSN de operador en runtime).
+- Contador de conexiones WS COMPARTIDO si hay mas de una replica (viene de P06b:
+  PRERREQUISITO DURO del multi-replica).
+- Verificacion de secretos y entorno.
+- Backup/restore basico.
+- Smoke test de API/WS contra el despliegue real.
+- Despliegue REPRODUCIBLE con Actions.
+
+NO MODIFICA el Roadmap de piezas funcionales: cubre un hueco OPERATIVO descubierto
+en construccion. Decide Alvaro cuando abordarlo.

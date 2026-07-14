@@ -3,14 +3,14 @@
 Archivo vivo (sin logica). Mantenido por Claude Code; Alvaro lo resube
 al knowledge al cerrar cada pieza o hito (DOC_ENTREGABLES sec.8).
 
-Ultima actualizacion: 2026-07-12 (T-01).
+Ultima actualizacion: 2026-07-14 (cierre de pieza P06b y del hito M2).
 
 | Hito | Definicion breve (DOC_ROADMAP sec.4) | Piezas | Estado |
 |------|--------------------------------------|--------|--------|
 | M0 | Repo creado + CI de guardarrailes en verde (base estructural) | P00 | CERRADO |
 | M1 | Un evento viaja de punta a punta con envelope, idempotencia y Clock sobre el bus externo, con outbox transaccional; reinicio sin perdida | P01, P02, P02b, P03 | CERRADO |
-| M2 | Un Componente se descubre por carpeta, aislado por tenant/RLS, con capacidades por el gate fail-closed; API/auth/realtime en pie; kill switch en caliente | P04, P05, P06, P06b | EN CURSO |
-| M3 | Una Rule dispara sobre datos reales y proyecta signal.*/alert.*; el router backend entrega por un canal no-PWA/mock (sin overlay, sin ejecucion) | P07, P08, P09a | PENDIENTE |
+| M2 | Un Componente se descubre por carpeta, aislado por tenant/RLS, con capacidades por el gate fail-closed; API/auth/realtime en pie; kill switch en caliente | P04, P05, P06, P06b | CERRADO |
+| M3 | Una Rule dispara sobre datos reales y proyecta signal.*/alert.*; el router backend entrega por un canal no-PWA/mock (sin overlay, sin ejecucion) | P07, P08, P09a | PROXIMO |
 | M4 | PWA instalable con dashboard, chart y overlays de signal.* en movil real; push PWA; geo-blocking corta ejecucion, no visualizacion | P12a, P12b, P13, P09b | PENDIENTE |
 | M5 | Ejecucion gateada: bloqueo UE/EEA/UK, orden manual BYOC, autotrade BYOC, reconciliacion | P10a, P10b, P11 | PENDIENTE |
 
@@ -58,7 +58,7 @@ Clock sobre el bus externo, con outbox transaccional; reinicio sin perdida).
 Doble revision Central + CSA conforme; firmado por Alvaro. Proximo hito: M2
 (sustrato de plataforma): P04, P05, P06, P06b.
 
-## Detalle M2 (en curso desde 2026-07-10)
+## Detalle M2 (abierto 2026-07-10, CERRADO 2026-07-14)
 - P04 - Raiz Componente, manifest, discovery, lifecycle (ADR-001/008/009/010):
   ENTREGADA (1 de 4 de M2). Commit 866b434. Raiz Componente como rol por
   contratos; familia de eventos component.* en contracts/source; manifest
@@ -99,7 +99,43 @@ Doble revision Central + CSA conforme; firmado por Alvaro. Proximo hito: M2
   corregidos (P03 y P05, ver REGISTRO_DECISIONES sec.13). Checks equivalentes al
   workflow verdes en local; doble revision Central + CSA conforme; firmado por
   Alvaro.
-- P06b: PENDIENTE. Cierra M2.
+- P06b - API/Auth/Realtime Gateway (ADR-002/006/011/012/013/019): ENTREGADA
+  (4 de 4 de M2). CIERRA EL HITO. Commit de pieza:
+  6864c2af23dbaca1b04f41a0cfff3c0323247223. Commit final (PASO 0 del cierre, fuga
+  de tenants huerfanos): 52b26dba7e291611bfa6c050a6cba657fad477b9. ACTIONS VERDE
+  3/3 sobre el commit FINAL; 598 tests en verde con CERO SKIPS.
+  Puerta publica HTTP/WS. Auth PROPIA: Argon2id para contrasenas, JWT de acceso
+  corto que NO lleva el tenant dentro, refresh rotatorio con deteccion de reuso,
+  jamas accesible al JS. La identidad sale SOLO de la sesion verificada y el tenant
+  lo resuelve el BACKEND (obligaciones vinculantes de P05 y P06, cumplidas). Canon
+  de identidad con VENTANILLAS SECURITY DEFINER: el rol de aplicacion NO tiene
+  privilegios de tabla sobre app_user/user_credential/user_session (CA-07), y la FK
+  de user_tenant_membership.user_id que P05 dejo pendiente queda PAGADA. Las
+  capabilities se exponen como INFORMATIVAS (la decision autoritativa sigue siendo
+  el PolicyGate en el punto sensible) y el borde realtime hace enforcement
+  fail-closed ESTRICTO con el PolicyGate de P06. Linea base de seguridad completa
+  (rate limiting, CSRF, CORS, cabeceras, limites de cuerpo, logs sin secretos,
+  guardias de arranque). Publica user.registered por outbox y consume policy.* por
+  CURSOR PRIVADO. NO evalua reglas ni ejecuta ordenes: hay un test de frontera con
+  lista cerrada de rutas. Check IDENTITY nuevo (tools/check_identity_access.py).
+  Doble revision Central + CSA conforme; firmado por Alvaro.
+
+Cierre de hito M2 (2026-07-14): CERRADO (4 de 4: P04, P05, P06, P06b). El sustrato
+de plataforma queda demostrado: un Componente se descubre por carpeta, opera
+aislado por tenant/RLS, sus capacidades pasan por el gate fail-closed, la API/auth/
+realtime esta en pie, y el kill switch corta EN CALIENTE.
+
+LA PRUEBA DEL HITO. El operador activa un kill switch desde OTRO PROCESO y con OTRA
+CREDENCIAL, y la capability pasa a DENY EN EL BORDE DE LA API en 0,52 s, SIN
+reiniciar nada (el mismo PID sigue vivo) y POR EVENTO, recorriendo la cadena
+completa: operador -> DB -> outbox -> bus -> invalidacion de cache -> DENY. El TTL
+del cache es de 60 s y queda DESCARTADO por diseno del arnes, que ABORTA si el corte
+tarda lo que dura el TTL: la demostracion NO PUEDE MENTIR (si el corte se debiera a
+la caducidad del cache y no al evento, la prueba falla en vez de aprobar). Al soltar
+el switch, la capability vuelve a ALLOW en 0,52 s, tambien en caliente.
+Doble revision Central + CSA conforme; firmado por Alvaro.
+Proximo hito: M3 (datos, reglas y notificacion backend): P07 (ingesta de market
+data), P08 (motor de reglas) y P09a (router de notificaciones backend).
 
 ## Nota T-01 (2026-07-12)
 Desde T-01 el proyecto tiene remoto privado y GitHub Actions ejecutandose de
