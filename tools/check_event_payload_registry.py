@@ -78,8 +78,12 @@ ROADMAP_PIECES = frozenset(
 # de modo que el check habria admitido diferir un tipo a una pieza ya pasada.
 # Defecto del guardarrail hallado por el periferico de P07 al leerlo antes de
 # tocarlo; se corrige hacia delante (mismo patron que la ENMIENDA HISTORICA 2).
+# Cada pieza se anade AL CERRARLA (convencion). P07 no tiene efecto funcional hoy
+# porque DEFERRED_EVENT_TYPES esta vacio (CA-06 pagado: los tres market.* ya tienen
+# payload), pero mantiene la regla para las piezas futuras: diferir a una pieza cerrada
+# es deuda disfrazada.
 CLOSED_PIECES = frozenset(
-    {"P00", "P01", "P02", "P02b", "P03", "P04", "P05", "P06", "P06b"}
+    {"P00", "P01", "P02", "P02b", "P03", "P04", "P05", "P06", "P06b", "P07"}
 )
 
 

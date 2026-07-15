@@ -5,7 +5,7 @@ estable para revisar las piezas. El CSA revisa coherencia y calidad
 contra los documentos-norte; NO decide (firma Alvaro). Archivo vivo
 mantenido por Claude Code.
 
-Ultima actualizacion: 2026-07-08 (cierre de M0).
+Ultima actualizacion: 2026-07-15 (entrega de pieza P07; abre el hito M3).
 
 ## 1. Que construimos
 CE v5: plataforma comercial multiusuario de analisis cuantitativo y
@@ -276,3 +276,64 @@ El CSA debe comprobar:
 - REGLA 5.15: P07 ABRE UNA SUPERFICIE EXTERNA NUEVA (los exchanges) y por tanto DEBE
   TRAER SU BARRIDO DE LINEA BASE DE SEGURIDAD ESCRITO, CONTROL POR CONTROL, con lo no
   construido asignado a una pieza DUENA.
+=====================================================================
+REVISION CSA - PIEZA P07 (hito M3) - 2026-07-15
+=====================================================================
+Veredicto: CONFORME (Central y CSA), con doble revision y re-revision tras cerrar dos
+bloqueantes. Firmado por Alvaro. P07 ENTREGADA; ABRE M3 (1/3, no lo cierra).
+Commit de pieza e7c92be; commit final f62e4e0; ACTIONS VERDE 3/3 sobre f62e4e0. 870
+tests, cero skips en local.
+
+RESUMEN DE LA PIEZA: ingesta hibrida (ADR-014). Streams PUBLICOS compartidos por
+MarketStreamKey SIN tenant_id (un solo stream para todos los interesados; la ventanilla
+agregada da CUANTOS piden un stream, jamas QUIENES). Streams PRIVADOS/BYOC por-usuario
+gateados por politica/geo antes de INITIALIZE (connector FAKE en P07; credenciales reales
+en P10a). Ref-count RECONSTRUIBLE desde los intents persistidos (no un contador en
+memoria). Conector REAL de Binance Spot (feed publico, sin credenciales). Primer market.*
+END-TO-END demostrado en caliente.
+
+LAS SIETE CA FIRMADAS: A (outbox por madurez: closed/corrected atomico por outbox, updated
+directo al bus fail-loud); B (rol ce_v5_ingestion + regla 5.20); C (provisional gateado por
+demanda, con backpressure y metricas); D (ventanilla SECURITY DEFINER sin fuga de
+identidad); E (7.7 version-aware no se dispara: P07 es aditivo); F (tres exchanges por
+camino B: uno real, OKX/Bybit en T-03); G (la ventanilla chocaba con R5 del 7.8 -> allowlist
+de policies + R8a-d/R9; el 7.8 se ENDURECE; doce negativas desde el CATALOGO).
+
+LOS DOS BLOQUEANTES DE LA RE-REVISION, RESUELTOS:
+- Auto-bootstrap tras reconexion CONSTRUIDO EN EL MOTOR: el conector senala reconexiones
+  (drain_reconnected) y el motor (drain_once, en cada tick del componente) dispara el
+  bootstrap REST por el mismo camino de dedup, con fault isolation por stream. Demostrado
+  en caliente contra Binance real (rellena el hueco sin duplicar).
+- Las DOCE pruebas del 7.8 endurecido LEIDAS DEL CATALOGO (pg_policies /
+  pg_get_function_result), no de regex sobre .sql. La baseline es la policy REAL; se
+  perturba y se comprueba que MUERDE.
+
+EVIDENCIA C-I (para pegar): idempotency_key sin colision variando cada dimension
+(exchange/timeframe/symbol/madurez, cero colisiones); candle_corrected append-only con PATH
+PRODUCTOR construido (el motor emite via _emitir_correccion, no solo el contrato); check
+MARKET bloqueante (ingesta estrecha, ventanilla ciega); guardia 5.20 SIN modo-test (no hay
+bandera que la desactive; el arnes solo acota el ENTORNO por rol); conteo de skips por job
+(661 backend / 209 integracion / 870 local, cero grietas); barrido 5.15 con FECHA
+(2026-07-15) y URL de la doc oficial de spot (nota: el retiro de endpoints es de DERIVADOS,
+no de spot; stream.binance.com:9443 sigue vigente); negativos de catalogo (simbolo
+no-ASCII saltado y contado), cardinalidad (MAX_INTENTS_PER_SUBJECT) y pool (pasarse del tope
+no abre nada).
+
+REGLA NUEVA 5.20 (verbatim en REGISTRO_DECISIONES sec.5): menor privilegio por proceso;
+nadie fabrica hechos ajenos. Vinculante para P07, P08 y P10b.
+
+DISTINCION DE DEFENSAS (que el CSA debe vigilar para no copiar sin criterio): IDENTIDAD
+(P06b) usa REVOKE TOTAL como defensa primaria (la API no lee hashes ni por error);
+market_subscription_intent usa RLS atada a tenant/user como defensa primaria (el rol de app
+SI escribe los intents del usuario), con la ventanilla como EXCEPCION secundaria para el
+worker. Defensas distintas para necesidades distintas.
+
+INVARIANTE HACIA P08: las reglas y senales se evaluan sobre market.candle_closed
+(determinista), JAMAS sobre candle_updated (vista viva). Evaluar sobre provisional seria un
+cambio arquitectonico a ELEVAR.
+
+PARA LA PROXIMA REVISION (T-03 ANTES de P08): segundo y tercer connector publico (OKX,
+Bybit v5). Prueba de fuego de CE-14: si exige tocar contratos, fronteras o MarketStreamKey,
+SE PARA Y SE ELEVA. Se repite el barrido 5.15 POR CADA exchange (cada uno con su heartbeat
+--Bybit 15 s no 20--, formato de vela, semantica de cierre y reconexion); NO se copia el de
+Binance.

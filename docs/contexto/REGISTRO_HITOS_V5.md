@@ -3,14 +3,14 @@
 Archivo vivo (sin logica). Mantenido por Claude Code; Alvaro lo resube
 al knowledge al cerrar cada pieza o hito (DOC_ENTREGABLES sec.8).
 
-Ultima actualizacion: 2026-07-14 (cierre de pieza P06b y del hito M2).
+Ultima actualizacion: 2026-07-15 (entrega de pieza P07; abre el hito M3).
 
 | Hito | Definicion breve (DOC_ROADMAP sec.4) | Piezas | Estado |
 |------|--------------------------------------|--------|--------|
 | M0 | Repo creado + CI de guardarrailes en verde (base estructural) | P00 | CERRADO |
 | M1 | Un evento viaja de punta a punta con envelope, idempotencia y Clock sobre el bus externo, con outbox transaccional; reinicio sin perdida | P01, P02, P02b, P03 | CERRADO |
 | M2 | Un Componente se descubre por carpeta, aislado por tenant/RLS, con capacidades por el gate fail-closed; API/auth/realtime en pie; kill switch en caliente | P04, P05, P06, P06b | CERRADO |
-| M3 | Una Rule dispara sobre datos reales y proyecta signal.*/alert.*; el router backend entrega por un canal no-PWA/mock (sin overlay, sin ejecucion) | P07, P08, P09a | PROXIMO |
+| M3 | Una Rule dispara sobre datos reales y proyecta signal.*/alert.*; el router backend entrega por un canal no-PWA/mock (sin overlay, sin ejecucion) | P07, P08, P09a | ABIERTO (1 de 3) |
 | M4 | PWA instalable con dashboard, chart y overlays de signal.* en movil real; push PWA; geo-blocking corta ejecucion, no visualizacion | P12a, P12b, P13, P09b | PENDIENTE |
 | M5 | Ejecucion gateada: bloqueo UE/EEA/UK, orden manual BYOC, autotrade BYOC, reconciliacion | P10a, P10b, P11 | PENDIENTE |
 
@@ -143,3 +143,20 @@ verdad. Actions VERDE en el commit 64330c7. La formula "Actions pendiente por
 ausencia de remoto" que aparece en los cierres de P00 a P06 era CIERTA cuando
 se escribio y se conserva sin tocar; queda DEROGADA hacia delante (regla
 5.13): a partir de aqui, una pieza no se cierra sin Actions en verde.
+
+## Detalle M3 (abierto 2026-07-15)
+- P07 - Ingesta de market data (hibrida), ADR-014: ENTREGADA 2026-07-15 (1 de 3
+  de M3). ABRE M3. Commit de pieza e7c92be; commit final f62e4e0; ACTIONS VERDE
+  3/3 sobre f62e4e0. 870 tests, cero skips en local. Doble revision Central + CSA
+  conforme; firmado por Alvaro.
+  Demostracion: primer market.* END-TO-END con connector REAL de Binance Spot
+  (streaming en vivo, reconexion + bootstrap REST autonomo del motor, dedup sin
+  perder ni duplicar) y tambien con datasource FAKE controlado. Publicos
+  compartidos SIN duplicar por tenant (un stream por MarketStreamKey; ventanilla
+  agregada cross-tenant que da CUANTOS piden un stream, jamas QUIENES). Ref-count
+  RECONSTRUIBLE desde los intents persistidos tras un reinicio (no un contador en
+  memoria). Camino PRIVADO/BYOC gateado por politica/geo antes de INITIALIZE
+  (connector FAKE en P07; credenciales reales en P10a). Rol ce_v5_ingestion
+  estrecho (regla 5.20, nueva) con check bloqueante MARKET y pruebas negativas
+  bidireccionales. Barrido de seguridad 5.15 escrito, control por control.
+  M3: 1 de 3 (faltan P08 motor de reglas y P09a router de notificaciones backend).

@@ -167,6 +167,15 @@ que no vivan solo en el chat (anti-deriva, DOC_ENTREGABLES sec.9).
      retorno minimo, EXECUTE revocado a PUBLIC, convencion p_/v_), y un CHECK
      BLOQUEANTE lo hace cumplir. Cero logica de negocio en la DB. VINCULANTE para
      P10a (credenciales BYOC de exchange).
+5.20 MENOR PRIVILEGIO POR PROCESO: NADIE FABRICA HECHOS AJENOS. Ningun proceso tiene
+     privilegios de DB para ESCRIBIR HECHOS QUE NO PRODUCE. Cada proceso de runtime opera
+     con un rol de DB acotado a su funcion: la API (expuesta a internet) NO puede escribir
+     market data, ni ordenes, ni senales; el ingestor NO toca identidad ni ordenes; el
+     worker de ejecucion NO fabrica market data. Rol sin login por migracion, credencial
+     del entorno (CE-13), guardia de arranque que impide portar un DSN ajeno, y CHECK
+     BLOQUEANTE con pruebas negativas en las dos direcciones. Generaliza CA-03/CA-04/CA-07
+     y amplia la 5.19 (que solo cubria SECRETOS) a los PRIVILEGIOS DE FABRICAR HECHOS.
+     VINCULANTE para P07, P08 y P10b.
 =====================================================================
 6. CIERRE DE PIEZA P01 - CONTRATOS BASE Y ENVELOPE
 =====================================================================
@@ -911,3 +920,109 @@ CONTENIDO MINIMO:
 
 NO MODIFICA el Roadmap de piezas funcionales: cubre un hueco OPERATIVO descubierto
 en construccion. Decide Alvaro cuando abordarlo.
+=====================================================================
+18. CIERRE DE PIEZA P07 - INGESTA DE MARKET DATA (HIBRIDA, ADR-014)
+=====================================================================
+Estado: ENTREGADA. ABRE el hito M3 (no lo cierra: M3 = P07 + P08 + P09a).
+Commit de pieza: e7c92be. Commit final (cierre de huecos de la doble revision):
+f62e4e0. ACTIONS VERDE 3/3 (backend, backend-integration, frontend) sobre f62e4e0
+(run #9). 870 tests; cero skips en local. Doble revision Central + CSA conforme;
+firmado por Alvaro 2026-07-15.
+
+LAS SIETE CONSULTAS FIRMADAS (CA-P07-A..G)
+- CA-P07-A (outbox vs directo por MADUREZ): candle_closed y candle_corrected van por
+  OUTBOX en la MISMA transaccion que su persistencia (atomico, imposible divergencia);
+  candle_updated va DIRECTO al bus, fail-loud, validando el contrato, y NO se persiste
+  (no es historia, es una vista viva).
+- CA-P07-B (menor privilegio por proceso): rol de DB ce_v5_ingestion + regla 5.20
+  (dictada aqui). El ingestor es el UNICO que escribe market data; la API no la escribe.
+- CA-P07-C (provisional gateado): candle_updated se emite SEGUN LA DEMANDA, con
+  retencion corta, backpressure (pull con tope) y metricas observables de descartes.
+- CA-P07-D (ventanilla agregada): funcion SECURITY DEFINER market_public_demand que
+  agrega la demanda PUBLICA sin fuga de identidad -- devuelve SOLO la clave del stream y
+  CUANTOS la piden, jamas QUIENES.
+- CA-P07-E (7.7 version-aware): NO se dispara porque P07 es ADITIVO sobre los contratos
+  (no evoluciona ninguno de forma incompatible); verificado empiricamente.
+- CA-P07-F (tres exchanges por CAMINO B): uno REAL en P07 (Binance Spot); OKX y Bybit
+  en T-03 (segundo y tercer connector, antes de P08).
+- CA-P07-G (ventanilla vs R5 del 7.8): la ventanilla del dueno chocaba con R5 (toda
+  policy de una tabla tenant/user ata la fila al tenant). Opcion 1: allowlist explicita
+  de policies (POLICIES_SIN_TENANT_PERMITIDAS) MAS reglas nuevas R8a-d y R9 que hacen la
+  excepcion MAS ESTRECHA que la regla que relaja. El 7.8 se ENDURECE, no solo se afloja;
+  doce pruebas negativas leidas del CATALOGO (pg_policies), no de regex sobre .sql.
+
+INVARIANTE HACIA P08 (registrado ahora)
+Las REGLAS y SENALES se evaluan sobre market.candle_closed (determinista, reproducible),
+JAMAS sobre market.candle_updated (vista viva que puede perderse). Evaluar sobre
+provisional seria un CAMBIO ARQUITECTONICO A ELEVAR: rompe reproducibilidad, backtesting
+y el SimulatedClock (ADR-007).
+
+DISTINCION DE DEFENSAS (regla de diseno; NO copiar sin criterio el patron de P06b)
+- IDENTIDAD (P06b) usa REVOKE TOTAL como defensa PRIMARIA: el rol de aplicacion no tiene
+  NINGUN privilegio de tabla sobre app_user/user_credential/user_session; solo ventanillas
+  SECURITY DEFINER; la RLS es secundaria. Motivo: la API no debe poder leer hashes ni por
+  error.
+- market_subscription_intent usa RLS atada a tenant/user como defensa PRIMARIA, porque el
+  rol de aplicacion SI necesita escribir los intents del usuario autenticado. La ventanilla
+  agregada es una EXCEPCION SECUNDARIA para el worker de ingesta, NO una sustitucion de la
+  RLS. Defensas distintas para necesidades distintas.
+
+CONECTOR REAL: Binance Spot, SOLO feed publico (sin credenciales), elegido y justificado:
+campo 'x' = vela cerrada = maturity_state servido por el EXCHANGE; corte de 24 h
+GARANTIZADO que ejercita la reconexion; endpoint data-stream sin datos de usuario; limites
+publicados verificados (barrido 5.15). Coinbase: descartada por decision de producto de
+Alvaro. Kraken: vetada por Alvaro.
+
+AUTO-BOOTSTRAP TRAS RECONEXION (BLOQUEANTE 2 de la re-revision, CONSTRUIDO en P07)
+El conector senala las reconexiones (drain_reconnected) y el MOTOR (drain_once, que el
+componente ejecuta en cada tick) dispara el bootstrap REST por el MISMO camino de
+normalizacion+dedup, con fault isolation por stream (un bootstrap fallido de un stream no
+tumba a los demas). Demostrado en caliente contra Binance real: fetch_recent(10) tras la
+reconexion dedupo el solape ya persistido y persistio las velas del hueco, sin duplicar.
+
+DEFECTOS HALLADOS Y QUIEN LOS ENCONTRO (D1-D9)
+- D1: CLOSED_PIECES sin P06/P06b (periferico, leyendo el guardia).
+- D2: un test de integracion usaba market.* como diferido (la suite; omision del
+  periferico).
+- D3: la ventanilla chocaba con R5 del 7.8 (el check 7.8) -> CA-P07-G.
+- D4: deriva estructural ce_v5/core/market (periferico en revision; revertido).
+- D5: datos de test imposibles cazados por la frontera de confianza (la suite).
+- D6: la guardia 5.20 abortaba el proceso de test/worker -- NO es bug, es la guardia
+  mordiendo (al ejecutar); se resolvio acotando el ENTORNO por rol, sin tocar la guardia.
+- D7: el patron de simbolo {2,15} rechazaba tickers de 1 caracter legitimos (Binance 'T',
+  Threshold) -- la validacion en caliente REAL; se amplio a {1,20}.
+- D8: sync_catalog crasheaba (CheckViolation) ante un simbolo no-ASCII de Binance -- la
+  validacion en caliente REAL; se aplico ADR-006 al catalogo (saltar y CONTAR, fault
+  isolation), sin ampliar mas el patron.
+- D9: el veredicto del arnes asumia "cero crecimiento" del historico y el contador de
+  reconexiones no contaba los cierres LIMPIOS -- la validacion en caliente; el codigo de
+  PRODUCCION era correcto (el bootstrap DEBE rellenar el hueco, y una reconexion limpia ES
+  una reconexion). Se corrigio el veredicto y el contador, no la logica.
+D7 y D8 JUSTIFICAN la exigencia de Central de un conector REAL: solo el mundo real los
+revela; un fake jamas habria mandado 'T' ni un simbolo chino.
+
+CONTEO DE SKIPS (regla 5.18) sobre f62e4e0
+Job backend corre 661 (639 unit + 22 componentes) y SALTA los 209 de integracion (skipif
+de modulo por ausencia de DSN); job backend-integration corre los 209 con
+PostgreSQL+Redis+los cuatro roles; CERO grietas (todo test de DB vive en
+tests/integration/). Local con los cuatro DSN: 870, cero skips.
+=====================================================================
+19. T-03: SEGUNDO Y TERCER CONECTOR PUBLICO (OKX, BYBIT v5) - TRABAJO TRANSVERSAL
+=====================================================================
+DISPARADOR: INMEDIATAMENTE DESPUES de P07, ANTES de P08. Es la PRUEBA DE FUEGO de CE-14
+(copiar carpeta + manifest + reiniciar): un exchange nuevo debe ser un adaptador nuevo, no
+tocar el ingestor.
+
+REGLA DURA: si anadir OKX o Bybit exige tocar contratos, fronteras de capa o
+MarketStreamKey, SE PARA Y SE ELEVA -- significaria que P07 esta MAL construida (la
+abstraccion de exchange no seria tal).
+
+BARRIDO POR EXCHANGE: se repite el barrido 5.15 POR CADA exchange, entero. NO se copia el
+de Binance: cada exchange tiene su propio heartbeat (Bybit usa 15 s, no 20), su formato de
+vela, su semantica de cierre y su reconexion. Copiar el barrido de uno a otro es
+exactamente el error que Central prohibio.
+
+REFINAMIENTO REGISTRADO: el pre-filtro de simbolos por-exchange en el connector (rechazar
+en list_instruments lo que ese exchange lista y no representamos) es endurecimiento
+POR-EXCHANGE de T-03; el filtro GENERICO de sync_catalog (saltar y contar, D8) ya cubre a
+todos por igual mientras tanto.

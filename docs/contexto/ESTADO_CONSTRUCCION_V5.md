@@ -4,43 +4,38 @@ Archivo vivo de estado de proceso (sin logica). Lo mantiene Claude Code
 en disco; Alvaro lo resube al knowledge cada vez que se cierra una pieza
 o un hito (DOC_ENTREGABLES sec.8).
 
-Ultima actualizacion: 2026-07-14 (cierre de pieza P06b y del hito M2).
+Ultima actualizacion: 2026-07-15 (cierre de pieza P07).
 
 ## Hito actual
-M2 CERRADO (sustrato de plataforma). Piezas de M2: P04 (ENTREGADA), P05
-(ENTREGADA), P06 (ENTREGADA), P06b (ENTREGADA). 4 de 4.
-Proximo hito: M3 (datos, reglas y notificacion backend): P07, P08, P09a.
+M3 (datos, reglas y notificacion backend) ABIERTO. Piezas de M3: P07
+(ENTREGADA), P08 (pendiente), P09a (pendiente). 1 de 3.
+Proximo hito (tras M3): M4.
 
 ## Pieza actual
-P06b - API/Auth/Realtime Gateway (ADR-002/006/011/012/013/019): ENTREGADA.
-  CIERRA el hito M2.
-  Commit de pieza: 6864c2a
-  (6864c2af23dbaca1b04f41a0cfff3c0323247223).
-  Commit final (PASO 0 del cierre, fuga de tenants huerfanos): 52b26db
-  (52b26dba7e291611bfa6c050a6cba657fad477b9).
-  ACTIONS VERDE 3/3 (backend, backend-integration, frontend) sobre el commit
-  FINAL. 598 tests en verde con CERO SKIPS.
+P07 - Ingesta de market data (hibrida), ADR-014: ENTREGADA. ABRE el hito M3
+  (no lo cierra: M3 = P07 + P08 + P09a).
+  Commit de pieza: e7c92be.
+  Commit final (cierre de huecos de la doble revision): f62e4e0.
+  ACTIONS VERDE 3/3 (backend, backend-integration, frontend) sobre f62e4e0
+  (run #9). 870 tests; cero skips en local.
   Doble revision Central + CSA conforme; firmado por Alvaro.
-  Resumen: puerta publica HTTP/WS; auth PROPIA (Argon2id, JWT corto que NO lleva
-  el tenant dentro, refresh rotatorio con deteccion de reuso, jamas accesible al
-  JS); la identidad sale SOLO de la sesion verificada y el tenant lo resuelve el
-  BACKEND; canon de identidad con VENTANILLAS SECURITY DEFINER (el rol de
-  aplicacion NO tiene privilegios de tabla sobre app_user/user_credential/
-  user_session) y FK de P05 PAGADA; capabilities INFORMATIVAS; enforcement
-  fail-closed ESTRICTO en el borde realtime con el PolicyGate de P06; linea base
-  de seguridad completa (rate limiting, CSRF, CORS, cabeceras, limites de cuerpo,
-  logs sin secretos, guardias de arranque); publica user.registered por outbox y
-  consume policy.* por cursor privado; NO evalua reglas ni ejecuta ordenes (test
-  de frontera con lista cerrada de rutas).
-  Cierre de contexto en el commit "docs(contexto): cierre P06b y M2" (regla 5.9);
-  su hash se registra en el commit inmediato posterior.
-  Hash del commit de cierre de contexto: ee8647e0c213c38cb4dddb01a4b955e1b08577fe.
+  Resumen: ingesta hibrida (ADR-014). Publicos compartidos sin tenant (un stream
+  por MarketStreamKey); privados por-usuario gateados (connector FAKE); ref-count
+  reconstruible; auto-bootstrap tras reconexion en el motor; conector REAL de
+  Binance Spot (feed publico); rol ce_v5_ingestion estrecho (regla 5.20) con check
+  bloqueante MARKET; ventanilla agregada cross-tenant sin fuga (CA-P07-D/G); los
+  tres market.* registrados (CA-06 pagado, DEFERRED vacio); barrido de seguridad
+  5.15.
+  Cierre de contexto en el commit "docs(contexto): cierre P07" (regla 5.9); su hash
+  se registra en el commit inmediato posterior.
+  Hash del commit de cierre de contexto: (se registra en el commit inmediato
+  posterior, regla 5.9).
   (Un commit no puede contener su propio hash: por eso el hash del cierre se
   registra en el commit inmediato posterior. Regla 5.9 cumplida: cero cola en el
   arbol.)
 
 ## Proxima pieza
-P07 - Ingesta de market data (hibrida), ADR-014. ABRE el hito M3.
+P08 - Motor de reglas (ADR-015/016/017).
 
 ## Piezas cerradas
 - P00 - Esqueleto de repositorio + CI base: ENTREGADA (hito M0 CERRADO).
@@ -57,7 +52,9 @@ P07 - Ingesta de market data (hibrida), ADR-014. ABRE el hito M3.
 - P06 - PolicyEvaluator central + kill switch: ENTREGADA. Commit 06cb51f.
 - P06b - API/Auth/Realtime Gateway: ENTREGADA. Commit de pieza 6864c2a; commit
   final 52b26db. Con P06b se cierra el hito M2 (4 de 4).
-Van 9 piezas cerradas de 19.
+- P07 - Ingesta de market data (hibrida): ENTREGADA. Commit de pieza e7c92be;
+  commit final f62e4e0. Abre el hito M3.
+Van 10 piezas cerradas de 19.
 
 ## Regla de trabajo (REGISTRO_DECISIONES sec.1)
 Construccion en micro-pasos: el periferico nunca entrega la pieza entera
@@ -149,3 +146,27 @@ de golpe. Un paso, se explica, Alvaro ejecuta y pega salida, siguiente.
   tests de integracion en silencio. Un test que se salta en silencio es un test que
   no existe: el barrido de cierre debe reportar SIEMPRE el numero de skips, y CERO
   es el valor por defecto.
+- Worker de ingesta (P07): proceso propio,
+  "python -m ce_v5.entrypoints.worker_ingestion". El datasource se elige por
+  CE_V5_MARKET_DATASOURCE ('binance' = connector REAL por defecto; 'fake' = arranque
+  local SIN red, para ver que el proceso levanta).
+- Rol de ingesta (P07, regla 5.20): CE_V5_INGESTION_DATABASE_URL (rol
+  ce_v5_ingestion, UNICO que escribe market data) y CE_V5_INGESTION_DB_PASSWORD (para
+  provisionar el rol). Guardias de arranque BIDIRECCIONALES: la API aborta si porta el
+  DSN de ingesta (podria fabricar velas); el ingestor aborta si porta el DSN de app u
+  operador (portaria un poder que su funcion no necesita).
+- Checks activos tras P07: 7.1-7.9 + audit + identity + MARKET (NUEVO,
+  tools/check_market_access.py; enganchado al job backend-integration: ingesta
+  estrecha y ventanilla ciega, regla 5.20) + registro event_type->payload +
+  integracion DB/bus/API. Migracion 0012 (market_candle, market_instrument,
+  market_subscription_intent, ventanilla market_public_demand, rol ce_v5_ingestion).
+- Validacion en caliente de P07: tools/validate_p07_hot.py (las cuatro obligatorias
+  del Roadmap contra PostgreSQL real) y tools/validate_p07_binance_live.py (Binance
+  REAL: streaming, reconexion + bootstrap AUTONOMO del motor, dedup).
+  tools/probe_binance_live.py (sonda REST de alcanzabilidad, previa al arnes). CI
+  HERMETICO: las herramientas que tocan la red viven en tools/ (pytest no las
+  recolecta); ningun test de CI abre un socket.
+- AVISO OPERATIVO (P07, regla 5.18): para correr la suite ENTERA en local hacen falta
+  los CUATRO DSN (app, migraciones, operador, ingesta). Las variables de operador e
+  ingesta son SOLO para la suite; NO se dejan permanentes en el entorno (los guardias
+  de arranque abortarian la API o el worker si portan un DSN ajeno).
