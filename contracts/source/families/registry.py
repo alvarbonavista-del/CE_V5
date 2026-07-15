@@ -27,7 +27,12 @@ from dataclasses import dataclass
 
 from source.envelope import EventPayload
 from source.families.component import ComponentEventType, ComponentLifecyclePayload
-from source.families.market import MarketCandleEventType
+from source.families.market import (
+    CandleClosedPayload,
+    CandleCorrectedPayload,
+    CandleUpdatedPayload,
+    MarketCandleEventType,
+)
 from source.families.policy import (
     KillSwitchPayload,
     PolicyEventType,
@@ -73,6 +78,13 @@ EVENT_PAYLOAD_REGISTRY: dict[str, tuple[type[EventPayload], int]] = {
     # NO va a DEFERRED_EVENT_TYPES: tiene payload y tiene PRODUCTOR REAL desde hoy (el
     # alta de la API, P06b).
     UserEventType.REGISTERED.value: (UserRegisteredPayload, 1),
+    # market.* (CA-06, pagado en P07): payload OHLCV real y productor real (el
+    # ingestor de mercado). Cada tipo apunta a su subclase concreta, que FIJA su
+    # maturity_state: una vela cerrada marcada como provisional la rechaza el
+    # contrato, no el codigo.
+    MarketCandleEventType.CANDLE_UPDATED.value: (CandleUpdatedPayload, 1),
+    MarketCandleEventType.CANDLE_CLOSED.value: (CandleClosedPayload, 1),
+    MarketCandleEventType.CANDLE_CORRECTED.value: (CandleCorrectedPayload, 1),
 }
 
 # Estado unico y constante de un tipo diferido: diferido HASTA que cierre su
@@ -103,61 +115,11 @@ class DeferredEventType:
 
 # event_type declarado cuya taxonomia existe pero cuyo PAYLOAD y PRODUCTOR los
 # define una pieza futura: hoy NADIE puede emitirlos. Cada entrada es honesta.
-DEFERRED_EVENT_TYPES: dict[str, DeferredEventType] = {
-    MarketCandleEventType.CANDLE_UPDATED.value: DeferredEventType(
-        event_type=MarketCandleEventType.CANDLE_UPDATED.value,
-        family="market",
-        motivo=(
-            "La taxonomia de vela se declara hoy (ADR-007) para fijar el "
-            "vocabulario market.*, pero el payload y su productor no existen aun."
-        ),
-        owner_piece="P07",
-        dependency_reason=(
-            "El payload OHLCV (open/high/low/close/volume) y su timeframe los "
-            "define la ingesta de mercado (P07) extendiendo MaturityAwarePayload; "
-            "sin ingesta no hay productor ni payload de vela provisional."
-        ),
-        exit_rule=(
-            "Al cerrar P07 se REGISTRA con su payload OHLCV en "
-            "EVENT_PAYLOAD_REGISTRY; si la ingesta no llegara a emitir vela "
-            "provisional, se ELIMINA del taxonomia."
-        ),
-    ),
-    MarketCandleEventType.CANDLE_CLOSED.value: DeferredEventType(
-        event_type=MarketCandleEventType.CANDLE_CLOSED.value,
-        family="market",
-        motivo=(
-            "Vela cerrada (definitiva del intervalo): su taxonomia se fija hoy "
-            "(ADR-007), su payload lo produce la ingesta de mercado."
-        ),
-        owner_piece="P07",
-        dependency_reason=(
-            "El payload OHLCV definitivo y la marca de cierre del intervalo los "
-            "define la ingesta de mercado (P07); sin ella nadie cierra velas."
-        ),
-        exit_rule=(
-            "Al cerrar P07 se REGISTRA con su payload OHLCV concreto; si no "
-            "hubiera ingesta que cierre velas, se ELIMINA."
-        ),
-    ),
-    MarketCandleEventType.CANDLE_CORRECTED.value: DeferredEventType(
-        event_type=MarketCandleEventType.CANDLE_CORRECTED.value,
-        family="market",
-        motivo=(
-            "Correccion de una vela ya cerrada: taxonomia fijada hoy (ADR-007), "
-            "payload y productor de la ingesta de mercado."
-        ),
-        owner_piece="P07",
-        dependency_reason=(
-            "La correccion arrastra el payload OHLCV corregido y la referencia a "
-            "la vela original; ese payload lo define la ingesta de mercado (P07)."
-        ),
-        exit_rule=(
-            "Al cerrar P07 se REGISTRA con su payload de correccion; si la "
-            "ingesta no corrigiera velas, se ELIMINA."
-        ),
-    ),
-}
+# VACIO desde P07: los tres market.* eran los unicos diferidos y ya tienen
+# payload real y productor real (la ingesta de mercado). No queda en CE v5 ni un
+# solo event_type declarado sin payload. El mapa se conserva (no se borra) porque
+# es el mecanismo de gobierno de CA-06 para las piezas que vengan.
+DEFERRED_EVENT_TYPES: dict[str, DeferredEventType] = {}
 
 
 def _resolve(event_type: str) -> tuple[type[EventPayload], int]:

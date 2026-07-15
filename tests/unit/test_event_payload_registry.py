@@ -6,7 +6,9 @@ import pytest
 
 import check_event_payload_registry
 from source.envelope import EventPayload
+from source.families import registry
 from source.families.component import ComponentLifecyclePayload
+from source.families.market import CandleClosedPayload
 from source.families.policy import KillSwitchPayload, SubjectInvalidatedPayload
 from source.families.registry import (
     DEFERRED_EVENT_TYPES,
@@ -18,7 +20,10 @@ from source.families.registry import (
     payload_class_for,
 )
 
-_DEFERRED_ET = "market.candle_closed"
+# Tipo de ejemplo para probar la MECANICA del mapa de diferidos. Ya NO puede ser un
+# market.*: desde P07 los tres estan REGISTRADOS con payload real, y usarlos aqui
+# afirmaria un hecho falso. El mecanismo se prueba con un tipo de mentira.
+_DEFERRED_ET = "datasource.demo_deferred"
 
 
 class _Concrete(EventPayload):
@@ -29,11 +34,11 @@ def _deferred(**overrides: str) -> DeferredEventType:
     """Una DeferredEventType valida; los tests sobreescriben el campo a romper."""
     base: dict[str, str] = {
         "event_type": _DEFERRED_ET,
-        "family": "market",
+        "family": "datasource",
         "motivo": "taxonomia declarada hoy",
-        "owner_piece": "P07",
-        "dependency_reason": "el payload OHLCV lo define la ingesta (P07)",
-        "exit_rule": "al cerrar P07 se registra o se elimina",
+        "owner_piece": "P08",
+        "dependency_reason": "su payload y su productor los define una pieza futura",
+        "exit_rule": "al cerrar la pieza duena se registra o se elimina",
         "status": DEFERRED_STATUS,
     }
     base.update(overrides)
@@ -46,9 +51,20 @@ def test_payload_class_for_tipo_registrado() -> None:
     assert payload_class_for("component.running") is ComponentLifecyclePayload
 
 
-def test_payload_class_for_tipo_diferido() -> None:
-    with pytest.raises(DeferredEventTypeError, match="P07"):
-        payload_class_for("market.candle_closed")
+def test_payload_class_for_tipo_diferido(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Desde P07 no queda NINGUN tipo diferido real (los tres market.* ya tienen
+    # payload y productor). El MECANISMO sigue vivo y se prueba con un diferido
+    # inyectado: si manana alguien difiere un tipo, payload_class_for debe seguir
+    # negandose a resolverlo en vez de devolver un payload inventado.
+    monkeypatch.setitem(registry.DEFERRED_EVENT_TYPES, _DEFERRED_ET, _deferred())
+    with pytest.raises(DeferredEventTypeError, match="P08"):
+        payload_class_for(_DEFERRED_ET)
+
+
+def test_payload_class_for_market_ya_no_esta_diferido() -> None:
+    # El hecho que cambio en P07: market.candle_closed pasa de diferido a
+    # REGISTRADO con su payload concreto (tarea vinculante CA-06, pagada).
+    assert payload_class_for("market.candle_closed") is CandleClosedPayload
 
 
 def test_payload_class_for_tipo_desconocido() -> None:
@@ -162,8 +178,10 @@ def test_check_falla_tipo_diferido_en_uso() -> None:
 
 
 def test_registro_real_pasa_el_check() -> None:
-    # End-to-end: registro real + escaneo real de backend/src. Los tres market.*
-    # llevan sus siete campos, apuntan a P07 (no cerrada) y nadie los usa aun.
+    # End-to-end: registro real + escaneo real de backend/src. Desde P07 el mapa de
+    # diferidos esta VACIO (los tres market.* pasaron a EVENT_PAYLOAD_REGISTRY con
+    # su payload real), asi que no hay nada que escanear y ningun event_type
+    # declarado se queda sin payload.
     declared = check_event_payload_registry._declared_event_types()
     in_use = check_event_payload_registry.scan_in_use(
         set(DEFERRED_EVENT_TYPES), check_event_payload_registry._BACKEND_SRC

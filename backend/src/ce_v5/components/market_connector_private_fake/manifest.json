@@ -1,0 +1,10 @@
+{
+  "id": "market_connector_private_fake",
+  "version": "1.0.0",
+  "manifest_schema_version": 2,
+  "type": "connector",
+  "entrypoint": "ce_v5.components.market_connector_private_fake:build",
+  "policy_requirements": {
+    "sensitive_capabilities": ["connect_broker"]
+  }
+}

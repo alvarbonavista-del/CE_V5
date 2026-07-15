@@ -47,7 +47,7 @@ def test_la_clave_incluye_tenant_id() -> None:
 
 def test_resource_context_distinto_no_comparte_entrada() -> None:
     d1 = resources_digest(ResourceContext(exchange="binance"))
-    d2 = resources_digest(ResourceContext(exchange="kraken"))
+    d2 = resources_digest(ResourceContext(exchange="okx"))
     assert d1 != d2
     cache = CapabilitySetCache(SimulatedClock(), max_staleness_ms=1000)
     cache.put(CacheKey("t1", "u1", "v1", d1, "c"), _set())

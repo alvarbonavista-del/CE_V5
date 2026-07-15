@@ -90,11 +90,13 @@ jobs:
           python-version: "3.13"
       - name: Sincronizar entorno
         run: uv sync --extra dev
-      - name: Provisionar roles de aplicacion y operador (ADR-011, CA-03)
-        # El operador se provisiona con el rol de MIGRACIONES; provision no
-        # llama a DbConfig.from_env, asi que la guardia no interviene aqui.
+      - name: Provisionar roles de aplicacion, operador e ingesta (ADR-011, CA-03, 5.20)
+        # El operador y el ingestor se provisionan con el rol de MIGRACIONES;
+        # provision no llama a DbConfig.from_env, asi que la guardia no interviene
+        # aqui.
         env:
           CE_V5_OPERATOR_DB_PASSWORD: ce_v5_operator
+          CE_V5_INGESTION_DB_PASSWORD: ce_v5_ingestion
         run: uv run python -m ce_v5.infra.db.provision
       - name: Aplicar migraciones
         run: uv run python -m ce_v5.infra.db.migrations
@@ -104,12 +106,16 @@ jobs:
         run: uv run python tools/check_audit.py
       - name: Identidad - ventanillas estrechas (check identity, P06b/CA-07)
         run: uv run python tools/check_identity_access.py
+      - name: Market - rol de ingesta y ventanilla agregada (5.20, CA-P07-D/G)
+        run: uv run python tools/check_market_access.py
       - name: Tests de integracion (DB + bus + policy)
         # El DSN de operador va SOLO en este paso (CA-03): ningun codigo que
         # corra aqui llama a DbConfig.from_env, que abortaria si lo viera.
         env:
           CE_V5_OPERATOR_DATABASE_URL: postgresql://ce_v5_operator:ce_v5_operator@localhost:5432/ce_v5
           CE_V5_OPERATOR_DB_PASSWORD: ce_v5_operator
+          CE_V5_INGESTION_DATABASE_URL: postgresql://ce_v5_ingestion:ce_v5_ingestion@localhost:5432/ce_v5
+          CE_V5_INGESTION_DB_PASSWORD: ce_v5_ingestion
         run: uv run pytest tests/integration -q
 
   frontend:

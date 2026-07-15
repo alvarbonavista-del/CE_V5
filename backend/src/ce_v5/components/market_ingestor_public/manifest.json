@@ -1,0 +1,12 @@
+{
+  "id": "market_ingestor_public",
+  "version": "1.0.0",
+  "manifest_schema_version": 2,
+  "type": "worker",
+  "entrypoint": "ce_v5.components.market_ingestor_public:build",
+  "produces": [
+    { "event_type": "market.candle_updated", "event_schema_version": 1 },
+    { "event_type": "market.candle_closed", "event_schema_version": 1 },
+    { "event_type": "market.candle_corrected", "event_schema_version": 1 }
+  ]
+}

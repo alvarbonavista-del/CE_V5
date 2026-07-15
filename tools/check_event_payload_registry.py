@@ -73,8 +73,14 @@ ROADMAP_PIECES = frozenset(
     }
 )
 # Piezas YA CERRADAS: diferir a una de ellas es deuda disfrazada (nadie lo
-# pagara: la pieza ya paso). P06 se anade aqui cuando se cierre.
-CLOSED_PIECES = frozenset({"P00", "P01", "P02", "P02b", "P03", "P04", "P05"})
+# pagara: la pieza ya paso). Se anade cada pieza AL CERRARLA.
+# P06 y P06b se anaden en P07: estaban cerradas (M2, 2026-07-14) y NO figuraban,
+# de modo que el check habria admitido diferir un tipo a una pieza ya pasada.
+# Defecto del guardarrail hallado por el periferico de P07 al leerlo antes de
+# tocarlo; se corrige hacia delante (mismo patron que la ENMIENDA HISTORICA 2).
+CLOSED_PIECES = frozenset(
+    {"P00", "P01", "P02", "P02b", "P03", "P04", "P05", "P06", "P06b"}
+)
 
 
 def _is_event_type(value: str) -> bool:

@@ -18,8 +18,16 @@ def _policy(
     name: str = "iso",
     using_expr: str = "tenant_id = app_current_tenant_id()",
     with_check_expr: str = "tenant_id = app_current_tenant_id()",
+    roles: tuple[str, ...] = ("ce_v5_app",),
+    command: str = "ALL",
 ) -> PolicyInfo:
-    return PolicyInfo(table, name, using_expr, with_check_expr)
+    # roles y command NO tienen valor por defecto en PolicyInfo A PROPOSITO: un
+    # default vacio en 'roles' haria que, si el cargador dejara de rellenarlo, el
+    # check diera VERDE creyendo que ninguna policy alcanza a un rol de runtime. Un
+    # default que hace pasar un control de seguridad es una trampa. El default vive
+    # aqui, en el helper de tests, donde no puede enganar a nadie: ("ce_v5_app",) /
+    # "ALL" es lo que tienen las policies reales de tenant.
+    return PolicyInfo(table, name, using_expr, with_check_expr, roles, command)
 
 
 def _table(
@@ -71,6 +79,8 @@ def test_esquema_real_actual_no_tiene_violaciones() -> None:
                     "tenant_isolation",
                     "tenant_id = app_current_tenant_id()",
                     "tenant_id = app_current_tenant_id()",
+                    ("ce_v5_app",),
+                    "ALL",
                 ),
             ),
         ),
@@ -87,6 +97,8 @@ def test_esquema_real_actual_no_tiene_violaciones() -> None:
                     "(tenant_id = app_current_tenant_id()) OR "
                     "(user_id = app_current_user_id())",
                     "tenant_id = app_current_tenant_id()",
+                    ("ce_v5_app",),
+                    "ALL",
                 ),
             ),
         ),
@@ -136,7 +148,9 @@ def test_r4_rls_sin_force_es_violacion() -> None:
 
 
 def test_r5_policy_sin_contexto_de_tenant_es_violacion() -> None:
-    bad = PolicyInfo("cosa", "mala", "true", "true")
+    # P3 del dictamen: R5 SIGUE MORDIENDO. Una policy sin atadura al tenant y sin
+    # allowlistar es violacion, exactamente igual que antes de CA-P07-G.
+    bad = PolicyInfo("cosa", "mala", "true", "true", ("ce_v5_app",), "ALL")
     table = _table(scope="tenant", policies=(bad,))
     violations = check_tenancy.check_schema([table], _GOOD_ROLE)
     assert len(violations) == 1
@@ -195,3 +209,136 @@ def test_r7_rol_inexistente_es_violacion() -> None:
     violations = check_tenancy.check_schema([], None)
     assert len(violations) == 1
     assert "no existe" in violations[0]
+
+
+class TestPolicyAllowlistadaCAP07G:
+    """R8a-d y R9: la excepcion a R5 es MAS ESTRECHA que la regla que relaja.
+
+    La unica policy allowlistada del sistema es la del DUENO de la ventanilla
+    market_public_demand. Estos tests demuestran que la allowlist no es un agujero:
+    cada condicion que la justifica se verifica, y si se pierde, el build rompe.
+    """
+
+    TABLA = "market_subscription_intent"
+    POLICY = "market_intent_owner_read"
+    # El DUENO de las tablas (rol de migraciones): NO es un rol de runtime.
+    DUENO = ("ce_v5",)
+    USING_OK = "stream_scope = 'public_market'::text"
+
+    def _intent_table(
+        self,
+        policies: tuple[PolicyInfo, ...],
+        *,
+        has_force_rls: bool = True,
+    ) -> TableInfo:
+        return TableInfo(
+            name=self.TABLA,
+            declared_scope="user",
+            has_rls=True,
+            has_force_rls=has_force_rls,
+            columns=frozenset({"tenant_id", "user_id", "stream_scope"}),
+            policies=policies,
+        )
+
+    def _owner_policy(
+        self,
+        *,
+        name: str | None = None,
+        using_expr: str | None = None,
+        with_check_expr: str = "",
+        roles: tuple[str, ...] | None = None,
+        command: str = "SELECT",
+    ) -> PolicyInfo:
+        return PolicyInfo(
+            table=self.TABLA,
+            name=self.POLICY if name is None else name,
+            using_expr=self.USING_OK if using_expr is None else using_expr,
+            with_check_expr=with_check_expr,
+            roles=self.DUENO if roles is None else roles,
+            command=command,
+        )
+
+    def _isolation_policy(self) -> PolicyInfo:
+        """La policy REAL de runtime: esa si ata la fila al tenant."""
+        return PolicyInfo(
+            table=self.TABLA,
+            name="market_intent_isolation",
+            using_expr="(tenant_id = app_current_tenant_id()) AND "
+            "(user_id = app_current_user_id())",
+            with_check_expr="(tenant_id = app_current_tenant_id()) AND "
+            "(user_id = app_current_user_id())",
+            roles=("ce_v5_app",),
+            command="ALL",
+        )
+
+    def test_p12_policy_allowlistada_conforme_no_es_violacion(self) -> None:
+        # P12 (caso base): la excepcion declarada y conforme NO produce violacion.
+        table = self._intent_table((self._isolation_policy(), self._owner_policy()))
+        assert check_tenancy.check_schema([table], _GOOD_ROLE) == []
+
+    def test_p12_la_misma_policy_con_otro_nombre_si_es_violacion(self) -> None:
+        # P12 (la otra mitad): la excepcion vale SOLO para la entrada declarada.
+        # Con otro nombre, la MISMA policy vuelve a caer en R5. Si esto no fuese
+        # asi, bastaria renombrar una policy para colarse por la allowlist.
+        table = self._intent_table(
+            (self._isolation_policy(), self._owner_policy(name="otra_cualquiera"))
+        )
+        violations = check_tenancy.check_schema([table], _GOOD_ROLE)
+        assert len(violations) == 1
+        assert "R5" in violations[0]
+
+    def test_p1_r8a_policy_allowlistada_que_alcanza_a_un_rol_de_runtime(self) -> None:
+        # P1: los TRES roles de runtime deben romper el build.
+        for role in ("ce_v5_app", "ce_v5_ingestion", "ce_v5_operator"):
+            table = self._intent_table(
+                (self._isolation_policy(), self._owner_policy(roles=(role,)))
+            )
+            violations = check_tenancy.check_schema([table], _GOOD_ROLE)
+            assert len(violations) == 1, role
+            assert "R8a" in violations[0]
+            assert role in violations[0]
+
+    def test_p2_r8d_policy_allowlistada_sin_su_filtro(self) -> None:
+        # P2: si pierde stream_scope='public_market', la ventanilla podria leer los
+        # intereses PRIVADOS/BYOC. Es exactamente lo que la excepcion prometia no
+        # hacer, asi que la excepcion deja de valer.
+        table = self._intent_table(
+            (self._isolation_policy(), self._owner_policy(using_expr="true"))
+        )
+        violations = check_tenancy.check_schema([table], _GOOD_ROLE)
+        assert len(violations) == 1
+        assert "R8d" in violations[0]
+        assert "filtro" in violations[0]
+
+    def test_p9_r8b_policy_allowlistada_que_no_es_de_lectura(self) -> None:
+        # P9 (primera mitad): la excepcion es de LECTURA. ALL o UPDATE la anulan.
+        for command in ("ALL", "UPDATE"):
+            table = self._intent_table(
+                (self._isolation_policy(), self._owner_policy(command=command))
+            )
+            violations = check_tenancy.check_schema([table], _GOOD_ROLE)
+            assert len(violations) == 1, command
+            assert "R8b" in violations[0]
+
+    def test_p9_r8c_policy_allowlistada_con_with_check(self) -> None:
+        # P9 (segunda mitad): WITH CHECK solo tiene sentido al escribir.
+        table = self._intent_table(
+            (
+                self._isolation_policy(),
+                self._owner_policy(with_check_expr="true"),
+            )
+        )
+        violations = check_tenancy.check_schema([table], _GOOD_ROLE)
+        assert len(violations) == 1
+        assert "R8c" in violations[0]
+
+    def test_p10_r9_policy_allowlistada_sobre_tabla_sin_force_rls(self) -> None:
+        # P10: la excepcion se APOYA en que la RLS esta activa. Si la RLS cae, la
+        # excepcion no vale nada (y R4 tambien protesta: son dos violaciones).
+        table = self._intent_table(
+            (self._isolation_policy(), self._owner_policy()),
+            has_force_rls=False,
+        )
+        violations = check_tenancy.check_schema([table], _GOOD_ROLE)
+        assert any("R9" in v for v in violations)
+        assert any("R4" in v for v in violations)

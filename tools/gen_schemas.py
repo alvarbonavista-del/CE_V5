@@ -36,6 +36,11 @@ from source.api import (  # noqa: E402
 from source.envelope import Envelope, EventPayload  # noqa: E402
 from source.families import Family  # noqa: E402
 from source.families.component import ComponentLifecyclePayload  # noqa: E402
+from source.families.market import (  # noqa: E402
+    CandleClosedPayload,
+    CandleCorrectedPayload,
+    CandleUpdatedPayload,
+)
 from source.families.policy import (  # noqa: E402
     KillSwitchPayload,
     PolicyVersionPublishedPayload,
@@ -66,6 +71,12 @@ def build_schemas() -> dict[str, dict[str, object]]:
     version_published_schema["title"] = "PolicyVersionPublishedPayload"
     subject_invalidated_schema = SubjectInvalidatedPayload.model_json_schema()
     subject_invalidated_schema["title"] = "SubjectInvalidatedPayload"
+    candle_updated_schema = CandleUpdatedPayload.model_json_schema()
+    candle_updated_schema["title"] = "CandleUpdatedPayload"
+    candle_closed_schema = CandleClosedPayload.model_json_schema()
+    candle_closed_schema["title"] = "CandleClosedPayload"
+    candle_corrected_schema = CandleCorrectedPayload.model_json_schema()
+    candle_corrected_schema["title"] = "CandleCorrectedPayload"
     register_request_schema = RegisterRequest.model_json_schema()
     register_request_schema["title"] = "RegisterRequest"
     login_request_schema = LoginRequest.model_json_schema()
@@ -97,6 +108,9 @@ def build_schemas() -> dict[str, dict[str, object]]:
         "policy_kill_switch.schema.json": kill_switch_schema,
         "policy_version_published.schema.json": version_published_schema,
         "policy_subject_invalidated.schema.json": subject_invalidated_schema,
+        "market_candle_updated.schema.json": candle_updated_schema,
+        "market_candle_closed.schema.json": candle_closed_schema,
+        "market_candle_corrected.schema.json": candle_corrected_schema,
         "api_register_request.schema.json": register_request_schema,
         "api_login_request.schema.json": login_request_schema,
         "api_session.schema.json": session_schema,

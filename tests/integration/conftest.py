@@ -18,15 +18,19 @@ from uuid import UUID, uuid4
 import pytest
 
 from ce_v5.infra.db.config import (
+    INGESTION_DSN_ENV_VAR,
     OPERATOR_DSN_ENV_VAR,
     DbConfig,
+    IngestionDbConfig,
     OperatorDbConfig,
 )
 from ce_v5.infra.db.identity import register_user
 from ce_v5.infra.db.migrations.runner import apply_migrations
 from ce_v5.infra.db.provision import (
+    INGESTION_PASSWORD_ENV_VAR,
     OPERATOR_PASSWORD_ENV_VAR,
     provision_app_role,
+    provision_ingestion_role,
     provision_operator_role,
 )
 from ce_v5.infra.db.psycopg_adapter import PsycopgDatabase
@@ -36,6 +40,8 @@ _MIGRATIONS_DSN = os.environ.get("CE_V5_MIGRATIONS_DATABASE_URL")
 _APP_PASSWORD = os.environ.get("CE_V5_APP_DB_PASSWORD")
 _OPERATOR_DSN = os.environ.get(OPERATOR_DSN_ENV_VAR)
 _OPERATOR_PASSWORD = os.environ.get(OPERATOR_PASSWORD_ENV_VAR)
+_INGESTION_DSN = os.environ.get(INGESTION_DSN_ENV_VAR)
+_INGESTION_PASSWORD = os.environ.get(INGESTION_PASSWORD_ENV_VAR)
 
 _MISSING_ENV = _APP_DSN is None or _MIGRATIONS_DSN is None or _APP_PASSWORD is None
 
@@ -44,9 +50,15 @@ _MISSING_ENV = _APP_DSN is None or _MIGRATIONS_DSN is None or _APP_PASSWORD is N
 def _provision_and_migrate() -> Iterator[None]:
     """Con el rol de migraciones: provisiona los roles con LOGIN y migra.
 
-    Se salta toda la suite de integracion si falta cualquiera de las variables
-    de entorno base. El rol de operador (P06) se provisiona solo si su
-    contrasena esta presente; los tests que lo necesitan se saltan si no.
+    Se salta TODA la suite de integracion si falta alguna de las variables de entorno
+    BASE (no hay PostgreSQL: es el caso del job 'backend' del CI, que corre sin base
+    de datos). Ese es el UNICO skip legitimo que queda aqui, y es el mismo criterio
+    que el skipif de modulo de cada fichero.
+
+    Lo que NO se salta nunca (regla 5.18): si HAY base de datos pero falta el DSN de
+    OPERADOR o el de INGESTA, sus fixtures FALLAN con un mensaje explicito en vez de
+    saltarse. Una suite que parece completa y no lo esta es peor que una suite roja:
+    es el defecto de T-01 (21 tests nunca ejecutados en local, DOS de ellos ROTOS).
     """
     if _MISSING_ENV:
         pytest.skip(
@@ -59,6 +71,8 @@ def _provision_and_migrate() -> Iterator[None]:
         provision_app_role(database, _APP_PASSWORD)
         if _OPERATOR_PASSWORD is not None:
             provision_operator_role(database, _OPERATOR_PASSWORD)
+        if _INGESTION_PASSWORD is not None:
+            provision_ingestion_role(database, _INGESTION_PASSWORD)
         apply_migrations(database)
     finally:
         database.close()
@@ -89,10 +103,60 @@ def app_db() -> Iterator[PsycopgDatabase]:
 
 @pytest.fixture
 def operator_db() -> Iterator[PsycopgDatabase]:
-    """Conexion con el rol de OPERADOR (CA-03), via el cargador del PASO 4."""
+    """Conexion con el rol de OPERADOR (CA-03), via el cargador del PASO 4.
+
+    FALLA, NO SE SALTA (regla 5.18). Si hay base de datos pero falta el DSN de
+    operador, la suite PARECERIA completa sin serlo: los tests del kill switch, de la
+    outbox acotada del operador y de sus auditorias no se ejecutarian, y nadie se
+    enteraria. Ese es EXACTAMENTE el defecto de T-01, donde 21 tests de integracion
+    se saltaron en silencio y DOS estaban ROTOS; solo los cazo Actions.
+
+    El skipif de MODULO sobre CE_V5_DATABASE_URL sigue intacto, asi que el job
+    'backend' del CI (que corre sin PostgreSQL) se salta el modulo entero como
+    siempre. Lo que aqui se cierra es el caso peligroso: base de datos PRESENTE y DSN
+    de operador AUSENTE.
+    """
     if _OPERATOR_DSN is None or _OPERATOR_PASSWORD is None:
-        pytest.skip("requiere CE_V5_OPERATOR_DATABASE_URL y CE_V5_OPERATOR_DB_PASSWORD")
+        pytest.fail(
+            "Faltan CE_V5_OPERATOR_DATABASE_URL y/o CE_V5_OPERATOR_DB_PASSWORD, y hay "
+            "base de datos: los tests del rol de OPERADOR (kill switch, outbox acotada "
+            "por el motor, auditoria de operador) se estarian quedando SIN EJECUTAR. "
+            "Un test que se salta en silencio es un test que no existe (regla 5.18, "
+            "origen T-01). Ponlas en el entorno; no se saltan."
+        )
     database = PsycopgDatabase(DbConfig(dsn=OperatorDbConfig.from_env().dsn))
+    try:
+        yield database
+    finally:
+        database.close()
+
+
+@pytest.fixture
+def ingestion_db() -> Iterator[PsycopgDatabase]:
+    """Conexion con el rol de INGESTA (regla 5.20), via su propio cargador.
+
+    IngestionDbConfig.from_env ABORTA si encuentra en el entorno el DSN de la
+    aplicacion o el del operador (guardia bidireccional de 5.20), y el proceso de
+    pytest los lleva TODOS. Por eso se le pasa un entorno EXPLICITO con solo lo suyo:
+    el guardia funciona, y aqui se le da justamente el entorno que tendria el worker
+    de ingesta de verdad. La guardia en si se prueba aparte, en los tests de config.
+
+    FALLA, NO SE SALTA (regla 5.18), por el mismo motivo que operator_db: sin el DSN
+    de ingesta, las pruebas negativas de la regla 5.20 (la API no fabrica velas; el
+    ingestor no toca identidad, politica ni auditoria; el historico es append-only) y
+    la ventanilla agregada de CA-P07-D no se ejecutarian, y la suite mentiria diciendo
+    que todo esta verde.
+    """
+    if _INGESTION_DSN is None or _INGESTION_PASSWORD is None:
+        pytest.fail(
+            "Faltan CE_V5_INGESTION_DATABASE_URL y/o CE_V5_INGESTION_DB_PASSWORD, y "
+            "hay base de datos: los tests del rol de INGESTA (regla 5.20 en sus dos "
+            "direcciones, historico append-only y ventanilla agregada CA-P07-D) se "
+            "estarian quedando SIN EJECUTAR. Un test que se salta en silencio es un "
+            "test que no existe (regla 5.18, origen T-01). Ponlas en el entorno."
+        )
+    config = IngestionDbConfig.from_env({INGESTION_DSN_ENV_VAR: _INGESTION_DSN})
+    database = PsycopgDatabase(DbConfig(dsn=config.dsn))
     try:
         yield database
     finally:

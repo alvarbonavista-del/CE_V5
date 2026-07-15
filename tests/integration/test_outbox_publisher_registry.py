@@ -13,6 +13,7 @@ import json
 import os
 import uuid
 from collections.abc import Iterator, Mapping
+from decimal import Decimal
 
 import pytest
 import redis
@@ -26,10 +27,20 @@ from ce_v5.infra.db.outbox_publisher import (
 )
 from ce_v5.infra.db.ports import Database
 from ce_v5.infra.db.psycopg_adapter import PsycopgDatabase
+from source.families import registry
+from source.families.market import (
+    CandleClosedPayload,
+    MarketCandleEventType,
+    MarketType,
+    Timeframe,
+)
 from source.families.registry import (
+    DEFERRED_STATUS,
+    DeferredEventType,
     DeferredEventTypeError,
     UnknownEventTypePayloadError,
 )
+from source.time import MaturityState
 
 _DSN = os.environ.get("CE_V5_DATABASE_URL")
 _URL = os.environ.get("CE_V5_REDIS_URL")
@@ -37,6 +48,14 @@ pytestmark = pytest.mark.skipif(
     _DSN is None or _URL is None,
     reason="requiere CE_V5_DATABASE_URL y CE_V5_REDIS_URL",
 )
+
+# Tipo de ejemplo para probar el GUARDIA de diferidos sin usar ningun market.*:
+# desde P07 no queda ningun tipo diferido real, pero el mecanismo sigue vivo.
+_DEFERRED_ET = "datasource.demo_deferred"
+
+# Ventana 1m alineada (2026-07-14T00:00:00Z): una vela desalineada la rechaza el
+# contrato.
+_OPEN_TIME = 1_784_073_600_000
 
 _POLICY_PAYLOAD = {
     "tenant_id": "t1",
@@ -189,12 +208,66 @@ def test_d_tipo_no_registrado_no_publica_ni_marca(
 
 
 def test_tipo_diferido_no_publica_ni_marca(
-    db: Database, publisher: OutboxPublisher
+    db: Database, publisher: OutboxPublisher, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _enqueue(db, _envelope("market.candle_closed", "idem-def", {}))
-    with pytest.raises(DeferredEventTypeError, match="P07"):
+    # Desde P07 NO queda ningun tipo diferido real (los tres market.* ya tienen
+    # payload y productor). El GUARDIA sigue siendo necesario para las piezas que
+    # vengan, asi que se prueba con un diferido INYECTADO: un tipo cuyo payload y
+    # productor no existen no se publica NI se marca la fila. Misma intencion que
+    # antes; solo cambia el ejemplo.
+    monkeypatch.setitem(
+        registry.DEFERRED_EVENT_TYPES,
+        _DEFERRED_ET,
+        DeferredEventType(
+            event_type=_DEFERRED_ET,
+            family="datasource",
+            motivo="tipo de ejemplo para probar el guardia de diferidos (CA-06)",
+            owner_piece="P08",
+            dependency_reason="su payload y su productor los define una pieza futura",
+            exit_rule="al cerrar la pieza duena se registra o se elimina",
+            status=DEFERRED_STATUS,
+        ),
+    )
+    _enqueue(db, _envelope(_DEFERRED_ET, "idem-def", {}))
+    with pytest.raises(DeferredEventTypeError, match="P08"):
         publisher.drain_once()
     assert _unpublished(db) == 1
+
+
+def test_market_candle_closed_publica_con_payload_real(
+    db: Database, bus: RedisEventBus, publisher: OutboxPublisher
+) -> None:
+    # El hecho NUEVO de P07: market.candle_closed ya NO esta diferido. Tiene payload
+    # real, y una vela valida sale al bus INTACTA por la misma via de outbox.
+    payload = CandleClosedPayload(
+        maturity_state=MaturityState.CLOSED,
+        exchange="binance",
+        market_type=MarketType.SPOT,
+        symbol="BTC-USDT",
+        timeframe=Timeframe.M1,
+        open_time=_OPEN_TIME,
+        close_time=_OPEN_TIME + 59_999,
+        open=Decimal("100.00"),
+        high=Decimal("110.00"),
+        low=Decimal("95.00"),
+        close=Decimal("105.00"),
+        volume=Decimal("12.5"),
+    )
+    event_type = MarketCandleEventType.CANDLE_CLOSED.value
+    body = payload.model_dump(mode="json")
+    envelope = _envelope(
+        event_type, payload.idempotency_key(MarketCandleEventType.CANDLE_CLOSED), body
+    )
+    # Los publicos NO llevan tenant (ADR-011): scope=public_market y sin tenant_id.
+    envelope["scope"] = "public_market"
+    envelope["stream_key"] = payload.stream_key()
+
+    _enqueue(db, envelope)
+    assert publisher.drain_once() == 1
+    assert _unpublished(db) == 0
+    got = _received_envelope(bus, event_type)
+    assert got["payload"] == body
+    assert got["stream_key"] == "market:candles:binance:spot:BTC-USDT:1m"
 
 
 def test_h_version_incoherente_no_publica_ni_marca(

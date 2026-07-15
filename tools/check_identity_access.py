@@ -10,6 +10,13 @@ SECURITY DEFINER nueva que NO esta en la allowlist explicita con justificacion e
 (CA-07 p.6); alguna tabla de identidad pierde RLS ENABLE+FORCE; o alguna deja de estar
 allowlistada en el check 7.8.
 
+GUARDIA GLOBAL DE SECURITY DEFINER: la regla "ninguna SECURITY DEFINER sin
+justificacion escrita" (CA-07 p.6) NO es de identidad, es de TODO el esquema. Cada pieza
+declara SUS ventanillas en SU propio check (identidad aqui, market en
+tools/check_market_access.py), y este guardia consulta la UNION de esas allowlists para
+que no sobreviva ninguna funcion HUERFANA. Los roles de runtime vigilados incluyen al
+INGESTOR (regla 5.20): el ingestor no lee credenciales, y eso deja de ser una promesa.
+
 Lee el catalogo con pg_catalog y has_table_privilege/has_function_privilege (NUNCA
 information_schema, que oculta objetos segun privilegios), con el DSN de migraciones
 para visibilidad total. La logica pura (check_identity) es testeable sin PostgreSQL;
@@ -32,6 +39,7 @@ from ce_v5.infra.db.config import DbConfig  # noqa: E402
 from ce_v5.infra.db.ports import Database  # noqa: E402
 from ce_v5.infra.db.provision import (  # noqa: E402
     APP_ROLE_NAME,
+    INGESTION_ROLE_NAME,
     OPERATOR_ROLE_NAME,
 )
 from ce_v5.infra.db.psycopg_adapter import PsycopgDatabase  # noqa: E402
@@ -49,7 +57,15 @@ _TABLE_PRIVILEGES: tuple[str, ...] = (
     "REFERENCES",
     "TRIGGER",
 )
-_RUNTIME_ROLES: tuple[str, ...] = (APP_ROLE_NAME, OPERATOR_ROLE_NAME)
+# El INGESTOR (P07) entra aqui: no toca identidad. Hasta ahora eso era una promesa
+# (nadie le habia dado privilegios); desde la regla 5.20 se VERIFICA en cada build.
+# Es la direccion (b) de la prueba negativa bidireccional: la API no escribe velas, y
+# el ingestor no lee credenciales.
+_RUNTIME_ROLES: tuple[str, ...] = (
+    APP_ROLE_NAME,
+    OPERATOR_ROLE_NAME,
+    INGESTION_ROLE_NAME,
+)
 
 # Marcadores de SQL dinamico en el cuerpo de una funcion. El SQL dinamico dentro de
 # una SECURITY DEFINER es la via directa a la inyeccion con privilegios de dueno.
@@ -152,6 +168,11 @@ class FunctionFacts:
     body: str
     execute_for_public: bool
     execute_for_app: bool
+    # Los usa check_market_access (P07): su ventanilla la ejecuta el INGESTOR y NO
+    # deben ejecutarla ni la app ni el operador. Por defecto False para no obligar a
+    # este check, que no los mira, a rellenarlos.
+    execute_for_ingestion: bool = False
+    execute_for_operator: bool = False
 
     def has_fixed_search_path(self) -> bool:
         return any(item.lower().startswith("search_path=") for item in self.config)
@@ -290,12 +311,24 @@ def _function_violations(functions: Mapping[str, FunctionFacts]) -> list[str]:
                     f"{name}: la variable declarada '{variable}' no usa el prefijo v_ "
                     "(CA-09 p.3)."
                 )
+    # La regla "ninguna SECURITY DEFINER sin justificacion escrita" (CA-07 p.6) es
+    # GLOBAL, no de identidad: cada pieza declara SUS ventanillas en SU check, y este
+    # guardia verifica que no exista ninguna HUERFANA. Por eso consulta la UNION de
+    # allowlists.
+    #
+    # Import DIFERIDO a proposito: check_market_access importa FunctionFacts y
+    # AllowedFunction de ESTE modulo; un import de nivel de modulo aqui cerraria el
+    # ciclo y ninguno de los dos cargaria.
+    from check_market_access import MARKET_FUNCTIONS  # noqa: PLC0415
+
+    allowlisted = set(IDENTITY_FUNCTIONS) | set(MARKET_FUNCTIONS)
     for name, fn in functions.items():
-        if fn.is_security_definer and name not in IDENTITY_FUNCTIONS:
+        if fn.is_security_definer and name not in allowlisted:
             out.append(
                 f"{name}: funcion SECURITY DEFINER fuera de la allowlist (CA-07 "
                 "p.6): toda SECURITY DEFINER exige justificacion escrita y revision "
-                "explicita; anadela a IDENTITY_FUNCTIONS o retirala."
+                "explicita; declarala en la allowlist de SU pieza "
+                "(IDENTITY_FUNCTIONS o MARKET_FUNCTIONS) o retirala."
             )
     return out
 

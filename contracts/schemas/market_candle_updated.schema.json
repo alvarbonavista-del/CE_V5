@@ -1,0 +1,174 @@
+{
+  "$defs": {
+    "MarketType": {
+      "description": "Tipo de mercado. Solo SPOT en v5.0 (derivados: fuera de alcance).",
+      "enum": [
+        "spot"
+      ],
+      "title": "MarketType",
+      "type": "string"
+    },
+    "MaturityState": {
+      "description": "Estado de madurez de un dato temporal (ADR-007).\n\nSe modela en el schema de las familias que lo necesitan (market.*,\ndatasource.*), NO como campo universal del envelope.",
+      "enum": [
+        "provisional",
+        "closed",
+        "correction",
+        "reemission"
+      ],
+      "title": "MaturityState",
+      "type": "string"
+    },
+    "Timeframe": {
+      "description": "Granularidad de vela. Conjunto CERRADO y ampliable (ADR-005).\n\nLos seis son DIVISORES EXACTOS del dia. Gracias a eso vale una\ninvariante universal: el inicio de una vela SIEMPRE cae en una\nfrontera exacta de su intervalo contada desde epoch. Un timeframe\nsemanal o mensual romperia esa invariante (su frontera no es un\ndivisor del dia) y exigiria una regla de alineacion distinta: entra\ncuando se necesite, no antes.",
+      "enum": [
+        "1m",
+        "5m",
+        "15m",
+        "1h",
+        "4h",
+        "1d"
+      ],
+      "title": "Timeframe",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "market.candle_updated: vela PROVISIONAL, en formacion (ADR-007).\n\nVista viva: NO es historico canonico y puede perderse sin dano (la\nautoridad es candle_closed). Las reglas y senales NUNCA se evaluan\nsobre ella (invariante firmado en el dictamen P07-A).",
+  "properties": {
+    "close": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+          "type": "string"
+        }
+      ],
+      "title": "Close"
+    },
+    "close_time": {
+      "description": "Instante en UTC epoch milliseconds (int64). Formato canonico de tiempo en cable (ADR-007).",
+      "maximum": 9223372036854775807,
+      "minimum": 0,
+      "title": "Close Time",
+      "type": "integer"
+    },
+    "correction_revision": {
+      "anyOf": [
+        {
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Correction Revision"
+    },
+    "corrects_idempotency_key": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Corrects Idempotency Key"
+    },
+    "exchange": {
+      "pattern": "^[a-z][a-z0-9_]{1,31}$",
+      "title": "Exchange",
+      "type": "string"
+    },
+    "high": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+          "type": "string"
+        }
+      ],
+      "title": "High"
+    },
+    "low": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+          "type": "string"
+        }
+      ],
+      "title": "Low"
+    },
+    "market_type": {
+      "$ref": "#/$defs/MarketType"
+    },
+    "maturity_state": {
+      "$ref": "#/$defs/MaturityState"
+    },
+    "open": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+          "type": "string"
+        }
+      ],
+      "title": "Open"
+    },
+    "open_time": {
+      "description": "Instante en UTC epoch milliseconds (int64). Formato canonico de tiempo en cable (ADR-007).",
+      "maximum": 9223372036854775807,
+      "minimum": 0,
+      "title": "Open Time",
+      "type": "integer"
+    },
+    "symbol": {
+      "pattern": "^[A-Z0-9]{1,20}-[A-Z0-9]{1,20}$",
+      "title": "Symbol",
+      "type": "string"
+    },
+    "timeframe": {
+      "$ref": "#/$defs/Timeframe"
+    },
+    "volume": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+          "type": "string"
+        }
+      ],
+      "title": "Volume"
+    }
+  },
+  "required": [
+    "maturity_state",
+    "exchange",
+    "market_type",
+    "symbol",
+    "timeframe",
+    "open_time",
+    "close_time",
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume"
+  ],
+  "title": "CandleUpdatedPayload",
+  "type": "object"
+}
