@@ -28,11 +28,10 @@ P07 - Ingesta de market data (hibrida), ADR-014: ENTREGADA. ABRE el hito M3
   5.15.
   Cierre de contexto en el commit "docs(contexto): cierre P07" (regla 5.9); su hash
   se registra en el commit inmediato posterior.
-  Hash del commit de cierre de contexto: (se registra en el commit inmediato
-  posterior, regla 5.9).
-  (Un commit no puede contener su propio hash: por eso el hash del cierre se
-  registra en el commit inmediato posterior. Regla 5.9 cumplida: cero cola en el
-  arbol.)
+  Hash del commit de cierre de contexto: 77e8067d9a465fdab818abdf06f4beab6428e02b.
+  (Un commit no puede contener su propio hash: por eso el hash del cierre 'docs(contexto):
+  cierre P07' se registra en este commit inmediato posterior. Regla 5.9 cumplida: cero
+  cola en el arbol.)
 
 ## Proxima pieza
 P08 - Motor de reglas (ADR-015/016/017).
