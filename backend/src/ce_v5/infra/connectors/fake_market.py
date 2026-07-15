@@ -49,6 +49,9 @@ class FakeMarketDataSource:
         # El guion pendiente de entregar. Una deque porque poll() saca por la
         # izquierda y lo no entregado SIGUE AHI para el siguiente poll.
         self._pending: deque[RawCandle] = deque()
+        # Claves que "reconectaron" segun el guion del test (simulate_reconnect). El
+        # motor las recoge en drain_reconnected y dispara su bootstrap REST.
+        self._reconnected: set[str] = set()
         # Observabilidad para los tests: que se abrio y que se cerro, en orden.
         self.opened: list[str] = []
         self.closed: list[str] = []
@@ -71,6 +74,13 @@ class FakeMarketDataSource:
         reabre es un stream zombi: vivo en el codigo, muerto en la realidad.
         """
         self._active.clear()
+
+    def simulate_reconnect(self, keys: Sequence[str]) -> None:
+        """Guion del test: mete esas claves canonicas en el set de reconectados, como si
+        el socket se hubiera caido y vuelto para esos streams. El proximo
+        drain_reconnected las entrega y el MOTOR dispara su bootstrap REST.
+        """
+        self._reconnected.update(keys)
 
     def pending_count(self) -> int:
         """Cuantos mensajes quedan sin entregar (para comprobar que no se pierden)."""
@@ -116,6 +126,12 @@ class FakeMarketDataSource:
 
     def supported_timeframes(self) -> frozenset[Timeframe]:
         return self._timeframes
+
+    def drain_reconnected(self) -> AbstractSet[str]:
+        """Devuelve y limpia las claves que reconectaron segun el guion del test."""
+        copia = set(self._reconnected)
+        self._reconnected.clear()
+        return copia
 
     # Tope de mensajes por poll. Atributo publico para que el test provoque la
     # avalancha con un tope pequeno sin tocar nada mas.

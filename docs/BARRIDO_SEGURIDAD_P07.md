@@ -61,6 +61,10 @@ de Binance (ping cada 20 s; desconexion si no hay pong en 1 min) y usa timeout e
 bootstrap REST. La CALIBRACION FINA de timeouts bajo carga real (ventanas, umbrales)
 se ajusta en la validacion en caliente (B12) y se re-mide en T-03 por cada exchange
 (cada uno tiene su propio heartbeat: Bybit usa 15 s, no 20).
+FUENTE (verificado 2026-07-15, no de memoria): ping cada 20 s y desconexion si no hay
+pong en 1 min; una conexion valida 24 h con aviso serverShutdown 10 min antes. Doc
+oficial de spot (WebSocket streams):
+https://github.com/binance/binance-spot-api-docs/blob/master/web-socket-streams.md
 
 ## 8. Reconexion con backoff exponencial + jitter (no martillear al exchange)
 CONSTRUIDO. El connector real reconecta con backoff exponencial y jitter (el jitter
@@ -76,6 +80,16 @@ de forma estable (un alta no reubica los vivos). Verificado en
 tests/unit/infra/connectors/binance/test_pool.py. La cuenta fina de mensajes/segundo
 (5 msg/s entrantes) se respeta al no reenviar controles innecesarios; se re-mide en
 caliente.
+FUENTE (verificado 2026-07-15, no de memoria): 5 mensajes entrantes/segundo por
+conexion; 1024 streams por conexion; 300 conexiones por IP cada 5 min. Doc oficial de
+spot (WebSocket streams):
+https://github.com/binance/binance-spot-api-docs/blob/master/web-socket-streams.md
+
+NOTA (endpoint spot vs derivados): Binance retiro endpoints ANTIGUOS de DERIVADOS
+(fstream) el 2026-04-23; el endpoint SPOT usado por P07
+(wss://stream.binance.com:9443) sigue vigente, verificado 2026-07-15 contra la doc
+oficial de spot. Referencia del aviso (derivados, NO spot):
+https://developers.binance.com/docs/derivatives/usds-margined-futures/websocket-market-streams/Important-WebSocket-Change-Notice
 
 ## 10. Fault isolation por stream (un stream caido no tumba los demas)
 CONSTRUIDO. En el motor, una vela corrupta se cuenta por su reason code y NO aborta el
@@ -129,5 +143,8 @@ de cadena de suministro que auditar.
   de vela, semantica de cierre y reconexion distintos): DUENO T-03, ANTES de P08. NO se
   copia este barrido: cada exchange se barre entero.
 - Cuota comercial por plan: P11 + el gate (frontera de Alvaro).
+
+Limites de Binance verificados el 2026-07-15 contra la documentacion oficial de spot
+(URLs arriba), no de memoria (regla 5.15).
 
 FIN del barrido P07. Ningun control queda sin construir o sin dueno/condicion.

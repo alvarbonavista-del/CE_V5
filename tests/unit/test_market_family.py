@@ -338,6 +338,55 @@ class TestIdempotencyKey:
                 maturity_state=MaturityState.CORRECTION,
             )
 
+    def test_matriz_de_no_colision_por_dimension(self) -> None:
+        # COMPONENTES exigidos por el dictamen P07-A en la idempotency_key de una vela
+        # PUBLICA: event_type (familia.tipo) | stream_key (= exchange : market_type :
+        # symbol : timeframe, SIN tenant en los publicos, ADR-011) | open_time |
+        # maturity_state (y, en una correccion, su revision). Variar CUALQUIERA de esos
+        # ejes cambia la clave: cero colisiones.
+        def _closed_key(**overrides: object) -> str:
+            payload = CandleClosedPayload(
+                maturity_state=MaturityState.CLOSED, **_ohlcv(**overrides)
+            )
+            return payload.idempotency_key(MarketCandleEventType.CANDLE_CLOSED)
+
+        def _correccion_key(revision: int) -> str:
+            return candle_idempotency_key(
+                event_type=MarketCandleEventType.CANDLE_CORRECTED,
+                stream_key=_key().as_stream_key(),
+                open_time=OPEN_TIME,
+                maturity_state=MaturityState.CORRECTION,
+                correction_revision=revision,
+            )
+
+        updated = CandleUpdatedPayload(
+            maturity_state=MaturityState.PROVISIONAL, **_ohlcv()
+        )
+        variantes = {
+            # dos EXCHANGES / dos TIMEFRAMES / dos SYMBOLS: cada eje, a solas.
+            "closed_base": _closed_key(),
+            "otro_exchange": _closed_key(exchange="okx"),
+            "otro_timeframe": _closed_key(timeframe=Timeframe.M5),
+            "otro_symbol": _closed_key(symbol="ETH-USDT"),
+            # los TRES maturity/event_type de la MISMA ventana: distintos entre si.
+            "misma_ventana_updated": updated.idempotency_key(
+                MarketCandleEventType.CANDLE_UPDATED
+            ),
+            # dos CORRECCIONES (rev 1 vs 2) de la misma vela: distintas.
+            "misma_ventana_correccion_rev1": _correccion_key(1),
+            "misma_ventana_correccion_rev2": _correccion_key(2),
+        }
+        # closed_base cubre a la vez la cerrada base y el tercer maturity (closed): asi
+        # no se cuenta dos veces la misma clave. Cero colisiones = tantas claves
+        # DISTINTAS como variantes.
+        assert len(set(variantes.values())) == len(variantes)
+
+        # Y la FORMULA de una cerrada, verbatim (P07-A): el stream_key ya lleva
+        # exchange+market_type+symbol+timeframe, sin tenant en los publicos.
+        assert variantes["closed_base"] == (
+            f"market.candle_closed|{_key().as_stream_key()}|{OPEN_TIME}|closed"
+        )
+
 
 class TestRegistroCA06:
     def test_los_tres_market_resuelven_a_su_payload_concreto(self) -> None:

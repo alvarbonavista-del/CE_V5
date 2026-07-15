@@ -72,6 +72,14 @@ class MarketDataSourcePort(Protocol):
         """
         ...
 
+    def drain_reconnected(self) -> AbstractSet[str]:
+        """Devuelve (y limpia) las claves canonicas de stream que RECONECTARON desde la
+        ultima llamada. El motor las usa para disparar el bootstrap REST tras una
+        reconexion (ADR-014): rellenar el hueco de datos que hubo mientras el socket
+        estuvo caido. Vacio en operacion normal.
+        """
+        ...
+
     def supported_timeframes(self) -> frozenset[Timeframe]:
         """Los intervalos que ESTE exchange sirve de verdad.
 

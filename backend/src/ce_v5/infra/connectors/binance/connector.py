@@ -104,6 +104,14 @@ class BinanceSpotConnector:
         self._parar = threading.Event()
         self._ssl = ssl.create_default_context()  # verificacion ON. No se toca.
         self.metrics = ConnectorMetrics()
+        # Claves canonicas que RECONECTARON y aun no ha recogido el motor. Los lectores
+        # (hilos) las escriben; el motor las lee en drain_reconnected. De ahi el lock.
+        self._reconnected: set[str] = set()
+        self._reconnected_lock = threading.Lock()
+        # Conexion viva por indice de lector: la usa force_reconnect_all para cerrarlas
+        # y forzar el ciclo de reconexion (primitiva de operacion y validacion en
+        # caliente).
+        self._conexiones: dict[int, Any] = {}
 
     # -- MarketDataSourcePort ------------------------------------------------
 
@@ -246,17 +254,30 @@ class BinanceSpotConnector:
         NORMAL: no son errores, son el comportamiento documentado del exchange.
         """
         espera = self._config.backoff_initial_s
+        ya_conecto = False  # el PRIMER connect no es reconexion: no hubo hueco.
         while not self._parar.is_set():
             try:
                 url = f"{_WS_BASE}?streams={'/'.join(streams)}"
                 with ws_client.connect(url, ssl=self._ssl) as conexion:
-                    espera = self._config.backoff_initial_s  # conecto: se resetea.
-                    for mensaje in conexion:
-                        if self._parar.is_set():
-                            return
-                        self._encolar(mensaje)
+                    self._conexiones[indice] = conexion
+                    try:
+                        espera = self._config.backoff_initial_s  # conecto: se resetea.
+                        if ya_conecto:
+                            # RECONEXION EXITOSA: hubo un hueco y se re-establecio la
+                            # conexion. Aqui se cuenta y se marca (ver _registrar_
+                            # reconexion). En el primer connect NO: no hubo hueco.
+                            self._registrar_reconexion(streams)
+                        ya_conecto = True
+                        for mensaje in conexion:
+                            if self._parar.is_set():
+                                return
+                            self._encolar(mensaje)
+                    finally:
+                        self._conexiones.pop(indice, None)
             except Exception:  # noqa: BLE001 - un lector NO puede matar el proceso.
-                self.metrics.reconnections += 1
+                # El except es el DROP, no la reconexion: NO cuenta aqui (la reconexion
+                # exitosa se cuenta arriba, al re-establecer). Solo aplica backoff.
+                self._conexiones.pop(indice, None)
                 # Backoff exponencial CON JITTER: sin el jitter, tras un corte todas
                 # las conexiones reintentarian a la vez.
                 jitter = self._jitter()
@@ -268,6 +289,74 @@ class BinanceSpotConnector:
     def _jitter(self) -> float:
         """Ruido deterministico por hilo, sin random: basta con desincronizar."""
         return (threading.get_ident() % 1000) / 1000.0 * self._config.backoff_jitter_s
+
+    def _key_for_stream_name(self, nombre: str) -> MarketStreamKey | None:
+        """El MarketStreamKey deseado cuyo nombre de stream de Binance coincide con
+        ``nombre`` (p.ej. 'btcusdt@kline_1m'). None si ninguno. PURO: sin red.
+        """
+        for key in self._deseados.values():
+            if key.timeframe is None:
+                continue
+            if to_stream_name(key.symbol, key.timeframe.value) == nombre:
+                return key
+        return None
+
+    def _registrar_reconexion(self, streams: tuple[str, ...]) -> None:
+        """Contabiliza una reconexion EXITOSA y marca sus streams para el bootstrap.
+
+        Se cuenta AQUI (al re-establecer la conexion), NO en el except del lector: el
+        except es el DROP y puede dispararse varias veces por backoff antes de un
+        reconnect exitoso, lo que inflaria la cuenta. Asi metrics.reconnections cuenta
+        reconexiones REALES, sea por cierre limpio (force_reconnect_all, que sale del
+        recv sin excepcion) o por error. Separado de _leer para probar el CONTADOR sin
+        socket: el disparo real -- salir del recv y volver a conectar -- es el camino de
+        red, que se valida en caliente (regla 5.18).
+        """
+        self.metrics.reconnections += 1
+        self._marcar_reconectados(streams)
+
+    def _marcar_reconectados(self, streams: tuple[str, ...]) -> None:
+        """Marca (bajo lock) las claves canonicas de los streams que reconectaron.
+
+        Los lectores (hilos) escriben aqui; el motor lee en drain_reconnected. Un stream
+        cuyo nombre no resuelve a un deseado (raro) simplemente no se marca.
+        """
+        claves: set[str] = set()
+        for nombre in streams:
+            key = self._key_for_stream_name(nombre)
+            if key is not None:
+                claves.add(key.as_stream_key())
+        if not claves:
+            return
+        with self._reconnected_lock:
+            self._reconnected.update(claves)
+
+    def drain_reconnected(self) -> AbstractSet[str]:
+        """Devuelve (y limpia) las claves canonicas que reconectaron desde la ultima
+        llamada. Bajo lock: los lectores escriben, el motor lee. Vacio en operacion
+        normal.
+        """
+        with self._reconnected_lock:
+            copia = set(self._reconnected)
+            self._reconnected.clear()
+        return copia
+
+    def force_reconnect_all(self) -> int:
+        """Cierra las conexiones vivas para FORZAR una reconexion (primitiva de
+        operacion y de validacion en caliente). Los lectores saldran del recv,
+        reconectaran con backoff y marcaran sus streams como reconectados -> el motor
+        rebootstrapea. Cerrar es idempotente; el ``with`` tambien cerrara al salir. NO
+        toca _deseados (no cambia lo deseado; solo fuerza el ciclo). Devuelve cuantas
+        cerro.
+        """
+        cerradas = 0
+        for conexion in list(self._conexiones.values()):
+            try:
+                conexion.close()
+            except Exception:  # noqa: BLE001 - cerrar es best-effort; no debe lanzar.
+                continue
+            cerradas += 1
+        return cerradas
 
     def _encolar(self, mensaje: str | bytes) -> None:
         """Traduce y encola. Si la cola esta llena, DESCARTA Y CUENTA."""

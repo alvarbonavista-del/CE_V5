@@ -79,6 +79,9 @@ class IngestionConfig:
 
     max_batch: int = 500
     poll_timeout_ms: int = 200
+    # Cuantas velas recientes pedir por stream tras reconectar: suficiente para cubrir
+    # un hueco corto; el dedup absorbe el solape con lo ya persistido.
+    bootstrap_limit: int = 10
 
 
 DEFAULT_INGESTION_CONFIG = IngestionConfig()
@@ -96,6 +99,10 @@ class IngestionMetrics:
     duplicates_skipped: int = 0
     out_of_order_dropped: int = 0
     unsubscribed_dropped: int = 0
+    # Bootstrap REST tras reconexion: cuantas velas se reprocesaron y cuantos streams
+    # fallaron su bootstrap (fault isolation: el fallo de uno no tumba a los demas).
+    bootstrap_candles: int = 0
+    bootstrap_errors: int = 0
     rejected: dict[str, int] = field(default_factory=dict)  # por reason code
     degraded_streams: set[str] = field(default_factory=set)
 
@@ -145,7 +152,41 @@ class IngestionEngine:
             for raw in crudas:
                 self._procesar(raw, suscritas)
                 procesados += 1
+
+        self._bootstrap_reconectados()
         return self.metrics
+
+    def _bootstrap_reconectados(self) -> None:
+        """Rellena el hueco de cada stream que reconecto, por el MISMO camino de
+        normalizacion+dedup que las velas del poll (ADR-014).
+
+        El conector senala que streams reconectaron (drain_reconnected); por cada uno se
+        pide su historico reciente por REST (fetch_recent) y se procesa como una mas.
+        El bootstrap REexpone velas ya cerradas que probablemente YA estan en el
+        historico: el dedup (writer.existing / ON CONFLICT) las absorbe
+        (duplicates_skipped), y si hubo un hueco real, las que falten SI entran. Asi la
+        reconexion no pierde ni duplica.
+
+        FAULT ISOLATION POR STREAM: un bootstrap fallido de UN stream (fetch_recent que
+        lanza, o una clave corrupta) se cuenta y se salta; jamas tumba el ciclo ni a los
+        demas streams.
+        """
+        for clave_texto in self._source.drain_reconnected():
+            try:
+                clave = MarketStreamKey.parse(clave_texto)
+            except ValueError:
+                # Clave corrupta: se cuenta y se salta (nada de raise).
+                self.metrics.bootstrap_errors += 1
+                continue
+            try:
+                velas = self._source.fetch_recent(clave, self._config.bootstrap_limit)
+            except Exception:  # noqa: BLE001 - un bootstrap fallido no tumba el ciclo.
+                self.metrics.bootstrap_errors += 1
+                self.metrics.degraded_streams.add(clave_texto)
+                continue
+            for raw in velas:
+                self._procesar(raw, {clave_texto: clave})
+                self.metrics.bootstrap_candles += 1
 
     def _procesar(
         self, raw: RawCandle, suscritas: Mapping[str, MarketStreamKey]

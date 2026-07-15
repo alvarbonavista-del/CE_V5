@@ -53,6 +53,9 @@ class _FakeDataSource:
     def supported_timeframes(self) -> frozenset[Timeframe]:
         return frozenset()
 
+    def drain_reconnected(self) -> set[str]:
+        return set()
+
     def set_symbol_map(self, instruments: Sequence[Instrument]) -> None:
         self.map_recibido = list(instruments)
 

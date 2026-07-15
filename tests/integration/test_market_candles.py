@@ -62,6 +62,16 @@ _CLAVE = MarketStreamKey(
 )
 _STREAM_KEY = _CLAVE.as_stream_key()
 
+# INSERT DIRECTO de una vela PROVISIONAL: el CHECK de la tabla debe rechazarla. OHLCV
+# coherente a proposito, para que el UNICO motivo del rechazo sea la madurez.
+_INSERT_PROVISIONAL = """
+INSERT INTO market_candle (
+    idempotency_key, stream_key, exchange, market_type, symbol, timeframe,
+    open_time, close_time, open, high, low, close, volume, maturity_state
+) VALUES (%s, %s, 'binance', 'spot', 'BTC-USDT', '1m', %s, %s,
+          100, 110, 95, 105, 12.5, 'provisional')
+"""
+
 
 @pytest.fixture
 def limpiar_market(migrator_db: PsycopgDatabase) -> Iterator[None]:
@@ -262,6 +272,35 @@ class TestCorrecciones:
         assert primera.idempotency_key(
             MarketCandleEventType.CANDLE_CORRECTED
         ) != segunda.idempotency_key(MarketCandleEventType.CANDLE_CORRECTED)
+
+
+class TestProvisionalNoEsHistoria:
+    def test_una_provisional_no_puede_persistirse_en_market_candle(
+        self, ingestion_db: PsycopgDatabase, limpiar_market: None
+    ) -> None:
+        # CONTRAPARTE de "lo provisional no es historia", verificada por el MOTOR (no
+        # por un if nuestro): una vela candle_updated (maturity_state='provisional') NO
+        # cabe en el historico canonico. El OHLCV es coherente: el unico motivo del
+        # rechazo es la madurez.
+        #
+        # Una provisional viola las DOS CHECK que la vetan: market_candle_madurez_
+        # persistible (solo 'closed'/'correction' persisten) y market_candle_correccion_
+        # coherente (ambas ramas exigen una de esas maduraciones). PostgreSQL reporta la
+        # PRIMERA que evalua -- en esta base, correccion_coherente --; no es posible
+        # aislar solo madurez_persistible porque toda provisional viola tambien la
+        # coherencia. Cualquiera de las dos es el MOTOR rechazando la provisional.
+        with pytest.raises(Exception) as excinfo:
+            with ingestion_db.transaction() as session:
+                session.execute(
+                    _INSERT_PROVISIONAL,
+                    (f"idem-{uuid.uuid4().hex}", _STREAM_KEY, _OPEN, _CLOSE),
+                )
+        mensaje = str(excinfo.value).lower()
+        assert "check constraint" in mensaje
+        assert (
+            "market_candle_madurez_persistible" in mensaje
+            or "market_candle_correccion_coherente" in mensaje
+        )
 
 
 class TestAtomicidad:

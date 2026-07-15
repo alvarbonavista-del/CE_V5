@@ -26,6 +26,17 @@ Una excepcion en un ciclo NO mata el componente: se marca el ciclo como degradad
 siguiente reintenta. Un worker que muere por un fallo transitorio deja de ingerir para
 TODOS los usuarios.
 
+## Reconexion + bootstrap, de forma autonoma
+
+La reconexion y el bootstrap REST tras ella (ADR-014) se realizan SOLOS dentro del
+bucle del componente, sin intervencion externa. El conector detecta cada reconexion y
+deja una senal por stream; el motor (`drain_once`, que el componente ejecuta en cada
+`tick()`) recoge esa senal (`drain_reconnected`) y dispara el bootstrap por el MISMO
+camino de normalizacion y dedup que las velas del feed: rellena el hueco que hubo
+mientras el socket estuvo caido, y el dedup absorbe el solape con lo ya persistido (no
+se pierde ni se duplica). Es **fault isolation por stream**: el bootstrap fallido de un
+stream se cuenta (`bootstrap_errors`) y se salta, sin tumbar el ciclo ni a los demas.
+
 ## Su cerebro se cablea fuera
 
 El componente NO construye nada: recibe el `SubscriptionManager`, el `IngestionEngine`

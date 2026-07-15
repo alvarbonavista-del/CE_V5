@@ -9,6 +9,7 @@ directo al bus sin tocar el historico.
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable, Sequence
 from decimal import Decimal
 
 import pytest
@@ -22,6 +23,7 @@ from ce_v5.platform.market.ingestor import (
 )
 from source.families.market import (
     CandlePayload,
+    Instrument,
     MarketDataKind,
     MarketStreamKey,
     MarketType,
@@ -133,6 +135,53 @@ class _BusRoto:
     def publish(self, topic: str, message: BusMessage) -> Offset:
         msg = "el bus esta caido"
         raise RuntimeError(msg)
+
+
+class _SourceReconectado:
+    """Doble minimo de MarketDataSourcePort para el bootstrap: entrega un set de
+    reconectados UNA vez; fetch_recent devuelve un historico fijo, o LANZA si se le pide
+    (para probar fault isolation). Sin red, sin hilos.
+    """
+
+    def __init__(
+        self,
+        reconectados: Iterable[str],
+        history: Sequence[RawCandle] = (),
+        *,
+        fetch_lanza: bool = False,
+    ) -> None:
+        self._reconectados = set(reconectados)
+        self._history = list(history)
+        self._fetch_lanza = fetch_lanza
+
+    def open(self, key: MarketStreamKey) -> None:
+        return None
+
+    def close(self, key: MarketStreamKey) -> None:
+        return None
+
+    def active(self) -> set[str]:
+        return set()
+
+    def poll(self, timeout_ms: int) -> Sequence[RawCandle]:
+        return []
+
+    def fetch_recent(self, key: MarketStreamKey, limit: int) -> Sequence[RawCandle]:
+        if self._fetch_lanza:
+            msg = "REST caido"
+            raise RuntimeError(msg)
+        return list(self._history)
+
+    def list_instruments(self, market_type: str) -> Sequence[Instrument]:
+        return []
+
+    def supported_timeframes(self) -> frozenset[Timeframe]:
+        return frozenset()
+
+    def drain_reconnected(self) -> set[str]:
+        copia = set(self._reconectados)
+        self._reconectados.clear()
+        return copia
 
 
 @pytest.fixture
@@ -410,3 +459,74 @@ class TestBackpressure:
         motor.drain_once()
         assert len(bus.publicados) == total
         assert source.pending_count() == 0
+
+
+class TestBootstrapTrasReconexion:
+    """El auto-bootstrap tras reconexion (ADR-014), orquestado por el motor. SIN RED: el
+    conector senala la reconexion (drain_reconnected) y el motor rellena el hueco via
+    fetch_recent por el MISMO camino de normalizacion+dedup.
+    """
+
+    def test_rellena_el_hueco_sin_perder_ni_duplicar(
+        self, source: FakeMarketDataSource, writer: _WriterFalso, bus: _BusFalso
+    ) -> None:
+        motor = _motor(source, writer, bus)
+        # 1) Una cerrada YA persistida (lo normal antes de una reconexion).
+        source.emit(_vela())
+        motor.drain_once()
+        assert len(writer.guardadas) == 1
+
+        # 2) El bootstrap devolvera DOS velas: la MISMA (duplicado, el caso normal) y
+        #    una NUEVA (un hueco real que hubo mientras el socket estuvo caido).
+        nueva = _vela(
+            open_time_ms=_OPEN + 60_000,
+            close_time_ms=_OPEN + 60_000 + 59_999,
+        )
+        source.load_history(_vela(), nueva)
+        source.simulate_reconnect([_BTC.as_stream_key()])
+
+        metrics = motor.drain_once()
+
+        assert metrics.bootstrap_candles == 2  # se reprocesaron las dos del bootstrap.
+        assert metrics.duplicates_skipped == 1  # la identica NO se re-persiste.
+        assert metrics.closed_persisted == 2  # 1 del paso 1 + la NUEVA del hueco.
+        assert len(writer.guardadas) == 2  # el historico NO tiene la duplicada 2 veces.
+
+    def test_un_bootstrap_que_lanza_no_tumba_el_ciclo(
+        self, writer: _WriterFalso, bus: _BusFalso
+    ) -> None:
+        # FAULT ISOLATION: un fetch_recent que LANZA para un stream se cuenta, marca el
+        # stream degradado y NO revienta el ciclo (ni a los demas streams).
+        source = _SourceReconectado({_BTC.as_stream_key()}, fetch_lanza=True)
+        engine = IngestionEngine(
+            source=source,
+            writer=writer,
+            bus=bus,  # type: ignore[arg-type]
+            clock=SimulatedClock(start_ms=_AHORA),
+            component_source="market-ingestor",
+        )
+
+        metrics = engine.drain_once()  # NO revienta.
+
+        assert metrics.bootstrap_errors == 1
+        assert _BTC.as_stream_key() in metrics.degraded_streams
+        assert metrics.bootstrap_candles == 0
+
+    def test_una_clave_reconectada_corrupta_se_cuenta_sin_reventar(
+        self, writer: _WriterFalso, bus: _BusFalso
+    ) -> None:
+        # Una clave reconectada que NO parsea: se cuenta como error y se salta. Nada de
+        # raise; fetch_recent ni se llega a llamar.
+        source = _SourceReconectado({"no-es-una-clave-valida"})
+        engine = IngestionEngine(
+            source=source,
+            writer=writer,
+            bus=bus,  # type: ignore[arg-type]
+            clock=SimulatedClock(start_ms=_AHORA),
+            component_source="market-ingestor",
+        )
+
+        metrics = engine.drain_once()  # NO revienta.
+
+        assert metrics.bootstrap_errors == 1
+        assert metrics.bootstrap_candles == 0

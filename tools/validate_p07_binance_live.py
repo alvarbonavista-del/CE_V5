@@ -15,12 +15,13 @@ termina SOLO. Nada de bucle infinito. Los lectores del connector son daemon: shu
 les senala el fin y, por ser daemon, no pueden colgar el proceso al salir aunque uno
 quede bloqueado en un recv; por eso no hace falta join con timeout.
 
-SOBRE EL BOOTSTRAP (honestidad, regla 5.18): en el connector de hoy, close()+open() NO
-despacha por si solo el bootstrap REST (esa orquestacion tras-reconexion aun no esta
-cableada en el componente). Para demostrar el dedup con dato REAL, este arnes REINYECTA
-el bootstrap (connector.fetch_recent) por el MISMO camino de ingesta -- mismo writer,
-misma dedup real contra PostgreSQL -- que la composicion cableara en su dia. La
-reconexion (close+open) se ejercita igual y se muestra que el stream la sobrevive.
+SOBRE EL BOOTSTRAP: el auto-bootstrap tras reconexion esta CABLEADO (P07-R1). Este arnes
+NO reinyecta nada: fuerza una reconexion REAL (connector.force_reconnect_all cierra los
+sockets) y el MOTOR se rebootstrapea SOLO -- el conector marca los streams reconectados
+(drain_reconnected) y el motor, en su drain_once, dispara el fetch_recent por el mismo
+camino de normalizacion+dedup. Se comprueba con dato REAL que rellena el hueco (velas
+nuevas) sin duplicar (los solapes se dedupan; el historico no tiene ninguna vela
+repetida).
 
 GUARDIA 5.20 (leccion de B9): un solo proceso porta varios roles (app, migraciones,
 ingesta) porque esta validacion exige el sistema entero. Cada cargador ve el sub-entorno
@@ -105,8 +106,9 @@ _WINDOW_ENV = "CE_V5_LIVE_WINDOW_S"
 _DEFAULT_WINDOW_S = 75
 _PAUSA_S = 2.0
 _METRICS_EVERY_S = 5.0
-_BOOTSTRAP_LIMIT = 5
-_RECONNECT_DRAIN_S = 6
+# Ventana de drenaje tras forzar la reconexion: da tiempo a que el lector reconecte con
+# backoff, marque el stream y el motor dispare su bootstrap en un drain_once.
+_RECONNECT_DRAIN_S = 15
 
 
 def _solo(*claves: str) -> dict[str, str]:
@@ -175,38 +177,8 @@ class _ObservingSource:
     def supported_timeframes(self) -> frozenset[Timeframe]:
         return self._inner.supported_timeframes()
 
-
-class _ReplaySource:
-    """Source de un solo uso: entrega UNA tanda (el bootstrap REST) al engine y luego
-    queda vacio. Es lo que la composicion hara tras una reconexion: reinyectar el
-    bootstrap por el MISMO camino de ingesta (mismo writer, misma dedup real).
-    """
-
-    def __init__(self, key: MarketStreamKey, velas: Sequence[RawCandle]) -> None:
-        self._activo = {key.as_stream_key()}
-        self._pendientes = list(velas)
-
-    def open(self, key: MarketStreamKey) -> None:  # no-op: el replay no abre nada
-        return None
-
-    def close(self, key: MarketStreamKey) -> None:
-        return None
-
-    def active(self) -> set[str]:
-        return set(self._activo)
-
-    def poll(self, timeout_ms: int) -> Sequence[RawCandle]:
-        lote, self._pendientes = self._pendientes, []
-        return lote
-
-    def fetch_recent(self, key: MarketStreamKey, limit: int) -> Sequence[RawCandle]:
-        return []
-
-    def list_instruments(self, market_type: str) -> Sequence[Instrument]:
-        return []
-
-    def supported_timeframes(self) -> frozenset[Timeframe]:
-        return frozenset()
+    def drain_reconnected(self) -> set[str]:
+        return set(self._inner.drain_reconnected())
 
 
 # -- Catalogo con el rol de INGESTA (mismo patron que _CatalogOnDb) ------------
@@ -336,16 +308,6 @@ def _contar_cerradas(reader_db: Database, stream_key: str) -> int:
     return 0 if row is None else _entero(row[0])
 
 
-def _open_times(reader_db: Database, stream_key: str) -> set[int]:
-    with reader_db.transaction() as session:
-        rows = session.fetchall(
-            "SELECT open_time FROM market_candle "
-            "WHERE stream_key = %s AND maturity_state = 'closed'",
-            (stream_key,),
-        )
-    return {_entero(row[0]) for row in rows}
-
-
 def _contar_outbox(reader_db: Database, stream_key: str) -> int:
     with reader_db.transaction() as session:
         row = session.fetchone(
@@ -354,6 +316,21 @@ def _contar_outbox(reader_db: Database, stream_key: str) -> int:
             (stream_key,),
         )
     return 0 if row is None else _entero(row[0])
+
+
+def _filas_y_claves_distintas(reader_db: Database, stream_key: str) -> tuple[int, int]:
+    """(filas closed, idempotency_key DISTINTAS) del stream. La prueba FUERTE de no
+    duplicacion: si son iguales, no hay ninguna vela repetida en el historico.
+    """
+    with reader_db.transaction() as session:
+        row = session.fetchone(
+            "SELECT count(*), count(DISTINCT idempotency_key) FROM market_candle "
+            "WHERE stream_key = %s AND maturity_state = 'closed'",
+            (stream_key,),
+        )
+    if row is None:
+        return 0, 0
+    return _entero(row[0]), _entero(row[1])
 
 
 def _muestra_cerradas(
@@ -367,29 +344,6 @@ def _muestra_cerradas(
             (stream_key, limite),
         )
     return [(_entero(r[0]), _decimal(r[1])) for r in rows]
-
-
-# -- Bootstrap: reinyectar velas por el camino de ingesta real -----------------
-
-
-def _inyectar_bootstrap(
-    velas: Sequence[RawCandle],
-    writer: PostgresCandleWriter,
-    bus: RedisEventBus,
-    clock: Clock,
-) -> tuple[int, int]:
-    """Pasa las velas del bootstrap por un IngestionEngine real (mismo writer/bus/clock)
-    y devuelve (duplicates_skipped, closed_persisted). La dedup es REAL contra la base.
-    """
-    engine = IngestionEngine(
-        source=_ReplaySource(_CLAVE, velas),
-        writer=writer,
-        bus=bus,
-        clock=clock,
-        component_source=_SOURCE,
-    )
-    engine.drain_once()
-    return engine.metrics.duplicates_skipped, engine.metrics.closed_persisted
 
 
 # -- Impresion de metricas -----------------------------------------------------
@@ -430,69 +384,61 @@ def _drenar_durante(
 
 
 def _fase2(
+    connector: BinanceSpotConnector,
+    engine: IngestionEngine,
     observing: _ObservingSource,
-    writer: PostgresCandleWriter,
-    bus: RedisEventBus,
-    clock: Clock,
     reader_db: Database,
 ) -> bool:
-    print("\n=== FASE 2: reconexion + bootstrap + dedup ===")
+    print("\n=== FASE 2: reconexion REAL + bootstrap AUTONOMO del motor ===")
 
-    # Cebado: un primer bootstrap para GARANTIZAR que hay velas ya persistidas contra
-    # las que deduplicar (aunque la ventana de la Fase 1 no cruzara un cierre de
-    # minuto). Solo las CERRADAS DE VERDAD (close_time ya pasado): la vela en formacion
-    # no es historia.
-    ahora = clock.now_ms()
-    cebo = [
-        v
-        for v in observing.fetch_recent(_CLAVE, _BOOTSTRAP_LIMIT)
-        if v.close_time_ms < ahora
-    ]
-    _inyectar_bootstrap(cebo, writer, bus, clock)
-
+    # El arnes NO reinyecta nada: fuerza una reconexion REAL y el MOTOR se rebootstrapea
+    # solo. El conector cierra sus sockets, los lectores reconectan con backoff y marcan
+    # sus streams (drain_reconnected); el motor, en su drain_once, dispara el
+    # fetch_recent por el mismo camino de dedup. El historico no crece por duplicados
+    # (los del bootstrap se dedupan contra lo ya persistido en la Fase 1).
     base = _contar_cerradas(reader_db, _CLAVE_STR)
-    s_before = _open_times(reader_db, _CLAVE_STR)
-    print(f"  velas cerradas en historico (tras cebar): {base}")
+    reconn_antes = connector.metrics.reconnections
+    boot_antes = engine.metrics.bootstrap_candles
+    dup_antes = engine.metrics.duplicates_skipped
+    print(f"  velas cerradas en historico ANTES: {base}")
 
-    # Forzar la reconexion. En el connector de hoy esto ejercita close/open (el hilo
-    # lector de fondo sobrevive); el bootstrap se reinyecta abajo por el camino de
-    # ingesta, como hara la composicion tras-reconexion.
-    observing.close(_CLAVE)
-    observing.open(_CLAVE)
-    print("  reconexion forzada (close + open); el stream sigue vivo")
+    cerradas = connector.force_reconnect_all()
+    print(f"  force_reconnect_all: cerro {cerradas} conexion(es)")
 
-    # Bootstrap tras reconectar: vuelve a traer velas YA persistidas -> DUPLICADOS.
-    ahora = clock.now_ms()
-    boot = [
-        v
-        for v in observing.fetch_recent(_CLAVE, _BOOTSTRAP_LIMIT)
-        if v.close_time_ms < ahora
-    ]
-    dup, _persisted = _inyectar_bootstrap(boot, writer, bus, clock)
+    # Drenaje acotado: el lector reconecta (backoff) y el motor bootstrapea SOLO.
+    _drenar_durante(
+        engine, observing, _RECONNECT_DRAIN_S, "FASE 2: drenaje tras reconexion"
+    )
 
     despues = _contar_cerradas(reader_db, _CLAVE_STR)
-    s_after = _open_times(reader_db, _CLAVE_STR)
+    reconn = connector.metrics.reconnections - reconn_antes
+    boot = engine.metrics.bootstrap_candles - boot_antes
+    dup = engine.metrics.duplicates_skipped - dup_antes
+    filas, claves = _filas_y_claves_distintas(reader_db, _CLAVE_STR)
+    hueco = despues - base  # velas NUEVAS de relleno: ESPERADO y correcto (ADR-014).
 
-    ya = [v for v in boot if v.open_time_ms in s_before]
-    nuevas = [v for v in boot if v.open_time_ms not in s_before]
+    print(f"  reconnections={reconn} bootstrap_candles={boot} duplicates_skipped={dup}")
+    # Crecer por velas NUEVAS es el RELLENO DEL HUECO, no un fallo: se dice asi.
     print(
-        f"  bootstrap re-traido: {len(boot)} velas cerradas "
-        f"({len(ya)} ya estaban, {len(nuevas)} nuevas)"
+        f"  velas cerradas en historico ANTES={base} DESPUES={despues} "
+        f"(relleno del hueco: +{hueco} velas nuevas)"
     )
-    print(f"  duplicates_skipped del bootstrap: {dup}")
-    print(f"  velas cerradas en historico ANTES={base} DESPUES={despues}")
 
-    # solo crecio por velas NUEVAS (nunca por duplicados re-inyectados):
-    crecio_solo_por_nuevas = s_after == s_before | {v.open_time_ms for v in nuevas}
+    # NO DUPLICACION (la prueba fuerte): cada vela closed tiene su idempotency_key
+    # unica; filas == claves distintas => ninguna vela repetida en el historico.
+    sin_duplicados = filas == claves
     ok = (
-        len(ya) >= 1  # hubo al menos un duplicado REAL contra el que probar la dedup
-        and dup >= len(ya)  # todas las ya-presentes se contaron como duplicados
-        and crecio_solo_por_nuevas
+        boot > 0  # el MOTOR disparo el bootstrap solo (el arnes no llamo fetch_recent)
+        and reconn >= 1  # hubo una reconexion real (contador honesto tras FIX 1)
+        and dup >= 1  # el bootstrap absorbio al menos un solape (dedup real)
+        and sin_duplicados  # el historico no tiene ninguna vela duplicada
     )
     marca = "[OK]" if ok else "[FALLO]"
     print(
-        f"  {marca} el stream sobrevive a la reconexion; el bootstrap rellena sin "
-        "duplicar el historico"
+        f"  {marca} reconexion real (reconnections={reconn}); el motor rebootstrapeo "
+        f"solo (bootstrap_candles={boot}); dedupo {dup} solapes; el historico NO tiene "
+        f"ninguna vela duplicada (filas={filas} == claves distintas={claves}); relleno "
+        f"{hueco} velas de hueco"
     )
     return ok
 
@@ -584,7 +530,7 @@ def main() -> None:
                     f"  velas vistas en la ventana: {observing.total_vistas}; ultimo "
                     f"precio REAL de BTC-USDT: {precio}"
                 )
-                fase2_ok = _fase2(observing, writer, bus, clock, migrations_db)
+                fase2_ok = _fase2(connector, engine, observing, migrations_db)
                 _fase3(migrations_db)
     finally:
         # REGLA DURA: parar el hilo de fondo del connector SIEMPRE. Los lectores son
