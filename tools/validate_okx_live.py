@@ -397,12 +397,7 @@ def _fase2(
     )
 
     sin_duplicados = filas == claves
-    ok = (
-        boot > 0
-        and reconn >= 1
-        and dup >= 1
-        and sin_duplicados
-    )
+    ok = boot > 0 and reconn >= 1 and dup >= 1 and sin_duplicados
     marca = "[OK]" if ok else "[FALLO]"
     print(
         f"  {marca} reconexion real (reconnections={reconn}); el motor rebootstrapeo "
