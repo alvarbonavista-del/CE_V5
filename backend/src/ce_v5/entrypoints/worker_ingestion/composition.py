@@ -26,9 +26,8 @@ from ce_v5.core.bus import EventBus
 from ce_v5.core.clock import Clock, SystemClock
 from ce_v5.core.component import ComponentDefinition, LifecycleScope, Supervisor
 from ce_v5.core.discovery import discover, import_entrypoint
+from ce_v5.entrypoints.worker_ingestion.connector_registry import build_default_registry
 from ce_v5.infra.bus_redis import RedisBusConfig, RedisEventBus, create_client
-from ce_v5.infra.connectors.binance.connector import BinanceSpotConnector
-from ce_v5.infra.connectors.fake_market import FakeMarketDataSource
 from ce_v5.infra.db.config import DbConfig, IngestionDbConfig
 from ce_v5.infra.db.market_candles import PostgresCandleWriter
 from ce_v5.infra.db.market_store import (
@@ -74,28 +73,17 @@ def _build_datasource(
 ) -> MarketDataSourcePort:
     """El datasource, SELECCIONABLE POR ENTORNO (CE_V5_MARKET_DATASOURCE).
 
-    - 'binance' (por defecto): el connector REAL. Se le pasa el mapa nativo->canonico
-      construido desde el catalogo ya sincronizado; sin el, descartaria todo.
-    - 'fake': un FakeMarketDataSource vacio, SOLO para arrancar el proceso SIN RED
-      (humo, observar el arranque). JAMAS produce datos reales.
-
-    Los tests inyectan su propio fake controlado; el proceso real no inyecta nada.
+    Los tests inyectan su propio fake CONTROLADO; el proceso real no inyecta nada y la
+    seleccion se resuelve por el ConnectorRegistry (registro minimo por convencion,
+    T-03-A): cada adaptador aporta su 'kind' y su factory en su propia carpeta, y aqui
+    NO se conoce ninguna clase concreta ni se ramifica por exchange. Un 'kind'
+    desconocido FALLA FUERTE (jamas un default silencioso).
     """
     if injected is not None:
         return injected
-
     del catalog  # el mapa nativo->canonico lo puebla __main__ tras sync_catalog.
     kind = os.environ.get(_DATASOURCE_ENV, "binance")
-    if kind == "fake":
-        # Arranque local sin red. No trae datos: es para ver que el proceso levanta.
-        return FakeMarketDataSource()
-    if kind == "binance":
-        return BinanceSpotConnector()
-    msg = (
-        f"{_DATASOURCE_ENV}={kind!r} no reconocido. Validos: 'binance' (real) o "
-        "'fake' (arranque local sin red)."
-    )
-    raise ValueError(msg)
+    return build_default_registry().resolve(kind)
 
 
 def build_context(
