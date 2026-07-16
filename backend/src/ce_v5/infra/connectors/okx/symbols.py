@@ -1,0 +1,86 @@
+"""Traduccion de simbolos y granularidad de OKX. SIN IO.
+
+El contrato usa la forma canonica BASE-QUOTE (BTC-USDT). El instId de OKX YA ES esa
+forma, asi que nativo<->canonico es IDENTIDAD (a diferencia de Binance, que usa
+BTCUSDT pegado y no puede deshacerlo sin consultar catalogo).
+
+OKX suscribe por (channel, instId): el canal de velas es candle<bar>, con el bar en
+mayusculas para horas y dias (1H, 4H, 1D) frente al canonico en minusculas (1h, 4h,
+1d). Aqui vive ese mapeo, en los dos sentidos, contra el vocabulario CERRADO Timeframe.
+"""
+
+from __future__ import annotations
+
+from source.families.market import Timeframe
+
+# canonico -> bar de OKX. Mismo sufijo para el canal WS (candle<bar>) y el parametro
+# 'bar' del REST de velas. OKX ofrece mas (30m, 1W...); solo mapeamos los canonicos.
+_TIMEFRAME_TO_OKX_BAR: dict[str, str] = {
+    Timeframe.M1.value: "1m",
+    Timeframe.M5.value: "5m",
+    Timeframe.M15.value: "15m",
+    Timeframe.H1.value: "1H",
+    Timeframe.H4.value: "4H",
+    Timeframe.D1.value: "1D",
+}
+_OKX_BAR_TO_TIMEFRAME: dict[str, str] = {
+    bar: tf for tf, bar in _TIMEFRAME_TO_OKX_BAR.items()
+}
+
+
+class SymbolTranslationError(ValueError):
+    """El simbolo no tiene la forma canonica BASE-QUOTE."""
+
+
+class TimeframeTranslationError(ValueError):
+    """El timeframe (o el bar de OKX) no esta entre los que el sistema soporta."""
+
+
+def to_native(canonical: str) -> str:
+    """El instId de OKX para un simbolo canonico. En OKX es IDENTIDAD (BTC-USDT).
+
+    Se valida la forma BASE-QUOTE y se devuelve tal cual: OKX nombra el par igual que
+    el canonico. Aun asi se valida, porque un simbolo que no es BASE-QUOTE no es un par
+    que representemos.
+    """
+    base, sep, quote = canonical.partition("-")
+    if not sep or not base or not quote:
+        msg = f"simbolo no canonico: {canonical!r}. Se espera BASE-QUOTE (BTC-USDT)."
+        raise SymbolTranslationError(msg)
+    return canonical
+
+
+def to_channel(timeframe: str) -> str:
+    """Canal WS de velas de OKX para un timeframe canonico: '1h' -> 'candle1H'."""
+    return f"candle{_bar(timeframe)}"
+
+
+def to_bar(timeframe: str) -> str:
+    """Parametro 'bar' del REST de velas de OKX: '1h' -> '1H'."""
+    return _bar(timeframe)
+
+
+def timeframe_from_channel(channel: str) -> str:
+    """Inverso de to_channel: 'candle1H' -> '1h'. Reconoce el mensaje entrante.
+
+    ESTRICTO: un canal que no empieza por 'candle', o cuyo bar no mapea a un timeframe
+    soportado, se RECHAZA. Un parser permisivo aceptaria un dia un canal no pedido.
+    """
+    prefijo = "candle"
+    if not channel.startswith(prefijo):
+        msg = f"canal OKX no es de velas: {channel!r} (se espera candle<bar>)."
+        raise TimeframeTranslationError(msg)
+    bar = channel[len(prefijo) :]
+    try:
+        return _OKX_BAR_TO_TIMEFRAME[bar]
+    except KeyError as exc:
+        msg = f"bar de OKX {bar!r} no soportado (canal {channel!r})."
+        raise TimeframeTranslationError(msg) from exc
+
+
+def _bar(timeframe: str) -> str:
+    try:
+        return _TIMEFRAME_TO_OKX_BAR[timeframe]
+    except KeyError as exc:
+        msg = f"timeframe {timeframe!r} no soportado por OKX en este sistema."
+        raise TimeframeTranslationError(msg) from exc

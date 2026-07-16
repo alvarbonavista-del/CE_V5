@@ -56,5 +56,5 @@ def test_resuelto_satisface_el_puerto() -> None:
         assert callable(getattr(source, metodo))
 
 
-def test_registro_por_defecto_expone_binance_y_fake() -> None:
-    assert build_default_registry().kinds() == frozenset({"binance", "fake"})
+def test_registro_por_defecto_expone_los_kinds_de_serie() -> None:
+    assert build_default_registry().kinds() == frozenset({"binance", "fake", "okx"})
