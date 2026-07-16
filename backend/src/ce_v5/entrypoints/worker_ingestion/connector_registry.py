@@ -82,10 +82,12 @@ def build_default_registry() -> ConnectorRegistry:
     """
     from ce_v5.infra.connectors import fake_registration
     from ce_v5.infra.connectors.binance import registration as binance_registration
+    from ce_v5.infra.connectors.bybit import registration as bybit_registration
     from ce_v5.infra.connectors.okx import registration as okx_registration
 
     registry = ConnectorRegistry()
     registry.register(binance_registration.KIND, binance_registration.create)
     registry.register(fake_registration.KIND, fake_registration.create)
     registry.register(okx_registration.KIND, okx_registration.create)
+    registry.register(bybit_registration.KIND, bybit_registration.create)
     return registry

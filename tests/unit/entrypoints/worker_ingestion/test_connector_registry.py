@@ -57,4 +57,6 @@ def test_resuelto_satisface_el_puerto() -> None:
 
 
 def test_registro_por_defecto_expone_los_kinds_de_serie() -> None:
-    assert build_default_registry().kinds() == frozenset({"binance", "fake", "okx"})
+    assert build_default_registry().kinds() == frozenset(
+        {"binance", "fake", "okx", "bybit"}
+    )
