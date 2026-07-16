@@ -4,11 +4,12 @@ Archivo vivo de estado de proceso (sin logica). Lo mantiene Claude Code
 en disco; Alvaro lo resube al knowledge cada vez que se cierra una pieza
 o un hito (DOC_ENTREGABLES sec.8).
 
-Ultima actualizacion: 2026-07-15 (cierre de pieza P07).
+Ultima actualizacion: 2026-07-16 (T-03 completado: conectores OKX y Bybit).
 
 ## Hito actual
 M3 (datos, reglas y notificacion backend) ABIERTO. Piezas de M3: P07
 (ENTREGADA), P08 (pendiente), P09a (pendiente). 1 de 3.
+Trabajo transversal T-03 (segundo y tercer conector publico, OKX y Bybit) COMPLETADO 2026-07-16; es transversal y NO cierra M3 (M3 = P07 + P08 + P09a). Proxima pieza: P08 (motor de reglas). Pendiente ademas: P09a.
 Proximo hito (tras M3): M4.
 
 ## Pieza actual
@@ -169,3 +170,7 @@ de golpe. Un paso, se explica, Alvaro ejecuta y pega salida, siguiente.
   los CUATRO DSN (app, migraciones, operador, ingesta). Las variables de operador e
   ingesta son SOLO para la suite; NO se dejan permanentes en el entorno (los guardias
   de arranque abortarian la API o el worker si portan un DSN ajeno).
+- Conectores de market data (T-03): OKX Spot y Bybit v5 Spot anadidos como ADAPTADORES DE INFRA en infra/connectors/okx/ y infra/connectors/bybit/, detras del puerto MarketDataSourcePort, SIN manifest (no son Componentes). Feed publico, sin credenciales. Seleccionables por CE_V5_MARKET_DATASOURCE ('binance'|'okx'|'bybit'|'fake') via el ConnectorRegistry (T-03-A).
+- T-03 sustituyo el if-chain de seleccion de conector del composition root por un ConnectorRegistry minimo por convencion (register/resolve, fail-loud). Anadir un exchange = su carpeta + una linea plana de registro. VEREDICTO CE-14: SE CUMPLE (nucleo de P07 intacto).
+- Commits de T-03 (Actions VERDE 3/3): registro T-03-A f1024ba (run #12); OKX 1daa784 + fix formato 8fdf15f (run #14); Bybit 2061f89 (run #15). CI: Actions verde.
+- Herramientas de validacion en caliente por exchange (tools/, no en CI): probe_okx_live.py, validate_okx_live.py, probe_bybit_live.py, validate_bybit_live.py. Barridos 5.15: docs/BARRIDO_SEGURIDAD_T03_OKX.md y ..._BYBIT.md.

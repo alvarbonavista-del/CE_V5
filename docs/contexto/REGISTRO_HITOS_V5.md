@@ -3,7 +3,7 @@
 Archivo vivo (sin logica). Mantenido por Claude Code; Alvaro lo resube
 al knowledge al cerrar cada pieza o hito (DOC_ENTREGABLES sec.8).
 
-Ultima actualizacion: 2026-07-15 (entrega de pieza P07; abre el hito M3).
+Ultima actualizacion: 2026-07-16 (T-03 completado; M3 en curso).
 
 | Hito | Definicion breve (DOC_ROADMAP sec.4) | Piezas | Estado |
 |------|--------------------------------------|--------|--------|
@@ -160,3 +160,6 @@ se escribio y se conserva sin tocar; queda DEROGADA hacia delante (regla
   estrecho (regla 5.20, nueva) con check bloqueante MARKET y pruebas negativas
   bidireccionales. Barrido de seguridad 5.15 escrito, control por control.
   M3: 1 de 3 (faltan P08 motor de reglas y P09a router de notificaciones backend).
+
+## Nota T-03 (2026-07-16)
+Trabajo transversal T-03 (segundo y tercer conector publico) COMPLETADO. Se anadieron OKX Spot y Bybit v5 Spot como adaptadores de infra sobre la maquinaria de P07, verificando CE-14: un exchange nuevo entra como su carpeta en infra/connectors/<exchange>/ + una linea plana de registro, sin tocar el nucleo. Antes hubo que sustituir el if-chain de seleccion del composition root por un ConnectorRegistry por convencion (T-03-A, correccion arquitectonica firmada). Validacion en caliente OK contra OKX y Bybit reales (streaming, reconexion + bootstrap autonomo del motor, dedup con filas == claves distintas). Commit final 2061f89, Actions verde 3/3. M3 SIGUE EN CURSO: P08 (motor de reglas) y P09a (router de notificaciones) PENDIENTES.

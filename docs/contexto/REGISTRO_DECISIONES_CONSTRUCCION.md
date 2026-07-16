@@ -1026,3 +1026,37 @@ REFINAMIENTO REGISTRADO: el pre-filtro de simbolos por-exchange en el connector 
 en list_instruments lo que ese exchange lista y no representamos) es endurecimiento
 POR-EXCHANGE de T-03; el filtro GENERICO de sync_catalog (saltar y contar, D8) ya cubre a
 todos por igual mientras tanto.
+
+=====================================================================
+20. CIERRE DE T-03 - SEGUNDO Y TERCER CONECTOR PUBLICO (OKX, BYBIT); VEREDICTO CE-14
+=====================================================================
+Estado: COMPLETADO. Doble revision Central + CSA conforme; firmado por Alvaro 2026-07-16. Trabajo transversal (no cierra M3). Commits (Actions VERDE 3/3): registro T-03-A f1024ba (run #12); OKX 1daa784 + fix formato 8fdf15f (run #14); Bybit 2061f89 (run #15).
+
+VEREDICTO CE-14: SE CUMPLE. OKX y Bybit se anadieron SIN tocar el nucleo de P07 (ni el motor IngestionEngine, ni el ingestor, ni los contratos market.*, ni MarketStreamKey, ni la frontera de confianza normalize.py, ni el patron outbox, ni el subscription manager, ni el check 7.8). Un exchange nuevo = su carpeta en infra/connectors/<exchange>/ + UNA linea plana de registro en build_default_registry. Es registro EXPLICITO, no una rama; es el minimo irreducible para un adaptador de infra (el contrato de capas 7.1 prohibe que infra importe el registro, y el discovery por carpeta para infra-adapters esta prohibido por el encargo).
+
+T-03-A (CORRECCION ARQUITECTONICA FIRMADA). El if-chain de seleccion de conector del composition root de P07 (worker_ingestion/composition.py, _build_datasource) era la UNICA fuga de extensibilidad: anadir un exchange exigia editar una rama del nucleo, contra la letra de CE-14 y ADR-009. Se sustituyo por un ConnectorRegistry minimo por convencion (register/resolve; factories tipadas que devuelven MarketDataSourcePort, no la clase concreta). El if-chain quedo ELIMINADO (cero "if kind =="); 7.1 KEPT (el motor sigue dependiendo solo del puerto).
+PRUEBAS DEL ConnectorRegistry (por nombre, condicion del CSA), en tests/unit/entrypoints/worker_ingestion/test_connector_registry.py:
+  - test_resuelve_binance_por_kind: resolve("binance") -> BinanceSpotConnector.
+  - test_resuelve_fake_por_kind: resolve("fake") -> FakeMarketDataSource.
+  - test_kind_desconocido_falla_fuerte: un kind no registrado -> UnknownConnectorKindError (fail-loud, jamas default silencioso).
+  - test_colision_de_kind_rompe: registrar dos veces el mismo kind -> DuplicateConnectorKindError.
+  - test_resuelto_satisface_el_puerto: lo resuelto expone los metodos del puerto MarketDataSourcePort (devuelve el PUERTO, no una clase concreta filtrada al motor).
+  - test_registro_por_defecto_expone_los_kinds_de_serie: el registro de serie expone {binance, fake, okx, bybit}. La resolucion de okx y bybit queda afirmada aqui y ademas EJERCITADA en caliente por validate_okx_live.py y validate_bybit_live.py (resolve("okx")/resolve("bybit")).
+
+HALLAZGO DE PROCESO. Ni la revision de Central ni la del CSA cazaron el if-chain en la doble revision de P07: la abstraccion parecia limpia porque el motor si depende del puerto. Lo cazo T-03 en el PASO 0 (volcado de solo lectura), leyendo el codigo antes de escribir. Valida hacer T-03 (probar la extensibilidad con dos exchanges) ANTES de construir P08 encima. P07 sigue historicamente ENTREGADA; la fuga se corrigio HACIA DELANTE (registro), sin maquillar su cierre.
+
+UBICACION (corrige el prompt de T-03). OKX y Bybit viven como ADAPTADORES DE INFRA (infra/connectors/okx/, infra/connectors/bybit/), detras de MarketDataSourcePort, SIN manifest. NO son Componentes. El prompt de T-03 pedia "components/<exchange>/ con manifest"; era un error del prompt. P07 es consistente con ADR-014 y DOC_ESTRUCTURA sec.6 (el conector es infra; el Componente es el ingestor publico).
+
+DEFECTOS Y HALLAZGOS, Y QUIEN LOS ENCONTRO.
+  - D2 (OKX): el canal de velas de OKX va por wss://ws.okx.com:8443/ws/v5/business, NO por /ws/v5/public (migracion OKX del 20-jun-2023). Las fuentes secundarias decian "public". Lo cazo la VERIFICACION contra la doc oficial; de fiarme de memoria/blogs, el WS no habria recibido jamas una vela (fallo silencioso).
+  - D3 (OKX): HTTP 403 en REST por el User-Agent por defecto de urllib (Cloudflare). Lo cazo la SONDA (probe_okx_live.py). Fix: cabecera User-Agent en REST y user_agent_header en el handshake WS. Se distinguio de un geo-block reintentando con UA.
+  - D4 (Bybit): heartbeat de 20 s (no 15 s como decia la ficha de Central). Lo cazo la VERIFICACION contra la doc; la ficha estaba mal. Se usa ping JSON {"op":"ping"} cada ~18 s, SIEMPRE.
+  Las sorpresas de T-03 fueron de INFRAESTRUCTURA (endpoint, UA, ping), no de DATOS: la frontera de confianza compartida (normalize.py) y el "saltar y contar" generico de sync_catalog, heredados de P07, absorbieron OKX y Bybit sin tocarse. Otro punto a favor de CE-14.
+
+REGLA NUEVA (refinamiento de proceso, del D6). El barrido previo a commit incluye "ruff format --check ." del repo COMPLETO, ademas de "ruff check". Origen: en OKX, validate_okx_live.py paso "ruff check" pero fallo "ruff format --check ." en Actions (el formateador es distinto del linter, y la verificacion local no lo cubria sobre tools/). Actions no debe ser el primer detector de formato. No se repitio en Bybit.
+
+BARRIDOS 5.15. docs/BARRIDO_SEGURIDAD_T03_OKX.md y docs/BARRIDO_SEGURIDAD_T03_BYBIT.md, uno POR exchange, fecha 2026-07-16, URLs vigentes; NO copiados del de Binance. Diferencias clave: OKX velas por /business, 240 subs/conexion (error 60014), ping texto en inactividad (<30 s); Bybit 10 args por peticion de suscripcion, 21.000 chars/conexion, 500 conexiones/5min, ping JSON periodico.
+
+VALIDACION EN CALIENTE (salida real, exchange REAL, feed publico, jamas dinero). OKX: reconnections=1, bootstrap_candles=9, duplicates_skipped=1, filas=9 == claves distintas=9 (cero duplicados), catalogo 1307 activos. Bybit: reconnections=1, bootstrap_candles=10, duplicates_skipped=1, filas=10 == claves distintas=10 (cero duplicados), catalogo 592 activos. En ambos el MOTOR se rebootstrapeo SOLO tras la reconexion forzada (el arnes no llamo a fetch_recent). CI HERMETICO: connector.py (IO) no se prueba en CI (5.18, declarado); se valida en caliente. Cero skips silenciosos.
+
+RECORDATORIO OPERATIVO. Para conectores reales, la fuente es la DOC OFICIAL VIGENTE del exchange, jamas memoria ni snippets secundarios (D2 y D4 lo demuestran).

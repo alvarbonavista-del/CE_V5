@@ -337,3 +337,20 @@ Bybit v5). Prueba de fuego de CE-14: si exige tocar contratos, fronteras o Marke
 SE PARA Y SE ELEVA. Se repite el barrido 5.15 POR CADA exchange (cada uno con su heartbeat
 --Bybit 15 s no 20--, formato de vela, semantica de cierre y reconexion); NO se copia el de
 Binance.
+
+--- REVISION T-03 (2026-07-16): SEGUNDO Y TERCER CONECTOR PUBLICO (OKX, BYBIT) ---
+Veredicto: CONFORME (Central y CSA); firmado por Alvaro. Trabajo transversal completado; no cierra M3.
+CE-14 CUMPLIDO: OKX y Bybit anadidos sin tocar el nucleo de P07; un exchange nuevo = su carpeta en infra/connectors/<exchange>/ + una linea plana de registro.
+ConnectorRegistry (T-03-A): sustituyo el if-chain de seleccion del composition root por un registro minimo por convencion (register/resolve, fail-loud, factories tipadas al puerto). Pruebas nombradas en REGISTRO_DECISIONES sec.20.
+HALLAZGO DE PROCESO: ni Central ni CSA cazaron el if-chain en la doble revision de P07; lo cazo T-03 en el paso 0 (leer antes de escribir). Valida probar la extensibilidad ANTES de P08.
+DEFECTOS: D2 (OKX velas por /business, no /public; fuentes secundarias erroneas); D4 (heartbeat Bybit 20 s, no 15 s; ficha equivocada). Ambos cazados por verificacion contra doc oficial. D3 (OKX 403 por User-Agent; cazado por la sonda; fix cabecera UA). Barridos 5.15 por exchange (OKX y Bybit), no copiados.
+
+PARA LA PROXIMA REVISION (P08 - MOTOR DE REGLAS, ADR-015/016/017):
+  - Raiz Rule NEUTRAL con dos productos: AlertRule y TradingSignalRule.
+  - Forma canonica de la regla con HASH ESTABLE.
+  - Doble ciclo evaluation/attention; veto del guardian.
+  - Proyeccion rule.* -> signal.*/alert.* unida por causation_id.
+  - Hard caps de complejidad: N<=5, M<=3, K<=5.
+  - INVARIANTE DURO (CA-P07-A): las reglas y senales se evaluan sobre market.candle_closed, JAMAS sobre market.candle_updated (vista viva que puede perderse). Evaluar sobre provisional seria cambio arquitectonico a ELEVAR.
+  - Indicadores (decisiones firmadas): convencion TradingView; warm-up con maturity_state; version de formula; UNA sola implementacion para backtest y produccion.
+  - Regla 5.20 (menor privilegio por proceso) VINCULANTE para P08.
