@@ -174,3 +174,4 @@ de golpe. Un paso, se explica, Alvaro ejecuta y pega salida, siguiente.
 - T-03 sustituyo el if-chain de seleccion de conector del composition root por un ConnectorRegistry minimo por convencion (register/resolve, fail-loud). Anadir un exchange = su carpeta + una linea plana de registro. VEREDICTO CE-14: SE CUMPLE (nucleo de P07 intacto).
 - Commits de T-03 (Actions VERDE 3/3): registro T-03-A f1024ba (run #12); OKX 1daa784 + fix formato 8fdf15f (run #14); Bybit 2061f89 (run #15). CI: Actions verde.
 - Herramientas de validacion en caliente por exchange (tools/, no en CI): probe_okx_live.py, validate_okx_live.py, probe_bybit_live.py, validate_bybit_live.py. Barridos 5.15: docs/BARRIDO_SEGURIDAD_T03_OKX.md y ..._BYBIT.md.
+Hash del commit de cierre de contexto "docs(contexto): cierre T-03": ee40df620b28f8549cc396ea5cab4c733ef3850d. (Regla 5.9: un commit no puede contener su propio hash; se registra en este commit inmediato posterior.)
