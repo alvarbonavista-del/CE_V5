@@ -1060,3 +1060,176 @@ BARRIDOS 5.15. docs/BARRIDO_SEGURIDAD_T03_OKX.md y docs/BARRIDO_SEGURIDAD_T03_BY
 VALIDACION EN CALIENTE (salida real, exchange REAL, feed publico, jamas dinero). OKX: reconnections=1, bootstrap_candles=9, duplicates_skipped=1, filas=9 == claves distintas=9 (cero duplicados), catalogo 1307 activos. Bybit: reconnections=1, bootstrap_candles=10, duplicates_skipped=1, filas=10 == claves distintas=10 (cero duplicados), catalogo 592 activos. En ambos el MOTOR se rebootstrapeo SOLO tras la reconexion forzada (el arnes no llamo a fetch_recent). CI HERMETICO: connector.py (IO) no se prueba en CI (5.18, declarado); se valida en caliente. Cero skips silenciosos.
 
 RECORDATORIO OPERATIVO. Para conectores reales, la fuente es la DOC OFICIAL VIGENTE del exchange, jamas memoria ni snippets secundarios (D2 y D4 lo demuestran).
+=====================================================================
+21. EXPANSION DE M3 A PARIDAD FUNCIONAL v4 (EXP-M3-01) Y DECISIONES ASOCIADAS
+=====================================================================
+EXP-M3-01 (firmada 2026-07-17; doble revision Central + CSA): M3 EXPANDIDO a paridad
+funcional v4. NO reabre ADR (cubre el hueco del catalogo concreto de DataSources;
+ADR-014/008/015 ya lo preveian). DOC_ROADMAP_V5 se mantiene CONGELADO; la expansion vive
+AQUI (el conteo original de 19 era previo). Piezas y orden:
+  P07 [ENTREGADA] -> T-03 [ENTREGADA] -> P07b (trades+footprint) -> P07c (orderbook L2
+  con estado) -> P08 -> P08b (DataSources candle-derived) -> P08c (DataSources
+  footprint/L2-derived) -> P09a.
+Paralelismo: P08 || P07b || P07c || P08b; P08c tras P07b+P07c; P09a tras P08.
+Inventario: 19 -> 23 unidades.
+CONSTRAINTS:
+  - CE-14 en P07b/P07c: si tocan nucleo, ELEVAR.
+  - trades INDIVIDUALES (trade, no aggTrade).
+  - orderbook por STREAM DE DELTAS publico sin login; integridad POR SECUENCIA sin
+    checksum (el checksum de OKX esta DEPRECADO = 0).
+  - semilla + resync como ancla (Binance REST /api/v3/depth; OKX/Bybit primer msg WS).
+  - DA-02-1 RESUELTA: OKX tiene el libro publico mas profundo (400/100ms).
+Detalle: dictamen CSA 2026-07-17.
+
+DEC-PARIDAD-01: paridad v5.0 = lo que v4 DISENO/construyo, aunque no se integrara. La
+vision futura explicita (flat_with_delta, AREA 4-pre) -> v5.1.
+
+DEC-PROVISIONAL-01: el provisional (pivote/divergencia) es VALOR de DataSource con
+maturity_state + confianza en v5.0 (consultable/dibujable); reglas y alertas disparan
+SOLO en confirmado; alertas provisionales retractables -> v5.1. P08 en v5.0 retracta solo
+por CORRECCION DE DATOS (H-02-3), no por supersion.
+
+DEC-PROVISIONAL-02: el modelo "predecir" consume SOLO datos CERRADOS (candle_closed +
+footprint/delta hasta el ultimo cierre). El pivote es provisional solo porque sus R barras
+derechas aun no cerraron; se RE-EVALUA en cada candle_closed. NO se lee microestructura
+intrabar viva. RESPETA el invariante de P07 (evaluar solo sobre candle_closed, jamas sobre
+candle_updated); no es cambio arquitectonico. Leer intrabar vivo SERIA cambio del
+invariante de P07 -> fuera de v5.0, a ELEVAR.
+
+DEC-CVD-01: CVD (delta acumulada) = DataSource NUEVA en v5.0.
+
+DEC-ABSORCION-01 (cierre de Q-D con el estado real de v4): absorcion CORE footprint-based
+(tipos bid/ask + exhaustion) = v5.0 (el AbsorptionZoneEngine de v4 era footprint-based).
+Absorcion por refill de limitadas / L2-based = v5.1. flat_with_delta ("oculta") = v5.1.
+
+DEC-DIVERGENCIA-01 (cierre de Q-E): divergencia precio-vs-RSI = v5.0 (v4 la tenia).
+Precio-vs-volumen = v5.1 (feature nueva; el DivergenceEngine de v4 no tiene campos de
+volumen).
+
+DEC-AHP-01 (Analisis Historico Previo, POLITICA): obligatorio ANTES de fijar cualquier
+detector estadistico/heuristico-compositivo (absorcion, scores de orderflow, climax, void,
+notrade, pivotphase, cualquier score con umbrales/pesos/ventanas). NO exigido para
+deterministas cerrados (EMA/SMA/RSI/MACD): ahi la prueba es formula + fixtures +
+comparativa. Un AHP registra: hipotesis; variables observadas; formula/score; ventanas;
+umbrales iniciales; limites de interpretacion; falsos positivos esperables;
+dataset/fixtures reproducibles (semilla fija); criterio de aceptacion; razon de descarte.
+Umbrales sin soporte = "a calibrar por AHP", NUNCA inventados. Origen: dictamen CSA de la
+expansion M3.
+
+DEC-SNAPSHOT-REPLAY-01 (formaliza "D-04"): ante correccion append-only (candle_corrected u
+orderbook), los DataSources derivados se recomputan por SNAPSHOT + REPLAY. El snapshot es
+CACHE derivada (NO fuente de verdad); lleva as_of, input_range, formula_version,
+price_source, bucket_offset y referencia al canon del DataSource. Se reabre desde el ultimo
+snapshot valido y se replaya el tramo afectado; NO se muta el pasado canonico; reproducible
+con historico + plan + Clock/SimulatedClock (ADR-007). Exacto y O(1).
+
+CA-P08-01 (firmada 2026-07-17): CLARIFICACION de ADR-015 (no enmienda).
+rule.evaluation_completed se emite solo por TRANSICION DE ESTADO, con EvaluationResult
+granular; rule.firing/resolved = FLANCOS; rule.firing = ANCLA CAUSAL de signal.*/alert.*
+(causation_id). [Ya relayada a P08; se registra aqui como registro central.]
+
+DA-I03-1: ancla determinista del swing = pivote por FUERZA SIMETRICA N=R (el fractal es el
+caso N=R=2); ZigZag/ATR solo para vista/encadenado (repintan).
+
+H-02-5: CERRADA / ABSORBIDA. Provisional-as-of vs confirmado-determinista con correcciones
+append-only cubre AMBAS definiciones de "reproducible"; sin interpretacion extra de
+ADR-007.
+
+DA-I03-4 (cerrada por Central): UNA sola primitiva swing.* (mismo metodo y mismo N/R) para
+los pivotes de PRECIO, de RSI y de CVD. NO se admite una segunda definicion de pivote.
+
+DA-I03-5 (Central; costura importante): la DIVERGENCIA DE CVD (evidencia de orderflow,
+v5.0, alimenta pivotphase y el modo predecir) NO es la DIVERGENCIA DE VOLUMEN (precio
+contra serie/velas de volumen, v5.1 por DEC-DIVERGENCIA-01). Son DISTINTAS; P08c NO las
+confunde ni las mezcla.
+
+RULING OA-1 (reinicio del CVD, mercado 24/7): NO se fija punto unico. El CVD es DataSource
+con reset_policy como PARAMETRO declarado (session-UTC | rolling), en la cache_key, NO
+hardcodeado. RESTRICCION DURA para el modelo de pivote: la divergencia de CVD entre los dos
+swings comparados exige un CVD CONTINUO a traves de ambos (rolling o anclado antes del swing
+anterior); un reinicio NO puede caer entre los dos pivotes. Default por AHP.
+
+RULING OA-2 (correccion de premisa): queda SUPERADA la premisa "OKX da libro publico mas
+grueso". I-02-V (doc primaria) cerro que OKX books = 400 niveles a 100ms, el libro publico
+MAS PROFUNDO de los tres; DA-02-1 resuelta. NO existe la asimetria de profundidad. La
+absorcion por refill/iceberg (que exige L2 fino) es v5.1 (DEC-ABSORCION-01); en v5.0 la
+absorcion es footprint-based, robusta a 100ms. OA-2 RETIRADA de v5.0. Residuo v5.1: graduar
+el refill por cadencia por-exchange (Bybit 10-20ms mas fino).
+
+RULING OA-6 (frontera de la confianza del pivote): la confianza del pivote provisional es
+una DataSource PROPIA (swing.confidence, ADR-008), REFERENCIABLE por las Rules como
+cualquier otra fuente; NO un output enterrado en pivotphase. Coherente con el contrato de
+I-03.
+
+DA-I04-1 (regla anti-doble-conteo INTERNA): pivotphase CONSUME swing.confidence y anade SOLO
+su capa estructural propia (FSM de fases 0-5, vp_level_price/zona, veto notrade); NO
+re-gradua la misma evidencia de orderflow (absorcion/CVD/imbalance/VP) que swing.confidence
+ya incorporo. Doble consumo (swing.confidence + orderflow crudo) contaria DOS VECES la misma
+evidencia. Complementa a la regla semantica 5 (nivel Rule) en el nivel INTERNO. El reparto
+exacto se finaliza en P08c con la FSM de v4 (GAP-P08c).
+
+RULING OA-4 (estructura de combinacion del modelo de probabilidad): APLAZADA a P08c con
+fixtures; no se elige sin datos. Empezar por lo EXPLICABLE (score con pesos AHP) y escalar a
+logistico/calibracion (Platt/isotonica; la isotonica pide >~1000 muestras) SOLO si el volumen
+de fixtures lo justifica. Gateado por DEC-AHP-01.
+
+RULING OA-5 (nivel de rotura que marca retracted): a calibrar por AHP.
+
+GAP-P08c (dependencia de construccion; CERRAR ANTES DE P08c): la FSM de fases 0-5 de
+pivotphase y el mapeo POC/VA de vp_level_price son BESPOKE de v4 y NO estan en el knowledge
+(solo se confirma que existen). Se RECUPERAN del codigo de v4 al construir P08c. Si el
+fuente de v4 no estuviera disponible -> RE-DERIVACION con AHP y RATIFICACION EXPLICITA de la
+deriva por Alvaro (no seria paridad literal).
+
+ESTADO DE INVESTIGACIONES (refleja tambien ESTADO_CONSTRUCCION_V5):
+- I-03 (pivotes/divergencias): COMPLETO (5 secciones). Pendiente solo GAP-P08c en
+  construccion.
+- I-04 (orderflow): EN CURSO. Partes 1 (primitivas) y 2 (modelo de probabilidad)
+  ENTREGADAS; PENDIENTES Partes 3 (AHP), 4 (reproducibilidad) y 5 (decisiones).
+
+ADDENDUM (APPEND-ONLY, cierre de I-04):
+
+OA-7 (clarificacion Central): "AHP" en el proyecto = ANALISIS HISTORICO PREVIO (el
+artefacto de diez campos de DEC-AHP-01), NO el Analytic Hierarchy Process de Saaty. Si
+se usa el metodo de Saaty para derivar pesos w_i, se le nombra "metodo de Saaty" para no
+colisionar. Por defecto: pesos iguales de baseline + refinamiento logistico.
+
+OA-10 / E-1 (Central; confirma DEC-SNAPSHOT-REPLAY-01 para el CVD): el snapshot+replay
+CUBRE el CVD como INTEGRADOR. PRECISION: a diferencia de EMA/RSI (que olvidan; el efecto
+de una correccion decae en ~N barras), el CVD NO olvida: una correccion en la barra k
+desplaza TODO el CVD posterior. La propagacion es ILIMITADA hacia delante SALVO que la
+acote el reset_policy (OA-1: reset de sesion o ventana rolling). CONSTRAINT de
+construccion del DataSource CVD: snapshotear el acumulador POR VENTANA DE RESET; ante
+correccion en k, replay desde el snapshot dentro de la ventana afectada. NO reabre
+ADR-007 ni DEC-SNAPSHOT-REPLAY-01.
+
+OA-8 / OA-9 (APLAZADAS a P08c): el objetivo tolerable de FP y el margen de lift se
+PRE-REGISTRAN en P08c ANTES de ver el test; la granularidad de estratificacion por
+regimen (simbolo/familia/bucket de volatilidad) se decide con datos.
+
+E-2 (nota, sin elevacion): el contrato de pivotphase.confidence como DataSource (id,
+unidades de historia, cache_key con version de formula + reset_policy) se cierra con
+ADR-008 en P08c.
+
+ESTADO DE INVESTIGACIONES (ACTUALIZADO; refleja tambien ESTADO_CONSTRUCCION_V5): I-04
+COMPLETO (Partes 1-5 consolidadas). La investigacion de pivotphase/divergencias/orderflow
+(I-03 + I-04) queda CERRADA; alimenta la construccion de P08b/P08c.
+
+CORRECCION DE DECISION (2026-07-18) -- EL ROADMAP SE AMPLIA, NO SE CONGELA.
+El 2026-07-17, al firmar EXP-M3-01, se eligio -por recomendacion de Central-
+mantener DOC_ROADMAP_V5 CONGELADO como historico, dejando la ampliacion solo
+en este registro. Esa decision se REVIERTE el 2026-07-18, firmada por Alvaro.
+MOTIVO, sin maquillar: el prompt de cada periferico le manda leer "la ficha de
+su pieza" en DOC_ROADMAP. Con el roadmap congelado, los perifericos de P07b,
+P07c, P08b y P08c abririan el documento y NO ENCONTRARIAN SU PROPIA PIEZA. El
+periferico I-04 ya choco con referencias a piezas inexistentes y tuvo que
+elevarlo. Un plan desactualizado no es historia preservada: es desinformacion
+operativa. La regla de oro protege la ARQUITECTURA (los ADR), no el PLAN.
+CORRECCION: DOC_ROADMAP_V5 recibe una SECCION DE AMPLIACION A-1 en APPEND-ONLY
+con el M3 ampliado y la ficha completa de las cuatro piezas nuevas. El
+contenido original v1.0 queda INTACTO y marcado historico (mismo criterio que
+la nota T-01 y que los cierres que dicen "1 de 3 de M3": eran ciertos cuando se
+escribieron). NUNCA reescritura silenciosa.
+El CSA ya habia admitido esta via en su dictamen de EXP-M3-01: "si se edita
+roadmap, debe ser append-only o seccion de ampliacion, no reescritura
+silenciosa".

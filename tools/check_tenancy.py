@@ -114,6 +114,20 @@ POLICIES_SIN_TENANT_PERMITIDAS: dict[tuple[str, str], AllowedPolicy] = {
             "QUIENES."
         ),
     ),
+    ("rule_definition", "rule_definition_owner_read"): AllowedPolicy(
+        command="SELECT",
+        required_in_using=("enabled",),
+        justification=(
+            "Policy del DUENO de la ventanilla rules_for_market (P08, mismo patron "
+            "que market_intent_owner_read de P07). Una SECURITY DEFINER corre con los "
+            "privilegios de su dueno y FORCE RLS somete tambien al dueno: sin ella la "
+            "ventanilla veria CERO FILAS y la evaluacion cross-tenant que necesita el "
+            "motor seria imposible. No puede atarse al tenant porque su funcion es "
+            "precisamente leer las reglas de TODOS los tenants para un par+timeframe. "
+            "Va estrechada a SELECT y a enabled=true: el dueno solo ve por esta via lo "
+            "que la ventanilla expone. NO aplica a ningun rol de runtime."
+        ),
+    ),
 }
 
 _TENANT_SCOPES = ("tenant", "user")

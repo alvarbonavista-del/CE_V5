@@ -30,6 +30,9 @@ OPERATOR_PASSWORD_ENV_VAR = "CE_V5_OPERATOR_DB_PASSWORD"
 INGESTION_ROLE_NAME = "ce_v5_ingestion"
 INGESTION_PASSWORD_ENV_VAR = "CE_V5_INGESTION_DB_PASSWORD"
 
+RULES_ROLE_NAME = "ce_v5_rules"
+RULES_PASSWORD_ENV_VAR = "CE_V5_RULES_DB_PASSWORD"
+
 _PASSWORD_SETTING = "ce_v5.provision_password"
 
 _CREATE_ROLE_IF_MISSING = """
@@ -110,6 +113,32 @@ $$
 """
 
 
+_CREATE_RULES_ROLE_IF_MISSING = """
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'ce_v5_rules') THEN
+        CREATE ROLE ce_v5_rules NOLOGIN NOSUPERUSER NOBYPASSRLS
+            NOCREATEDB NOCREATEROLE NOREPLICATION INHERIT;
+    END IF;
+END
+$$
+"""
+
+# Mismo mecanismo seguro que los otros roles: la contrasena viaja como
+# parametro a set_config y se aplica con format(%L); nunca se interpola en SQL.
+_GRANT_RULES_LOGIN = """
+DO $$
+BEGIN
+    EXECUTE format(
+        'ALTER ROLE ce_v5_rules WITH LOGIN PASSWORD %L NOSUPERUSER '
+        'NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION INHERIT',
+        current_setting('ce_v5.provision_password')
+    );
+END
+$$
+"""
+
+
 def password_from_env(environ: Mapping[str, str] | None = None) -> str:
     """Lee del entorno la contrasena del rol de aplicacion. Falla si falta."""
     env: Mapping[str, str] = os.environ if environ is None else environ
@@ -142,6 +171,18 @@ def ingestion_password_from_env(environ: Mapping[str, str] | None = None) -> str
         raise DbConfigError(
             f"Falta la variable de entorno {INGESTION_PASSWORD_ENV_VAR} "
             f"con la contrasena del rol de ingesta {INGESTION_ROLE_NAME}."
+        )
+    return password
+
+
+def rules_password_from_env(environ: Mapping[str, str] | None = None) -> str:
+    """Lee del entorno la contrasena del rol de reglas. Falla si falta."""
+    env: Mapping[str, str] = os.environ if environ is None else environ
+    password = env.get(RULES_PASSWORD_ENV_VAR, "").strip()
+    if not password:
+        raise DbConfigError(
+            f"Falta la variable de entorno {RULES_PASSWORD_ENV_VAR} "
+            f"con la contrasena del rol de reglas {RULES_ROLE_NAME}."
         )
     return password
 
@@ -188,23 +229,41 @@ def provision_ingestion_role(db: Database, password: str) -> None:
         session.execute(_GRANT_INGESTION_LOGIN)
 
 
+def provision_rules_role(db: Database, password: str) -> None:
+    """Crea (si falta) el rol de reglas y le da LOGIN sin privilegios de bypass."""
+    if not password.strip():
+        raise DbConfigError(
+            f"La contrasena del rol {RULES_ROLE_NAME} no puede estar vacia."
+        )
+    with db.transaction() as session:
+        session.execute(_CREATE_RULES_ROLE_IF_MISSING)
+        session.execute(
+            f"SELECT set_config('{_PASSWORD_SETTING}', %s, true)", (password,)
+        )
+        session.execute(_GRANT_RULES_LOGIN)
+
+
 def main() -> None:
     """Provisiona los roles con LOGIN usando el rol de migraciones.
 
-    El rol de aplicacion es obligatorio. El de operador (CA-03) y el de INGESTA
-    (regla 5.20) se provisionan solo si su contrasena esta en el entorno: asi un
-    entorno que no opera kill switches ni ingiere market data no necesita
-    conocerlas. Una credencial que no se necesita no se reparte.
+    El rol de aplicacion es obligatorio. El de operador (CA-03), el de INGESTA y
+    el de REGLAS (regla 5.20) se provisionan solo si su contrasena esta en el
+    entorno: asi un entorno que no opera kill switches, ni ingiere market data ni
+    evalua reglas no necesita conocerlas. Una credencial que no se necesita no se
+    reparte.
     """
     database = PsycopgDatabase(DbConfig.migrations_from_env())
     operator_password = os.environ.get(OPERATOR_PASSWORD_ENV_VAR, "").strip()
     ingestion_password = os.environ.get(INGESTION_PASSWORD_ENV_VAR, "").strip()
+    rules_password = os.environ.get(RULES_PASSWORD_ENV_VAR, "").strip()
     try:
         provision_app_role(database, password_from_env())
         if operator_password:
             provision_operator_role(database, operator_password)
         if ingestion_password:
             provision_ingestion_role(database, ingestion_password)
+        if rules_password:
+            provision_rules_role(database, rules_password)
     finally:
         database.close()
     print(
@@ -230,6 +289,16 @@ def main() -> None:
         print(
             f"Rol {INGESTION_ROLE_NAME} NO provisionado: falta "
             f"{INGESTION_PASSWORD_ENV_VAR} (regla 5.20)."
+        )
+    if rules_password:
+        print(
+            f"Rol {RULES_ROLE_NAME} provisionado: LOGIN, NOSUPERUSER, "
+            "NOBYPASSRLS, no propietario de tablas."
+        )
+    else:
+        print(
+            f"Rol {RULES_ROLE_NAME} NO provisionado: falta "
+            f"{RULES_PASSWORD_ENV_VAR} (regla 5.20)."
         )
 
 

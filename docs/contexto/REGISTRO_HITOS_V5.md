@@ -3,14 +3,14 @@
 Archivo vivo (sin logica). Mantenido por Claude Code; Alvaro lo resube
 al knowledge al cerrar cada pieza o hito (DOC_ENTREGABLES sec.8).
 
-Ultima actualizacion: 2026-07-16 (T-03 completado; M3 en curso).
+Ultima actualizacion: 2026-07-17 (M3 ampliado a paridad funcional v4, EXP-M3-01).
 
 | Hito | Definicion breve (DOC_ROADMAP sec.4) | Piezas | Estado |
 |------|--------------------------------------|--------|--------|
 | M0 | Repo creado + CI de guardarrailes en verde (base estructural) | P00 | CERRADO |
 | M1 | Un evento viaja de punta a punta con envelope, idempotencia y Clock sobre el bus externo, con outbox transaccional; reinicio sin perdida | P01, P02, P02b, P03 | CERRADO |
 | M2 | Un Componente se descubre por carpeta, aislado por tenant/RLS, con capacidades por el gate fail-closed; API/auth/realtime en pie; kill switch en caliente | P04, P05, P06, P06b | CERRADO |
-| M3 | Una Rule dispara sobre datos reales y proyecta signal.*/alert.*; el router backend entrega por un canal no-PWA/mock (sin overlay, sin ejecucion) | P07, P08, P09a | ABIERTO (1 de 3) |
+| M3 | Una Rule dispara sobre datos reales y proyecta signal.*/alert.*; el router backend entrega por un canal no-PWA/mock (sin overlay, sin ejecucion) | P07, P07b, P07c, P08, P08b, P08c, P09a | ABIERTO (1 de 7; EXPANDIDO por EXP-M3-01) |
 | M4 | PWA instalable con dashboard, chart y overlays de signal.* en movil real; push PWA; geo-blocking corta ejecucion, no visualizacion | P12a, P12b, P13, P09b | PENDIENTE |
 | M5 | Ejecucion gateada: bloqueo UE/EEA/UK, orden manual BYOC, autotrade BYOC, reconciliacion | P10a, P10b, P11 | PENDIENTE |
 
@@ -161,5 +161,33 @@ se escribio y se conserva sin tocar; queda DEROGADA hacia delante (regla
   bidireccionales. Barrido de seguridad 5.15 escrito, control por control.
   M3: 1 de 3 (faltan P08 motor de reglas y P09a router de notificaciones backend).
 
+## Nota EXP-M3-01 (2026-07-17): M3 AMPLIADO A PARIDAD FUNCIONAL v4
+M3 queda AMPLIADO a paridad funcional v4. Firmado por Alvaro 2026-07-17, con doble
+revision Central + CSA, y SIN reabrir ningun ADR: la ampliacion cubre el hueco del
+catalogo concreto de DataSources, que ADR-014/008/015 ya preveian.
+Entran CUATRO piezas nuevas: P07b (trades + footprint), P07c (orderbook L2 con
+estado), P08b (DataSources candle-derived) y P08c (DataSources footprint/L2-derived).
+El inventario del proyecto pasa de 19 a 23 unidades; M3 pasa de 3 a 7 piezas.
+Orden: P07 -> T-03 -> P07b -> P07c -> P08 -> P08b -> P08c -> P09a. Paralelismo:
+P08 || P07b || P07c || P08b; P08c tras P07b+P07c; P09a tras P08.
+DOC_ROADMAP_V5 se mantiene CONGELADO: la expansion vive en REGISTRO_DECISIONES sec.21
+(EXP-M3-01), junto a las decisiones asociadas (paridad, provisional, CVD, absorcion,
+divergencia, politica de AHP, snapshot+replay, CA-P08-01, DA-I03-1, H-02-5).
+Los cierres historicos que dicen "1 de 3 de M3" NO se reescriben: eran ciertos cuando
+se escribieron (mismo criterio que la nota T-01 aplico a la formula de Actions).
+
 ## Nota T-03 (2026-07-16)
 Trabajo transversal T-03 (segundo y tercer conector publico) COMPLETADO. Se anadieron OKX Spot y Bybit v5 Spot como adaptadores de infra sobre la maquinaria de P07, verificando CE-14: un exchange nuevo entra como su carpeta en infra/connectors/<exchange>/ + una linea plana de registro, sin tocar el nucleo. Antes hubo que sustituir el if-chain de seleccion del composition root por un ConnectorRegistry por convencion (T-03-A, correccion arquitectonica firmada). Validacion en caliente OK contra OKX y Bybit reales (streaming, reconexion + bootstrap autonomo del motor, dedup con filas == claves distintas). Commit final 2061f89, Actions verde 3/3. M3 SIGUE EN CURSO: P08 (motor de reglas) y P09a (router de notificaciones) PENDIENTES.
+
+## Nota de correccion (2026-07-18): el roadmap se amplia, no se congela
+La Nota EXP-M3-01 (2026-07-17) dice que DOC_ROADMAP_V5 se mantiene CONGELADO y
+que la expansion vive solo en REGISTRO_DECISIONES sec.21. Eso era cierto cuando
+se escribio y NO se reescribe, pero queda DEROGADO hacia delante: el 2026-07-18
+Alvaro firmo la reversion. DOC_ROADMAP_V5 incorpora ahora la SECCION DE
+AMPLIACION A-1 (append-only) con el M3 ampliado y la ficha completa de P07b,
+P07c, P08b y P08c; su contenido original v1.0 sigue intacto como historico.
+Motivo, sin maquillar: con el roadmap congelado, los perifericos de las cuatro
+piezas nuevas no habrian encontrado su propia ficha (I-04 ya choco con
+referencias a piezas inexistentes). Mismo criterio que la nota T-01 aplico a la
+formula de Actions. Detalle en REGISTRO_DECISIONES sec.21, "CORRECCION DE
+DECISION (2026-07-18)".

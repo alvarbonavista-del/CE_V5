@@ -13,9 +13,10 @@ allowlistada en el check 7.8.
 GUARDIA GLOBAL DE SECURITY DEFINER: la regla "ninguna SECURITY DEFINER sin
 justificacion escrita" (CA-07 p.6) NO es de identidad, es de TODO el esquema. Cada pieza
 declara SUS ventanillas en SU propio check (identidad aqui, market en
-tools/check_market_access.py), y este guardia consulta la UNION de esas allowlists para
-que no sobreviva ninguna funcion HUERFANA. Los roles de runtime vigilados incluyen al
-INGESTOR (regla 5.20): el ingestor no lee credenciales, y eso deja de ser una promesa.
+tools/check_market_access.py, rules en tools/check_rules_access.py), y este guardia
+consulta la UNION de esas allowlists para que no sobreviva ninguna funcion HUERFANA. Los
+roles de runtime vigilados incluyen al INGESTOR (regla 5.20): el ingestor no lee
+credenciales, y eso deja de ser una promesa.
 
 Lee el catalogo con pg_catalog y has_table_privilege/has_function_privilege (NUNCA
 information_schema, que oculta objetos segun privilegios), con el DSN de migraciones
@@ -316,12 +317,13 @@ def _function_violations(functions: Mapping[str, FunctionFacts]) -> list[str]:
     # guardia verifica que no exista ninguna HUERFANA. Por eso consulta la UNION de
     # allowlists.
     #
-    # Import DIFERIDO a proposito: check_market_access importa FunctionFacts y
-    # AllowedFunction de ESTE modulo; un import de nivel de modulo aqui cerraria el
-    # ciclo y ninguno de los dos cargaria.
+    # Import DIFERIDO a proposito: check_market_access y check_rules_access importan
+    # FunctionFacts (y AllowedFunction) de ESTE modulo; un import de nivel de modulo
+    # aqui cerraria el ciclo y ninguno de los dos cargaria.
     from check_market_access import MARKET_FUNCTIONS  # noqa: PLC0415
+    from check_rules_access import RULES_FUNCTIONS  # noqa: PLC0415
 
-    allowlisted = set(IDENTITY_FUNCTIONS) | set(MARKET_FUNCTIONS)
+    allowlisted = set(IDENTITY_FUNCTIONS) | set(MARKET_FUNCTIONS) | set(RULES_FUNCTIONS)
     for name, fn in functions.items():
         if fn.is_security_definer and name not in allowlisted:
             out.append(

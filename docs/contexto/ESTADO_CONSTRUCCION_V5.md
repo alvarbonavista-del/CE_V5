@@ -4,12 +4,33 @@ Archivo vivo de estado de proceso (sin logica). Lo mantiene Claude Code
 en disco; Alvaro lo resube al knowledge cada vez que se cierra una pieza
 o un hito (DOC_ENTREGABLES sec.8).
 
-Ultima actualizacion: 2026-07-16 (T-03 completado: conectores OKX y Bybit).
+Ultima actualizacion: 2026-07-18 (DOC_ROADMAP_V5 amplia con SECCION A-1 append-only, EXP-M3-01).
 
 ## Hito actual
-M3 (datos, reglas y notificacion backend) ABIERTO. Piezas de M3: P07
-(ENTREGADA), P08 (pendiente), P09a (pendiente). 1 de 3.
-Trabajo transversal T-03 (segundo y tercer conector publico, OKX y Bybit) COMPLETADO 2026-07-16; es transversal y NO cierra M3 (M3 = P07 + P08 + P09a). Proxima pieza: P08 (motor de reglas). Pendiente ademas: P09a.
+M3 (datos, reglas y notificacion backend) ABIERTO y EXPANDIDO a paridad
+funcional v4 (EXP-M3-01, firmada 2026-07-17; doble revision Central + CSA;
+no reabre ADR). Piezas de M3 y su estado:
+  - P07  (ingesta de market data) .................... ENTREGADA
+  - T-03 (conectores OKX y Bybit; transversal) ....... ENTREGADA
+  - P07b (trades + footprint) ........................ PENDIENTE
+  - P07c (orderbook L2 con estado) ................... PENDIENTE
+  - P08  (motor de reglas) ........................... EN CURSO
+  - P08b (DataSources candle-derived) ................ PENDIENTE
+  - P08c (DataSources footprint/L2-derived) .......... PENDIENTE
+  - P09a (router de notificaciones backend) .......... PENDIENTE
+Orden: P07 -> T-03 -> P07b -> P07c -> P08 -> P08b -> P08c -> P09a.
+Paralelismo admitido: P08 || P07b || P07c || P08b; P08c tras P07b+P07c;
+P09a tras P08.
+Investigaciones:
+  - I-03 (pivotes/divergencias) ...... COMPLETO (5 secciones). Pendiente solo
+    GAP-P08c, que se cierra EN CONSTRUCCION, antes de P08c.
+  - I-04 (orderflow) ................. COMPLETO (Partes 1-5 consolidadas).
+La investigacion de pivotphase/divergencias/orderflow (I-03 + I-04) queda
+CERRADA; alimenta la construccion de P08b/P08c.
+DOC_ROADMAP_V5 incorpora la ampliacion en su SECCION A-1 (append-only,
+2026-07-18): alli esta el M3 ampliado y la ficha de P07b, P07c, P08b y P08c.
+El contenido original v1.0 queda intacto como historico. Las decisiones
+asociadas siguen en REGISTRO_DECISIONES sec.21.
 Proximo hito (tras M3): M4.
 
 ## Pieza actual
@@ -34,8 +55,8 @@ P07 - Ingesta de market data (hibrida), ADR-014: ENTREGADA. ABRE el hito M3
   cierre P07' se registra en este commit inmediato posterior. Regla 5.9 cumplida: cero
   cola en el arbol.)
 
-## Proxima pieza
-P08 - Motor de reglas (ADR-015/016/017).
+## Pieza en curso
+P08 - Motor de reglas (ADR-015/016/017). EN CURSO.
 
 ## Piezas cerradas
 - P00 - Esqueleto de repositorio + CI base: ENTREGADA (hito M0 CERRADO).
@@ -54,7 +75,8 @@ P08 - Motor de reglas (ADR-015/016/017).
   final 52b26db. Con P06b se cierra el hito M2 (4 de 4).
 - P07 - Ingesta de market data (hibrida): ENTREGADA. Commit de pieza e7c92be;
   commit final f62e4e0. Abre el hito M3.
-Van 10 piezas cerradas de 19.
+Van 10 piezas cerradas de 23 (inventario ampliado de 19 a 23 por EXP-M3-01,
+firmada 2026-07-17: entran P07b, P07c, P08b y P08c).
 
 ## Regla de trabajo (REGISTRO_DECISIONES sec.1)
 Construccion en micro-pasos: el periferico nunca entrega la pieza entera
