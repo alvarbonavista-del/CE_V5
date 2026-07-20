@@ -1,0 +1,58 @@
+{
+  "additionalProperties": false,
+  "description": "alert.raised: aviso proyectado desde una regla en FIRING.",
+  "properties": {
+    "alert_id": {
+      "format": "uuid",
+      "title": "Alert Id",
+      "type": "string"
+    },
+    "canonical_rule_hash": {
+      "title": "Canonical Rule Hash",
+      "type": "string"
+    },
+    "exchange": {
+      "pattern": "^[a-z][a-z0-9_]{1,31}$",
+      "title": "Exchange",
+      "type": "string"
+    },
+    "notification_policy_ref": {
+      "anyOf": [
+        {
+          "format": "uuid",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Notification Policy Ref"
+    },
+    "rule_id": {
+      "format": "uuid",
+      "title": "Rule Id",
+      "type": "string"
+    },
+    "symbol": {
+      "pattern": "^[A-Z0-9]{1,20}-[A-Z0-9]{1,20}$",
+      "title": "Symbol",
+      "type": "string"
+    },
+    "tenant_id": {
+      "format": "uuid",
+      "title": "Tenant Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "alert_id",
+    "rule_id",
+    "tenant_id",
+    "canonical_rule_hash",
+    "exchange",
+    "symbol"
+  ],
+  "title": "AlertRaisedPayload",
+  "type": "object"
+}

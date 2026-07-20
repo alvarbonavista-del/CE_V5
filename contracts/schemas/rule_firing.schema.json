@@ -1,0 +1,44 @@
+{
+  "$defs": {
+    "EvaluationLifecycleState": {
+      "description": "Estados del ciclo de evaluacion (INFORME 6 sec 11.4).",
+      "enum": [
+        "inactive",
+        "pending",
+        "firing",
+        "resolved"
+      ],
+      "title": "EvaluationLifecycleState",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "rule.firing: la regla entro en estado activo/proyectable (flanco de subida).\n\nAncla causal: signal.*/alert.*.causation_id = event_id(rule.firing) (CA-P08-01 p.5),\nen el envelope.",
+  "properties": {
+    "canonical_rule_hash": {
+      "title": "Canonical Rule Hash",
+      "type": "string"
+    },
+    "previous_state": {
+      "$ref": "#/$defs/EvaluationLifecycleState"
+    },
+    "rule_id": {
+      "format": "uuid",
+      "title": "Rule Id",
+      "type": "string"
+    },
+    "tenant_id": {
+      "format": "uuid",
+      "title": "Tenant Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "rule_id",
+    "tenant_id",
+    "canonical_rule_hash",
+    "previous_state"
+  ],
+  "title": "RuleFiringPayload",
+  "type": "object"
+}

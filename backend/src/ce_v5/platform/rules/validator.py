@@ -22,6 +22,12 @@ from dataclasses import dataclass
 from ce_v5.platform.rules.canonical import canonicalize
 from ce_v5.platform.rules.catalog import DataSourceCatalog, UnknownDataSourceError
 from source.datasource import DataSourceDeclaration, Servibility
+from source.rules.budget import (
+    MAX_CONDITIONS_PER_FEATURE,
+    MAX_FEATURES_PER_GROUP,
+    MAX_GROUPS_PER_RULE,
+    MAX_SOURCES_PER_FEATURE,
+)
 from source.rules.condition import Condition
 from source.rules.reference import DataSourceRef
 from source.rules.rule import Rule
@@ -72,14 +78,11 @@ def validate_rule(rule: Rule, catalog: DataSourceCatalog) -> list[Diagnostic]:
 
 
 # --- Complexity budget: hard caps de plataforma (DOC_ARQ_V5; ADR-015) ---
-# Maximos absolutos de plataforma. Los limites por plan (nodos booleanos
-# totales, SubscriptionIntents derivados) son concern comercial + pieza
-# posterior; aqui solo se aplican los hard caps fijos.
-MAX_GROUPS_PER_RULE = 5
-MAX_FEATURES_PER_GROUP = 3
-MAX_CONDITIONS_PER_FEATURE = 5
-MAX_SOURCES_PER_FEATURE = 3
-
+# Los VALORES viven en source.rules.budget (contracts): los comparte el borde de infra
+# que escribe la autoria y abre suscripciones, y contracts es la unica base que platform
+# e infra pueden importar sin cruzar la frontera de capas (ADR-002). Aqui solo se
+# APLICAN. Los limites por plan (nodos booleanos totales, cuota comercial) son concern
+# de P11 + el gate y no se declaran ni aqui ni alli.
 CODE_TOO_MANY_GROUPS = "rule.complexity.too_many_groups"
 CODE_TOO_MANY_FEATURES = "rule.complexity.too_many_features"
 CODE_TOO_MANY_CONDITIONS = "rule.complexity.too_many_conditions"

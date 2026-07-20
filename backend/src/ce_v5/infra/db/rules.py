@@ -60,6 +60,7 @@ from source.families.rule import (
     RuleResolvedPayload,
 )
 from source.families.signal import SignalEventType, SignalRaisedPayload
+from source.rules.budget import MAX_GROUPS_PER_RULE
 from source.rules.market_rules import RULE_ADAPTER, AnyRule, RuleProduct
 
 # Limite de last_technical_error: coincide con el CHECK de la 0014. Infra ACOTA al borde
@@ -69,14 +70,6 @@ _MAX_TECH_ERROR_LEN = 500
 # Origen (envelope.source) de los eventos del motor de reglas (ADR-003).
 _ENGINE_SOURCE = "ce_v5_rules_engine"
 
-# Tope de intents (= contextos de evaluacion distintos) por regla. ESPEJO de
-# MAX_GROUPS_PER_RULE de platform.rules.validator, que es la FUENTE DE VERDAD del
-# presupuesto de admision: una regla no puede tener mas contextos distintos que grupos.
-# Se duplica aqui porque infra NO importa platform (fronteras de capa, check 7.1) y
-# porque este numero se traduce en CONEXIONES REALES a un exchange: el borde que las
-# abre tiene que poder decir que no por si mismo, sin depender de que alguien ya haya
-# validado antes. Si sube el presupuesto, sube tambien aqui.
-MAX_INTENTS_PER_RULE = 5
 
 # La autoria: toda columna de scope la fija el SERVIDOR; definition guarda el JSON
 # canonico pero no decide identidad ni scope (eso es la columna).
@@ -305,16 +298,17 @@ def rule_stream_keys(rule: AnyRule) -> list[MarketStreamKey]:
     tabla lo exigiria de todas formas).
 
     ACOTADO, no ilimitado: los contextos distintos no pueden superar el numero de grupos
-    y el presupuesto de admision ya lo limita (MAX_GROUPS_PER_RULE en
-    platform.rules.validator). Se reafirma aqui como defensa en profundidad porque infra
-    NO importa platform (check 7.1) y porque el numero de intents es lo que se traduce
-    en conexiones reales al exchange: es un limite de recurso, no un detalle.
+    y el presupuesto de admision ya lo limita: el tope de intents ES
+    MAX_GROUPS_PER_RULE (source.rules.budget), no un numero paralelo. Se reafirma aqui
+    como defensa en profundidad -- el borde que abre conexiones reales a un exchange
+    tiene que poder decir que no por si mismo, sin depender de que alguien haya validado
+    antes -- pero contra la MISMA constante, no contra una copia.
     """
     contexts = sorted({group.evaluation_context for group in rule.groups})
-    if len(contexts) > MAX_INTENTS_PER_RULE:
+    if len(contexts) > MAX_GROUPS_PER_RULE:
         msg = (
             f"la regla {rule.rule_id} declara {len(contexts)} contextos de evaluacion "
-            f"distintos y el maximo es {MAX_INTENTS_PER_RULE}: cada contexto es una "
+            f"distintos y el maximo es {MAX_GROUPS_PER_RULE}: cada contexto es una "
             "suscripcion real a un exchange, no se abren sin limite (ADR-014)."
         )
         raise ValueError(msg)

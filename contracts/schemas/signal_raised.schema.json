@@ -1,0 +1,45 @@
+{
+  "additionalProperties": false,
+  "description": "signal.raised: senal de trading proyectada desde una regla en FIRING.",
+  "properties": {
+    "canonical_rule_hash": {
+      "title": "Canonical Rule Hash",
+      "type": "string"
+    },
+    "exchange": {
+      "pattern": "^[a-z][a-z0-9_]{1,31}$",
+      "title": "Exchange",
+      "type": "string"
+    },
+    "rule_id": {
+      "format": "uuid",
+      "title": "Rule Id",
+      "type": "string"
+    },
+    "signal_id": {
+      "format": "uuid",
+      "title": "Signal Id",
+      "type": "string"
+    },
+    "symbol": {
+      "pattern": "^[A-Z0-9]{1,20}-[A-Z0-9]{1,20}$",
+      "title": "Symbol",
+      "type": "string"
+    },
+    "tenant_id": {
+      "format": "uuid",
+      "title": "Tenant Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "signal_id",
+    "rule_id",
+    "tenant_id",
+    "canonical_rule_hash",
+    "exchange",
+    "symbol"
+  ],
+  "title": "SignalRaisedPayload",
+  "type": "object"
+}

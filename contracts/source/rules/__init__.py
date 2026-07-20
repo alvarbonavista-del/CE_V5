@@ -6,6 +6,12 @@ que el motor emite viven en source.families, junto a las demas familias.
 Importable como 'source.rules' (raiz de importacion en contracts/).
 """
 
+from source.rules.budget import (
+    MAX_CONDITIONS_PER_FEATURE,
+    MAX_FEATURES_PER_GROUP,
+    MAX_GROUPS_PER_RULE,
+    MAX_SOURCES_PER_FEATURE,
+)
 from source.rules.vocab import (
     CombineMode,
     ComparisonOperator,
@@ -15,6 +21,10 @@ from source.rules.vocab import (
 )
 
 __all__ = [
+    "MAX_CONDITIONS_PER_FEATURE",
+    "MAX_FEATURES_PER_GROUP",
+    "MAX_GROUPS_PER_RULE",
+    "MAX_SOURCES_PER_FEATURE",
     "CombineMode",
     "ComparisonOperator",
     "RuleCombineMode",

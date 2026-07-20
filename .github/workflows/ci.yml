@@ -41,6 +41,10 @@ jobs:
         run: uv run python tools/check_component_docs.py
       - name: Contratos - registro event_type -> payload (CA-06)
         run: uv run python tools/check_event_payload_registry.py
+      - name: Contratos - sobre no vacio en emision (guardarrail 5.21)
+        run: uv run python tools/check_envelope_base_usage.py
+      - name: Contratos - paridad registro <-> artefactos schema/TS (ADR-006)
+        run: uv run python tools/check_contract_artifacts.py
       - name: pytest
         run: uv run pytest
 
