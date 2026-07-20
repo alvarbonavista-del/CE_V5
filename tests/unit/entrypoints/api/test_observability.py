@@ -18,7 +18,7 @@ def _lineas(caplog: pytest.LogCaptureFixture) -> list[dict[str, object]]:
 
 
 def test_los_campos_sospechosos_se_redactan(caplog: pytest.LogCaptureFixture) -> None:
-    with caplog.at_level(logging.INFO, logger="ce_v5.api"):
+    with caplog.at_level(logging.INFO, logger="ce_v5"):
         log_event(
             "prueba",
             password="secreta",
@@ -48,7 +48,7 @@ def test_los_campos_sospechosos_se_redactan(caplog: pytest.LogCaptureFixture) ->
 def test_se_registran_las_huellas_y_el_correlation_id(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    with caplog.at_level(logging.INFO, logger="ce_v5.api"):
+    with caplog.at_level(logging.INFO, logger="ce_v5"):
         log_event(
             "auth.login_failed",
             account="huella-del-email",

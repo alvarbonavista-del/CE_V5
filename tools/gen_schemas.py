@@ -46,6 +46,7 @@ from source.families.policy import (  # noqa: E402
     PolicyVersionPublishedPayload,
     SubjectInvalidatedPayload,
 )
+from source.families.rule import RuleQuarantinedPayload  # noqa: E402
 from source.families.user import UserRegisteredPayload  # noqa: E402
 
 
@@ -101,6 +102,8 @@ def build_schemas() -> dict[str, dict[str, object]]:
     realtime_event_schema["title"] = "RealtimeEvent"
     user_registered_schema = UserRegisteredPayload.model_json_schema()
     user_registered_schema["title"] = "UserRegisteredPayload"
+    rule_quarantined_schema = RuleQuarantinedPayload.model_json_schema()
+    rule_quarantined_schema["title"] = "RuleQuarantinedPayload"
     return {
         "envelope.schema.json": envelope_schema,
         "family.schema.json": family_schema,
@@ -123,6 +126,7 @@ def build_schemas() -> dict[str, dict[str, object]]:
         "api_realtime_error.schema.json": realtime_error_schema,
         "api_realtime_event.schema.json": realtime_event_schema,
         "user_registered.schema.json": user_registered_schema,
+        "rule_quarantined.schema.json": rule_quarantined_schema,
     }
 
 

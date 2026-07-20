@@ -44,6 +44,7 @@ from source.families.rule import (
     RuleEvaluationCompletedPayload,
     RuleEventType,
     RuleFiringPayload,
+    RuleQuarantinedPayload,
     RuleResolvedPayload,
 )
 from source.families.signal import SignalEventType, SignalRaisedPayload
@@ -97,6 +98,9 @@ EVENT_PAYLOAD_REGISTRY: dict[str, tuple[type[EventPayload], int]] = {
     RuleEventType.EVALUATION_COMPLETED.value: (RuleEvaluationCompletedPayload, 1),
     RuleEventType.FIRING.value: (RuleFiringPayload, 1),
     RuleEventType.RESOLVED.value: (RuleResolvedPayload, 1),
+    # rule.quarantined (P08, CA-P08-06): operacional, no transicion de evaluacion;
+    # payload y productor (ce_v5_rules) reales desde hoy -> registrado, no diferido.
+    RuleEventType.QUARANTINED.value: (RuleQuarantinedPayload, 1),
     # signal.*/alert.* (P08): proyecciones derivadas de rule.firing (causation_id).
     SignalEventType.RAISED.value: (SignalRaisedPayload, 1),
     AlertEventType.RAISED.value: (AlertRaisedPayload, 1),

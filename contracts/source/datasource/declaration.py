@@ -55,6 +55,37 @@ class Servibility(StrEnum):
     NON_SERVIBLE = "non_servible"
 
 
+class MemoryModel(StrEnum):
+    """Como depende el valor de una fuente de la HISTORIA (CA-P08-08, firmada).
+
+    Es lo que decide si una CORRECCION de vela se puede propagar por VENTANA acotada o
+    no. No es una etiqueta descriptiva: es el discriminante de correccion.
+
+    POINT_LOCAL: el valor de la barra T depende SOLO del dato de esa barra
+    (market.close y demas campos crudos de la vela). Corregir T invalida un numero
+    ACOTADO de evaluaciones -- las que miran T dentro de su ventana de history_bars --,
+    asi que recalcular esa ventana basta y el reproceso es finito y barato.
+
+    RECURSIVE: el valor de la barra T depende de su propio valor en T-1 (EMA, RSI, MACD,
+    y toda media suavizada). Corregir T contamina TODOS los valores posteriores hasta el
+    presente: no hay ventana acotada que valga, y recalcular "unas cuantas barras" daria
+    un numero SILENCIOSAMENTE INCORRECTO, que es peor que no recalcular.
+
+    INTEGRATOR: el valor acumula desde un origen (CVD y demas integradores). Misma
+    conclusion que RECURSIVE por otra razon: el acumulado arrastra el error sin fin.
+
+    En v5.0 el motor SOLO propaga correcciones a fuentes POINT_LOCAL; RECURSIVE e
+    INTEGRATOR quedan declaradas y NO-CONFORMES para correccion (a P08b/P08c). El enum
+    se cierra entero AHORA -- no solo el valor que v5.0 usa -- porque una fuente
+    recursiva declarada point-local por omision propagaria correcciones mal: el valor
+    tiene que ser EXPLICITO y por eso el campo no lleva default.
+    """
+
+    POINT_LOCAL = "point_local"
+    RECURSIVE = "recursive"
+    INTEGRATOR = "integrator"
+
+
 class HistoryUnit(StrEnum):
     """Unidad de historia que declara la fuente (INFORME 6 sec 10.9).
 
@@ -89,11 +120,17 @@ class ParamSpec(BaseModel):
 class DataSourceDeclaration(BaseModel):
     """Declaracion GENERAL de una DataSource (ADR-008, INFORME 6 sec 12.2).
 
-    source_type/servibility/value_type describen QUE es y como se sirve. history_units
-    dice en que unidad se mira su historia. shared_evaluation/sharing_scope/
-    cache_key_schema gobiernan la evaluacion compartida (el motor usa la clave sin
-    conocer el tipo). consumes lista los source_id de los que DERIVA (DAG); vacio si es
-    base. Los HARD CAPS y la validacion semantica contra la Rule son del Bloque 3.
+    source_type/servibility/value_type describen QUE es y como se sirve.
+
+    memory_model dice como depende de la HISTORIA y es OBLIGATORIO sin default
+    (CA-P08-08): de el depende si una correccion de vela se puede propagar por ventana
+    acotada o si el motor debe abstenerse.
+
+    history_units dice en que unidad se mira su historia. shared_evaluation,
+    sharing_scope y cache_key_schema gobiernan la evaluacion compartida (el motor usa
+    la clave sin conocer el tipo). consumes lista los source_id de los que DERIVA (DAG);
+    vacio si es base. Los HARD CAPS y la validacion semantica contra la Rule son del
+    Bloque 3.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -101,6 +138,7 @@ class DataSourceDeclaration(BaseModel):
     source_id: SourceId
     source_type: SourceType
     servibility: Servibility
+    memory_model: MemoryModel
     value_type: ScalarType
     evaluation_contexts: tuple[ContextToken, ...] = Field(min_length=1)
     history_units: tuple[HistoryUnit, ...] = Field(min_length=1)

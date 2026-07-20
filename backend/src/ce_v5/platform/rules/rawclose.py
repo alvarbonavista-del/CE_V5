@@ -15,6 +15,7 @@ from decimal import Decimal
 from source.datasource import (
     DataSourceDeclaration,
     HistoryUnit,
+    MemoryModel,
     Servibility,
     SharingScope,
     SourceType,
@@ -31,6 +32,10 @@ def market_close_declaration() -> DataSourceDeclaration:
         source_id=MARKET_CLOSE_SOURCE_ID,
         source_type=SourceType.OBSERVABLE,
         servibility=Servibility.CONTINUOUS,
+        # POINT_LOCAL: el cierre de la barra T es el dato crudo de la barra T y no
+        # depende de T-1. Por eso una correccion de T se propaga por VENTANA acotada
+        # (CA-P08-08): es la unica clase de fuente que v5.0 sabe corregir.
+        memory_model=MemoryModel.POINT_LOCAL,
         value_type=ScalarType.DECIMAL,
         evaluation_contexts=tuple(tf.value for tf in Timeframe),
         history_units=(HistoryUnit.BARS,),

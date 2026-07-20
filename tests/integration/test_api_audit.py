@@ -281,7 +281,7 @@ def test_el_log_de_un_login_fallido_no_lleva_el_email(
 ) -> None:
     email, _ = _alta(client)
 
-    with caplog.at_level(logging.INFO, logger="ce_v5.api"):
+    with caplog.at_level(logging.INFO, logger="ce_v5"):
         client.post("/v1/auth/login", json={"email": email, "password": "mala"})
 
     lineas = [json.loads(r.message) for r in caplog.records]

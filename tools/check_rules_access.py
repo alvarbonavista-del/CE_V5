@@ -16,7 +16,14 @@ documento. Con el, es un hecho verificado en cada build. FALLA si:
 - ce_v5_rules tiene privilegio de escritura sobre market, identidad o policy: el motor
   no ingiere velas, no toca credenciales y no publica politica;
 - la outbox de ce_v5_rules deja de estar acotada a las familias rule./signal./alert.,
-  o el motor gana DELETE/TRUNCATE sobre la outbox.
+  o el motor gana DELETE/TRUNCATE sobre la outbox;
+- (D1, 0016) ce_v5_rules PIERDE el SELECT sobre market_candle -- sin el no puede leer la
+  ventana de cierres y NO PUEDE EVALUAR --, o GANA cualquier otro acceso a mercado:
+  escritura del historico, market_instrument (no imprescindible en v5.0: el motor no
+  traduce simbolos nativos), market_subscription_intent (el intent de una regla lo
+  escribe la AUTORIA, no el motor) o la ventanilla market_public_demand (es del
+  ingestor). Es el unico check que muerde en los DOS sentidos: el positivo protege de
+  un grant que desaparece, los negativos de un permiso ancho de mas.
 
 ALCANCE (CA-P08-03). Este check cubre las pruebas ESTATICAS (verificables contra el
 catalogo): 1, 2, 3, 4, 5, 6, 8, 13, 14 y 15. Las pruebas 7, 9, 10, 11, 12 y 16 son de
@@ -96,12 +103,31 @@ _TABLE_PRIVILEGES: tuple[str, ...] = (
 )
 _WRITE_PRIVILEGES: tuple[str, ...] = ("INSERT", "UPDATE", "DELETE", "TRUNCATE")
 
-# Tablas sobre las que el motor NO puede tener NINGUN privilegio directo.
-MARKET_TABLES: tuple[str, ...] = (
-    "market_candle",
+# --- D1: la rendija de LECTURA de mercado (0016, CA-P08-04) ------------------
+# El motor evalua sobre la ventana de cierres del historico, asi que NECESITA SELECT
+# sobre market_candle -- y NADA MAS de la superficie de mercado. Las tres constantes
+# siguientes hacen que eso sea verificable en los dos sentidos: si falta el SELECT el
+# motor no puede evaluar (y el check lo dice), y si aparece cualquier otro privilegio o
+# cualquier otra tabla, el check ROMPE EL BUILD.
+MARKET_CANDLE_TABLE = "market_candle"
+
+# La ventanilla de DEMANDA de suscripcion: es del INGESTOR (0012). El motor no decide
+# que flujos se suscriben, asi que no la ejecuta.
+MARKET_DEMAND_FUNCTION = "market_public_demand"
+
+# Tablas de mercado sobre las que el motor NO puede tener NINGUN privilegio, ni
+# siquiera lectura. market_instrument esta AQUI a proposito (prueba 2): el motor recibe
+# exchange/symbol ya CANONICOS por el evento y por market_scope, y nunca resuelve un
+# simbolo nativo, asi que el catalogo NO es imprescindible en v5.0. Un grant preventivo
+# "por si acaso" es exactamente lo que la regla 5.20 prohibe.
+MARKET_TABLES_FORBIDDEN: tuple[str, ...] = (
     "market_instrument",
     "market_subscription_intent",
 )
+
+# Tablas de mercado sobre las que el motor NO puede ESCRIBIR (market_candle incluida:
+# el historico es append-only tambien para el motor).
+MARKET_TABLES: tuple[str, ...] = (MARKET_CANDLE_TABLE,) + MARKET_TABLES_FORBIDDEN
 IDENTITY_TABLES: tuple[str, ...] = ("app_user", "user_credential", "user_session")
 POLICY_TABLES: tuple[str, ...] = (
     "policy_version",
@@ -248,6 +274,65 @@ def _privilege_violations(privileges: Mapping[tuple[str, str, str], bool]) -> li
     return out
 
 
+def _market_read_violations(
+    privileges: Mapping[tuple[str, str, str], bool], demand_execute_for_rules: bool
+) -> list[str]:
+    """Pruebas D1 (1-7, 10, 26-28): la rendija de mercado es de SOLO LECTURA y minima.
+
+    Muerde en los DOS sentidos, que es lo que la hace util:
+    - POSITIVO (1): sin SELECT sobre market_candle el motor no puede leer la ventana de
+      cierres y NO PUEDE EVALUAR. Un grant que desaparece en un refactor dejaria el
+      motor mudo en produccion; aqui rompe el build.
+    - NEGATIVOS (2-7, 10, 26-28): cualquier privilegio de mas -- escritura del
+      historico, el catalogo de instrumentos, la ventanilla de demanda, la escritura de
+      intents -- rompe el build. Un permiso ancho de mas es exactamente el fallo que
+      este check existe para impedir.
+    """
+    out: list[str] = []
+
+    # Prueba 1 (POSITIVO): el motor PUEDE leer el historico de velas.
+    if not privileges.get((RULES_ROLE_NAME, MARKET_CANDLE_TABLE, "SELECT"), False):
+        out.append(
+            f"{MARKET_CANDLE_TABLE}: el rol {RULES_ROLE_NAME} NO tiene SELECT (P08 "
+            "D1, 0016): el motor evalua sobre la ventana de cierres del historico; "
+            "sin esa lectura no puede evaluar nada. Es la UNICA rendija que necesita."
+        )
+
+    # Pruebas 3, 4, 5 y 27 (NEGATIVOS): el historico es APPEND-ONLY tambien para el
+    # motor. Las cubre _privilege_violations (p.14) sobre MARKET_TABLES, pero se
+    # reafirman aqui con el mensaje de D1 para que el fallo se lea en su contexto.
+    for privilege in _WRITE_PRIVILEGES:
+        if privileges.get((RULES_ROLE_NAME, MARKET_CANDLE_TABLE, privilege), False):
+            out.append(
+                f"{MARKET_CANDLE_TABLE}: el rol {RULES_ROLE_NAME} tiene {privilege} "
+                "(P08 D1, 0016): el motor LEE el mercado, no lo escribe. Nadie "
+                "reescribe la historia del mercado, tampoco el motor."
+            )
+
+    # Pruebas 2 y 7 (NEGATIVOS): ninguna otra tabla de mercado, ni para leer.
+    # market_instrument: NO IMPRESCINDIBLE en v5.0 (el motor no traduce simbolos
+    # nativos). market_subscription_intent: la escritura del intent de una regla es de
+    # la AUTORIA (ce_v5_app), no del motor.
+    for table in MARKET_TABLES_FORBIDDEN:
+        for privilege in _TABLE_PRIVILEGES:
+            if privileges.get((RULES_ROLE_NAME, table, privilege), False):
+                out.append(
+                    f"{table}: el rol {RULES_ROLE_NAME} tiene {privilege} (P08 D1): la "
+                    "0016 abre SOLO SELECT sobre market_candle. El motor no traduce "
+                    "simbolos nativos ni declara demanda de suscripcion, asi que no "
+                    "necesita esta tabla: un grant 'por si acaso' viola la regla 5.20."
+                )
+
+    # Prueba 6 (NEGATIVO): la ventanilla de DEMANDA es del ingestor, no del motor.
+    if demand_execute_for_rules:
+        out.append(
+            f"{MARKET_DEMAND_FUNCTION}: el rol {RULES_ROLE_NAME} tiene EXECUTE (P08 "
+            "D1): esa ventanilla agrega la DEMANDA de suscripcion y es del INGESTOR "
+            "(0012). El motor no decide que flujos se suscriben."
+        )
+    return out
+
+
 def _outbox_violations(
     outbox_policies: Mapping[str, str],
     privileges: Mapping[tuple[str, str, str], bool],
@@ -296,11 +381,13 @@ def check_rules(
     execute_for_rules: bool,
     privileges: Mapping[tuple[str, str, str], bool],
     outbox_policies: Mapping[str, str],
+    demand_execute_for_rules: bool = False,
 ) -> list[str]:
     """Logica pura del check rules: devuelve las violaciones (vacia = verde)."""
     problems: list[str] = []
     problems.extend(_function_violations(function, execute_for_rules))
     problems.extend(_privilege_violations(privileges))
+    problems.extend(_market_read_violations(privileges, demand_execute_for_rules))
     problems.extend(_outbox_violations(outbox_policies, privileges))
     return problems
 
@@ -339,10 +426,21 @@ WHERE schemaname = 'public' AND tablename = 'outbox'
 """
 
 
+# EXECUTE del motor sobre la ventanilla de DEMANDA (del ingestor). Se pregunta por
+# nombre de funcion, no por oid fijo: si un dia se le anadieran sobrecargas, todas
+# quedan cubiertas. coalesce(bool_or(...), false) da FALSE cuando la funcion no existe.
+_DEMAND_EXECUTE_SQL = """
+SELECT coalesce(bool_or(has_function_privilege(%s, p.oid, 'EXECUTE')), false)
+FROM pg_proc p
+JOIN pg_namespace n ON n.oid = p.pronamespace
+WHERE n.nspname = 'public' AND p.proname = %s
+"""
+
+
 def load_rules_facts(
     database: Database,
 ) -> tuple[
-    FunctionFacts | None, bool, dict[tuple[str, str, str], bool], dict[str, str]
+    FunctionFacts | None, bool, dict[tuple[str, str, str], bool], dict[str, str], bool
 ]:
     """Lee del catalogo la ventanilla, su EXECUTE por rol, privilegios y outbox."""
     tables_to_probe = list(FORBIDDEN_TABLES) + [OUTBOX_TABLE]
@@ -359,6 +457,10 @@ def load_rules_facts(
         )
         existing_rows = session.fetchall(_EXISTING_TABLES_SQL, (tables_to_probe,))
         outbox_rows = session.fetchall(_OUTBOX_POLICIES_SQL)
+        demand_row = session.fetchone(
+            _DEMAND_EXECUTE_SQL, (RULES_ROLE_NAME, MARKET_DEMAND_FUNCTION)
+        )
+        demand_execute_for_rules = bool(demand_row[0]) if demand_row else False
 
         function: FunctionFacts | None = None
         execute_for_rules = False
@@ -405,31 +507,47 @@ def load_rules_facts(
             }
 
     outbox_policies = {str(row[0]): str(row[1]) for row in outbox_rows}
-    return function, execute_for_rules, privileges, outbox_policies
+    return (
+        function,
+        execute_for_rules,
+        privileges,
+        outbox_policies,
+        demand_execute_for_rules,
+    )
 
 
 def main() -> int:
     database = PsycopgDatabase(DbConfig.migrations_from_env())
     try:
-        function, execute_for_rules, privileges, outbox_policies = load_rules_facts(
-            database
-        )
+        (
+            function,
+            execute_for_rules,
+            privileges,
+            outbox_policies,
+            demand_execute,
+        ) = load_rules_facts(database)
     finally:
         database.close()
-    problems = check_rules(function, execute_for_rules, privileges, outbox_policies)
+    problems = check_rules(
+        function, execute_for_rules, privileges, outbox_policies, demand_execute
+    )
     if problems:
         print("FAIL check rules (motor de reglas, CA-P08-02/03):")
         for problem in problems:
             print(f"  - {problem}")
         return 1
     print(
-        f"OK check rules (CA-P08-03, estaticas 1/2/3/4/5/6/8/13/14/15): "
+        f"OK check rules (CA-P08-03, estaticas 1/2/3/4/5/6/8/13/14/15 + D1): "
         f"{RULES_ROLE_NAME} no tiene privilegio directo sobre rule_definition (lee "
         "solo por la ventanilla), rules_for_market es SECURITY DEFINER con "
         "search_path fijo, sin SQL dinamico, sin EXECUTE para PUBLIC ni otros roles "
         "de runtime, con retorno minimo sin dato de sujeto; el motor no escribe "
-        "market/identidad/policy y su outbox esta acotada a rule./signal./alert. Las "
-        "de comportamiento (7/9/10/11/12/16) cierran en la 4.3."
+        "market/identidad/policy y su outbox esta acotada a rule./signal./alert. D1 "
+        f"(0016): {RULES_ROLE_NAME} SI lee {MARKET_CANDLE_TABLE} y NADA MAS de "
+        "mercado -- sin escritura del historico, sin market_instrument (no "
+        "imprescindible en v5.0), sin market_subscription_intent y sin la ventanilla "
+        f"{MARKET_DEMAND_FUNCTION} (esa es del ingestor). Las de comportamiento "
+        "(7/9/10/11/12/16) cierran en la 4.3 y el test 22 en validate_rules_worker."
     )
     return 0
 

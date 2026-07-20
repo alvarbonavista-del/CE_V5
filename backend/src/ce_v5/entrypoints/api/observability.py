@@ -16,42 +16,20 @@ atacante lo agradeceria mucho.
 
 from __future__ import annotations
 
-import json
-import logging
 from collections.abc import Awaitable, Callable
 from uuid import uuid4
 
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 
+# log_event y su redaccion viven en CORE: la disciplina de no filtrar secretos por el
+# log la comparten la API y los workers, y un worker no debe arrastrar FastAPI para
+# escribir una linea de log. Se REEXPORTAN aqui para no cambiar la superficie de la API.
+from ce_v5.core.observability import REDACTED, log_event
+
 CORRELATION_HEADER = "x-correlation-id"
 
-_LOGGER = logging.getLogger("ce_v5.api")
 _NextCall = Callable[[Request], Awaitable[Response]]
-
-REDACTED = "[REDACTADO]"
-
-# Fragmentos que delatan un secreto en el NOMBRE de un campo. La disciplina no puede
-# depender de que nadie se equivoque nunca: si alguien pasa por error una contrasena o
-# un token a log_event, se REDACTA en vez de escribirse. Un log es un fichero que acaba
-# copiado y abierto por quien no deberia.
-_PROHIBIDOS = ("password", "token", "authorization", "cookie", "secret", "hash")
-
-
-def _redactar(campos: dict[str, object]) -> dict[str, object]:
-    return {
-        clave: (
-            REDACTED
-            if any(prohibido in clave.lower() for prohibido in _PROHIBIDOS)
-            else valor
-        )
-        for clave, valor in campos.items()
-    }
-
-
-def log_event(event: str, **campos: object) -> None:
-    """Emite una linea JSON. Redacta activamente cualquier campo sospechoso."""
-    _LOGGER.info(json.dumps({"event": event, **_redactar(campos)}, sort_keys=True))
 
 
 def correlation_id(request: Request) -> str:
@@ -68,3 +46,12 @@ class CorrelationIdMiddleware(BaseHTTPMiddleware):
         response = await call_next(request)
         response.headers[CORRELATION_HEADER] = request.state.correlation_id
         return response
+
+
+__all__ = [
+    "CORRELATION_HEADER",
+    "REDACTED",
+    "CorrelationIdMiddleware",
+    "correlation_id",
+    "log_event",
+]

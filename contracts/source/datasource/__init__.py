@@ -3,6 +3,7 @@
 from source.datasource.declaration import (
     DataSourceDeclaration,
     HistoryUnit,
+    MemoryModel,
     ParamSpec,
     Servibility,
     SharingScope,
@@ -12,6 +13,7 @@ from source.datasource.declaration import (
 __all__ = [
     "DataSourceDeclaration",
     "HistoryUnit",
+    "MemoryModel",
     "ParamSpec",
     "Servibility",
     "SharingScope",

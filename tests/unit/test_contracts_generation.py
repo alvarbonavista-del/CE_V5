@@ -28,6 +28,7 @@ def test_build_schemas_incluye_todos_los_contratos() -> None:
         "api_realtime_error.schema.json",
         "api_realtime_event.schema.json",
         "user_registered.schema.json",
+        "rule_quarantined.schema.json",
     }
 
 

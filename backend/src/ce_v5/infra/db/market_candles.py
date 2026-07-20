@@ -5,6 +5,10 @@ rechazaria PostgreSQL, no un if de este fichero.
 
 Cumple CandleWriterPort de ce_v5.platform.market por FORMA (Protocol estructural):
 este modulo NO importa platform, ni platform importa infra.
+
+LECTURA (P08 D1): read_close_window sirve la ventana de cierres que consume el
+evaluador de reglas. Es SOLO LECTURA y la ejecuta ce_v5_rules con el GRANT SELECT de la
+0016; la escritura sigue siendo exclusiva del rol de ingesta.
 """
 
 from __future__ import annotations
@@ -12,8 +16,8 @@ from __future__ import annotations
 import uuid
 from decimal import Decimal
 
-from ce_v5.infra.db.ports import Database
-from source.families.market import CandlePayload, StoredCandle
+from ce_v5.infra.db.ports import Database, Session
+from source.families.market import CandlePayload, MarketType, StoredCandle
 
 # La vela ORIGINAL de esa ventana (la cerrada), mas el numero de revision mas alto
 # entre sus correcciones. Con esos dos datos se decide si lo que llega es un DUPLICADO
@@ -52,6 +56,60 @@ _INSERT_OUTBOX_SQL = """
 INSERT INTO outbox (event_id, idempotency_key, stream_key, event_type, envelope)
 VALUES (%s, %s, %s, %s, %s::jsonb)
 ON CONFLICT (idempotency_key) DO NOTHING
+"""
+
+# VENTANA DE CIERRES para el evaluador (P08 D1). Tres decisiones, cada una necesaria:
+#
+# 1. SOLO VELAS CERRADAS. La tabla ya lo garantiza por CHECK (solo admite 'closed' y
+#    'correction': lo provisional NO se persiste, 0012), asi que el invariante D3 "jamas
+#    se evalua sobre candle_updated" no depende de este WHERE: lo impone el esquema. El
+#    filtro explicito queda igualmente para que la intencion se lea aqui.
+#
+# 2. UNA FILA POR VENTANA, LA MAS RECIENTE. Una vela corregida NO muta el original: la
+#    correccion es una fila NUEVA con el mismo open_time y su correction_revision
+#    (append-only, ADR-007). Sin DISTINCT ON, una ventana con correcciones devolveria
+#    DOS cierres para el mismo open_time y desplazaria toda la serie: las funciones
+#    continuas (average/change/previous_value) operan por POSICION, asi que una barra
+#    duplicada corrompe en silencio todos los valores. Se toma la revision MAS ALTA
+#    (DESC NULLS LAST: las correcciones primero, el 'closed' original al final), que es
+#    el hecho vigente de esa ventana.
+#
+# 3. LAS ULTIMAS `bars` HASTA up_to_open_time. Se ordena DESC para que el LIMIT recorte
+#    por el extremo ANTIGUO (quedarse con las N mas recientes) y la consulta externa
+#    reordena a oldest->newest, que es como las funciones canonicas leen la serie.
+#
+# market_candle es public_market (0012): sin tenant_id y sin RLS, asi que esta lectura
+# NO lleva filtro de tenant. No hay frontera de tenant que cruzar porque el dato de
+# mercado no es dato de sujeto.
+_CLOSE_WINDOW_SQL = """
+SELECT w.close
+FROM (
+    SELECT DISTINCT ON (open_time) open_time, close
+    FROM market_candle
+    WHERE exchange = %s
+      AND market_type = %s
+      AND symbol = %s
+      AND timeframe = %s
+      AND maturity_state IN ('closed', 'correction')
+      AND open_time <= %s
+    ORDER BY open_time DESC, correction_revision DESC NULLS LAST
+    LIMIT %s
+) AS w
+ORDER BY w.open_time
+"""
+
+# La ULTIMA vela madura del flujo (L). Es la vela sobre la que la regla tiene su estado
+# VIGENTE: una correccion solo puede cambiar el estado actual si L cae dentro de la
+# ventana que la correccion invalida (CA-P08-08). Mismo filtro de madurez que la
+# ventana: lo provisional no es historia y no fija estado.
+_LAST_CLOSED_SQL = """
+SELECT max(open_time)
+FROM market_candle
+WHERE exchange = %s
+  AND market_type = %s
+  AND symbol = %s
+  AND timeframe = %s
+  AND maturity_state IN ('closed', 'correction')
 """
 
 
@@ -149,3 +207,59 @@ class PostgresCandleWriter:
                 ),
             )
         return True
+
+
+def read_close_window(
+    session: Session,
+    exchange: str,
+    symbol: str,
+    timeframe: str,
+    up_to_open_time: int,
+    bars: int,
+) -> tuple[Decimal, ...]:
+    """La ventana de cierres de un flujo hasta una vela dada, oldest->newest.
+
+    Es la serie que consume el evaluador (platform.rules.evaluator, Series por
+    source_id): las `bars` velas CERRADAS mas recientes del (exchange, symbol,
+    timeframe) con open_time <= up_to_open_time, una por ventana (la revision vigente si
+    hubo correcciones) y en orden creciente de open_time.
+
+    Devuelve menos de `bars` elementos si el historico no da para mas -- e incluso la
+    tupla VACIA. No es un error y NO se rellena con nada: el evaluador ya distingue
+    "historia insuficiente" como NOT_EVALUABLE (K3), que es distinto de FALSE. Inventar
+    barras aqui convertiria un dato ausente en un hecho falso.
+
+    market_type esta FIJADO a spot porque v5.0 solo tiene spot (MarketType). No se
+    parametriza "por si acaso": cuando entren derivados, el parametro entra con su uso
+    real y este pin -- que es visible y tipado, no una cadena magica -- lo delata.
+    """
+    rows = session.fetchall(
+        _CLOSE_WINDOW_SQL,
+        (
+            exchange,
+            MarketType.SPOT.value,
+            symbol,
+            timeframe,
+            up_to_open_time,
+            bars,
+        ),
+    )
+    return tuple(_decimal(row[0]) for row in rows)
+
+
+def read_last_closed_open_time(
+    session: Session, exchange: str, symbol: str, timeframe: str
+) -> int | None:
+    """El open_time de la ULTIMA vela madura del flujo, o None si no hay ninguna.
+
+    Es "L" en el analisis de correccion (CA-P08-08): la vela sobre la que la regla tiene
+    su estado VIGENTE. Una correccion de la vela T solo puede alterar ese estado si L
+    cae dentro de la ventana que T invalida; si L ya quedo fuera, el estado actual no se
+    calculo con el dato corregido y no hay nada que rehacer.
+    """
+    row = session.fetchone(
+        _LAST_CLOSED_SQL, (exchange, MarketType.SPOT.value, symbol, timeframe)
+    )
+    if row is None or row[0] is None:
+        return None
+    return _entero(row[0])

@@ -33,9 +33,11 @@ from ce_v5.infra.db.config import (
     DbConfigError,
 )
 from ce_v5.infra.db.identity import register_user
-from ce_v5.infra.db.outbox import OutboxEvent
+from ce_v5.infra.db.outbox import OutboxEvent, enqueue_event
 from ce_v5.infra.db.psycopg_adapter import PsycopgDatabase
 from ce_v5.infra.db.rules import (
+    LifecycleOperational,
+    build_quarantined_event,
     discover_rules,
     insert_rule_definition,
     read_state,
@@ -48,6 +50,7 @@ from ce_v5.infra.db.tenancy import (
     provision_tenant_for_user,
 )
 from ce_v5.platform.rules.canonical import canonical_rule_hash
+from source.families.rule import QuarantineReason, RuleQuarantinedPayload
 from source.rules.condition import Condition
 from source.rules.feature import Feature
 from source.rules.group import Group
@@ -67,7 +70,74 @@ _PASSWORD_HASH = "hash-de-prueba-no-es-argon2"
 _STATE_INSERT_SQL = (
     "INSERT INTO rule_lifecycle_state (rule_id, tenant_id, state) VALUES (%s, %s, %s)"
 )
+# Insert que ademas escribe columnas OPERACIONALES (0014), para las pruebas 27/29.
+_STATE_OP_INSERT_SQL = (
+    "INSERT INTO rule_lifecycle_state "
+    "(rule_id, tenant_id, state, is_stale, stale_reason) VALUES (%s, %s, %s, %s, %s)"
+)
+_OP_READ_SQL = (
+    "SELECT not_evaluable_count, consecutive_exceptions, is_stale, stale_reason, "
+    "is_quarantined, quarantine_reason, last_technical_error "
+    "FROM rule_lifecycle_state WHERE rule_id = %s"
+)
+_STATE_OP_UPDATE_SQL = (
+    "UPDATE rule_lifecycle_state SET is_stale = true WHERE rule_id = %s"
+)
+_STATE_QUAR_UPDATE_SQL = (
+    "UPDATE rule_lifecycle_state SET is_quarantined = true WHERE rule_id = %s"
+)
+_QUAR_READ_SQL = (
+    "SELECT is_quarantined, quarantine_reason FROM rule_lifecycle_state "
+    "WHERE rule_id = %s"
+)
+
+
+def _quarantined_event(
+    rule_id: UUID, tenant_id: UUID, *, reason: QuarantineReason
+) -> OutboxEvent:
+    """Construye un rule.quarantined valido para un tenant (server-authoritative)."""
+    payload = RuleQuarantinedPayload(
+        rule_id=rule_id,
+        tenant_id=tenant_id,
+        quarantine_reason=reason,
+        technical_detail="code=E_PLAN tf=1h",
+    )
+    return build_quarantined_event(
+        payload,
+        source="ce_v5_rules_engine",
+        correlation_id=uuid4().hex,
+        authoritative_tenant_id=tenant_id,
+    )
+
+
 _OUTBOX_COUNT_SQL = "SELECT count(*) FROM outbox WHERE event_id = %s"
+# Catalogo: RLS activa/forzada y COMMENT (con isolation_scope) de una tabla.
+_RLS_FLAGS_SQL = (
+    "SELECT relrowsecurity, relforcerowsecurity FROM pg_class WHERE relname = %s"
+)
+_TABLE_COMMENT_SQL = "SELECT obj_description(%s::regclass, 'pg_class')"
+
+
+def _op(
+    *,
+    not_evaluable_count: int = 0,
+    consecutive_exceptions: int = 0,
+    is_stale: bool = False,
+    stale_reason: str | None = None,
+    is_quarantined: bool = False,
+    quarantine_reason: str | None = None,
+    last_technical_error: str | None = None,
+) -> LifecycleOperational:
+    """Estado operacional para las llamadas de prueba (defaults = fila sana)."""
+    return LifecycleOperational(
+        not_evaluable_count=not_evaluable_count,
+        consecutive_exceptions=consecutive_exceptions,
+        is_stale=is_stale,
+        stale_reason=stale_reason,
+        is_quarantined=is_quarantined,
+        quarantine_reason=quarantine_reason,
+        last_technical_error=last_technical_error,
+    )
 
 
 def _dsn(var: str) -> DbConfig:
@@ -251,7 +321,8 @@ def main() -> None:  # noqa: PLR0912, PLR0915
             rule_id=r_b1,
             new_state="firing",
             last_evaluated_open_time=1000,
-            event=ev_b,
+            operational=_op(),
+            events=(ev_b,),
         )
         created_event_ids.append(ev_b.event_id)
         with system_db.transaction(tenant_a) as s:
@@ -292,7 +363,8 @@ def main() -> None:  # noqa: PLR0912, PLR0915
             rule_id=r_a1,
             new_state="firing",
             last_evaluated_open_time=2000,
-            event=ev_pos,
+            operational=_op(),
+            events=(ev_pos,),
         )
         created_event_ids.append(ev_pos.event_id)
         with system_db.transaction(tenant_a) as s:
@@ -324,7 +396,8 @@ def main() -> None:  # noqa: PLR0912, PLR0915
                 rule_id=r_a2,
                 new_state="firing",
                 last_evaluated_open_time=3000,
-                event=ev_bad,
+                operational=_op(),
+                events=(ev_bad,),
             )
         except Exception:  # noqa: BLE001
             lanzo_rb = True
@@ -340,6 +413,290 @@ def main() -> None:  # noqa: PLR0912, PLR0915
         )
         if not ok_rb:
             failures.append("(+) el intento fallido dejo rastro (no fue atomico)")
+
+        # ============ 6.3: campos operacionales (0014) + persistencia ============
+
+        # (25) Tras 0014, rule_lifecycle_state sigue con RLS ENABLE+FORCE e
+        # isolation_scope=tenant en el COMMENT (el check 7.8 lo verifica aparte).
+        with rules_db.transaction() as s:
+            flags = s.fetchone(_RLS_FLAGS_SQL, ("rule_lifecycle_state",))
+            comment_row = s.fetchone(_TABLE_COMMENT_SQL, ("rule_lifecycle_state",))
+        rls_on = flags is not None and flags[0] is True and flags[1] is True
+        comment = (
+            "" if comment_row is None or comment_row[0] is None else str(comment_row[0])
+        )
+        ok25 = rls_on and "isolation_scope=tenant" in comment
+        print(
+            f"[25] 0014 conserva RLS ENABLE+FORCE ({rls_on}) e isolation_scope=tenant "
+            f"en el COMMENT: {ok25}"
+        )
+        if not ok25:
+            failures.append("(25) 0014 debilito RLS/FORCE o el isolation_scope")
+
+        # (26) ce_v5_rules, con A fijado, escribe el operacional de r_a1 (de A).
+        # Actualizacion operacional SIN evento (stale/quarantine no emiten): events=().
+        record_transition(
+            system_db,
+            tenant_id=tenant_a,
+            rule_id=r_a1,
+            new_state="firing",
+            last_evaluated_open_time=2000,
+            operational=_op(
+                not_evaluable_count=3,
+                consecutive_exceptions=2,
+                is_stale=True,
+                stale_reason="rule_not_evaluable",
+                is_quarantined=True,
+                quarantine_reason="repeated_exceptions",
+                last_technical_error="boom en la evaluacion",
+            ),
+            events=(),
+        )
+        with system_db.transaction(tenant_a) as s:
+            op_row = s.session.fetchone(_OP_READ_SQL, (str(r_a1),))
+        ok26 = op_row is not None and tuple(op_row) == (
+            3,
+            2,
+            True,
+            "rule_not_evaluable",
+            True,
+            "repeated_exceptions",
+            "boom en la evaluacion",
+        )
+        print(f"[26] ce_v5_rules persiste el operacional de A -> {op_row}: {ok26}")
+        if not ok26:
+            failures.append("(26) no persistio los campos operacionales de A")
+
+        # (27) Con A fijado, escribir estado operacional de una fila de B -> WITH CHECK.
+        lanzo27, msg27 = False, ""
+        try:
+            with system_db.transaction(tenant_a) as s:
+                s.session.execute(
+                    _STATE_OP_INSERT_SQL,
+                    (str(r_b2), str(tenant_b), "firing", True, "veto_not_evaluable"),
+                )
+        except Exception as exc:  # noqa: BLE001
+            lanzo27, msg27 = True, str(exc)
+        ok27 = lanzo27 and "row-level security" in msg27.lower()
+        print(f"[27] A escribe operacional de B -> WITH CHECK lo rechaza: {ok27}")
+        if not ok27:
+            failures.append("(27) A pudo escribir estado operacional con tenant B")
+
+        # (28) El rol de aplicacion NO puede tocar rule_lifecycle_state (sin grant).
+        lanzo28, msg28 = False, ""
+        try:
+            with scoped_app.transaction(user_a) as s:
+                s.session.execute(_STATE_OP_UPDATE_SQL, (str(r_a1),))
+        except Exception as exc:  # noqa: BLE001
+            lanzo28, msg28 = True, str(exc)
+        ok28 = lanzo28 and "permission denied" in msg28.lower()
+        print(f"[28] ce_v5_app toca rule_lifecycle_state -> permission denied: {ok28}")
+        if not ok28:
+            failures.append("(28) ce_v5_app pudo tocar el estado del motor")
+
+        # (29) Sin tenant fijado, escribir estado operacional FALLA (fail-closed).
+        lanzo29, msg29 = False, ""
+        try:
+            with rules_db.transaction() as s:
+                s.execute(
+                    _STATE_OP_INSERT_SQL,
+                    (str(r_a3), str(tenant_a), "firing", True, "rule_not_evaluable"),
+                )
+        except Exception as exc:  # noqa: BLE001
+            lanzo29, msg29 = True, str(exc)
+        ok29 = lanzo29 and "row-level security" in msg29.lower()
+        print(f"[29] SIN TENANT -> escribir operacional lanza RLS: {ok29}")
+        if not ok29:
+            failures.append("(29) sin tenant fijado se pudo escribir operacional")
+
+        # (30) La outbox de ce_v5_rules sigue acotada: un execution.* se rechaza en
+        # caliente (check_rules_access.py lo verifica ademas estaticamente).
+        lanzo30, msg30 = False, ""
+        try:
+            with system_db.transaction(tenant_a) as s:
+                enqueue_event(s.session, _event(r_a1, "execution.evil"))
+        except Exception as exc:  # noqa: BLE001
+            lanzo30, msg30 = True, str(exc)
+        ok30 = lanzo30 and "row-level security" in msg30.lower()
+        print(f"[30] outbox acotada -> execution.* rechazado por policy: {ok30}")
+        if not ok30:
+            failures.append("(30) la outbox de ce_v5_rules admitio un execution.*")
+
+        # ============ CA-P08-06: evento rule.quarantined ============
+
+        # (06-14) is_quarantined + rule.quarantined en la MISMA transaccion (atomico).
+        ev_q = _quarantined_event(
+            r_a1, tenant_a, reason=QuarantineReason.PLAN_NOT_RECOMPUTABLE
+        )
+        record_transition(
+            system_db,
+            tenant_id=tenant_a,
+            rule_id=r_a1,
+            new_state="firing",
+            last_evaluated_open_time=2000,
+            operational=_op(
+                is_quarantined=True, quarantine_reason="plan_not_recomputable"
+            ),
+            events=(ev_q,),
+        )
+        created_event_ids.append(ev_q.event_id)
+        with system_db.transaction(tenant_a) as s:
+            q_row = s.session.fetchone(_QUAR_READ_SQL, (str(r_a1),))
+        with rules_db.transaction() as s:
+            evr = s.fetchone(_OUTBOX_COUNT_SQL, (str(ev_q.event_id),))
+        ok14 = q_row is not None and q_row[0] is True and (evr[0] if evr else 0) == 1
+        print(f"[06-14] estado+evento atomicos -> quar={q_row}, outbox={evr}: {ok14}")
+        if not ok14:
+            failures.append(
+                "(06-14) is_quarantined y rule.quarantined no fueron atomicos"
+            )
+
+        # (06-15) Si falla la outbox (evento prohibido en el lote), NO queda estado.
+        ev_ok = _quarantined_event(
+            r_a3, tenant_a, reason=QuarantineReason.REPEATED_EXCEPTIONS
+        )
+        ev_ko = _event(r_a3, "execution.forbidden")
+        lanzo15 = False
+        try:
+            record_transition(
+                system_db,
+                tenant_id=tenant_a,
+                rule_id=r_a3,
+                new_state="firing",
+                last_evaluated_open_time=1,
+                operational=_op(
+                    is_quarantined=True, quarantine_reason="repeated_exceptions"
+                ),
+                events=(ev_ok, ev_ko),
+            )
+        except Exception:  # noqa: BLE001
+            lanzo15 = True
+        with system_db.transaction(tenant_a) as s:
+            st15 = read_state(s.session, r_a3)
+        with rules_db.transaction() as s:
+            e15 = s.fetchone(_OUTBOX_COUNT_SQL, (str(ev_ok.event_id),))
+        ok15 = lanzo15 and st15 is None and (e15[0] if e15 else 0) == 0
+        print(f"[06-15] outbox falla -> rollback estado+evento (e={e15}): {ok15}")
+        if not ok15:
+            failures.append("(06-15) fallo de outbox dejo is_quarantined o evento")
+
+        # (06-16) Si falla el estado (motivo invalido, viola CHECK), NO queda evento.
+        ev_16 = _quarantined_event(
+            r_a2, tenant_a, reason=QuarantineReason.PLAN_NOT_RECOMPUTABLE
+        )
+        lanzo16b = False
+        try:
+            record_transition(
+                system_db,
+                tenant_id=tenant_a,
+                rule_id=r_a2,
+                new_state="firing",
+                last_evaluated_open_time=1,
+                operational=_op(
+                    is_stale=True, stale_reason="motivo_malo"
+                ),  # viola CHECK
+                events=(ev_16,),
+            )
+        except Exception:  # noqa: BLE001
+            lanzo16b = True
+        with system_db.transaction(tenant_a) as s:
+            st16 = read_state(s.session, r_a2)
+        with rules_db.transaction() as s:
+            e16 = s.fetchone(_OUTBOX_COUNT_SQL, (str(ev_16.event_id),))
+        ok16b = lanzo16b and st16 is None and (e16[0] if e16 else 0) == 0
+        print(f"[06-16] estado falla -> rollback, sin evento (e={e16}): {ok16b}")
+        if not ok16b:
+            failures.append("(06-16) fallo de estado dejo un evento en la outbox")
+
+        # (06-17) WITH CHECK de ce_v5_rules ADMITE rule.quarantined.
+        ev_17 = _quarantined_event(
+            r_b1, tenant_b, reason=QuarantineReason.REPEATED_EXCEPTIONS
+        )
+        lanzo17 = False
+        try:
+            with system_db.transaction(tenant_b) as s:
+                enqueue_event(s.session, ev_17)
+        except Exception:  # noqa: BLE001
+            lanzo17 = True
+        created_event_ids.append(ev_17.event_id)
+        with rules_db.transaction() as s:
+            e17 = s.fetchone(_OUTBOX_COUNT_SQL, (str(ev_17.event_id),))
+        ok17 = not lanzo17 and (e17[0] if e17 else 0) == 1
+        print(f"[06-17] outbox admite rule.quarantined -> count={e17}: {ok17}")
+        if not ok17:
+            failures.append("(06-17) la outbox rechazo un rule.quarantined valido")
+
+        # (06-18) WITH CHECK SIGUE rechazando market.*/execution.*/policy.*/user.*.
+        rechazadas = []
+        for et in (
+            "market.candle_closed",
+            "execution.filled",
+            "policy.kill_switch_activated",
+            "user.registered",
+        ):
+            try:
+                with system_db.transaction(tenant_a) as s:
+                    enqueue_event(s.session, _event(r_a1, et))
+                rechazadas.append((et, False))
+            except Exception:  # noqa: BLE001
+                rechazadas.append((et, True))
+        ok18 = all(rej for _, rej in rechazadas)
+        print(f"[06-18] otras familias rechazadas: {rechazadas}: {ok18}")
+        if not ok18:
+            failures.append("(06-18) la outbox admitio una familia prohibida")
+
+        # (06-25) ce_v5_app LEE rule_lifecycle_state de SU tenant (0015).
+        with scoped_app.transaction(user_a) as s:
+            app_row = s.session.fetchone(_QUAR_READ_SQL, (str(r_a1),))
+        ok25b = app_row is not None and app_row[0] is True
+        print(f"[06-25] ce_v5_app lee estado de su tenant -> {app_row}: {ok25b}")
+        if not ok25b:
+            failures.append("(06-25) ce_v5_app no pudo leer el estado de su tenant")
+
+        # (06-26) ce_v5_app NO puede leer el estado de OTRO tenant (RLS -> 0 filas).
+        with scoped_app.transaction(user_a) as s:
+            cross = s.session.fetchone(_QUAR_READ_SQL, (str(r_b1),))
+        ok26b = cross is None
+        print(f"[06-26] ce_v5_app lee estado de B -> {cross} (esp. None): {ok26b}")
+        if not ok26b:
+            failures.append("(06-26) ce_v5_app pudo leer el estado de otro tenant")
+
+        # (06-27) ce_v5_app NO puede escribir banderas/contadores (solo SELECT).
+        lanzo27b = False
+        msg27b = ""
+        try:
+            with scoped_app.transaction(user_a) as s:
+                s.session.execute(_STATE_QUAR_UPDATE_SQL, (str(r_a1),))
+        except Exception as exc:  # noqa: BLE001
+            lanzo27b, msg27b = True, str(exc)
+        ok27b = lanzo27b and "permission denied" in msg27b.lower()
+        print(f"[06-27] ce_v5_app escribe is_quarantined -> permission denied: {ok27b}")
+        if not ok27b:
+            failures.append("(06-27) ce_v5_app pudo escribir el estado del motor")
+
+        # (06-28) ce_v5_rules SI escribe esos campos bajo el tenant correcto (06-14).
+        with system_db.transaction(tenant_a) as s:
+            ok28b_row = s.session.fetchone(_QUAR_READ_SQL, (str(r_a1),))
+        ok28b = ok28b_row is not None and ok28b_row[0] is True
+        print(f"[06-28] ce_v5_rules escribio el estado bajo tenant A: {ok28b}")
+        if not ok28b:
+            failures.append("(06-28) ce_v5_rules no persistio el estado bajo su tenant")
+
+        # (06-29) Sin tenant fijado, escribir estado/cuarentena FALLA.
+        lanzo29b = False
+        msg29b = ""
+        try:
+            with rules_db.transaction() as s:
+                s.execute(
+                    _STATE_OP_INSERT_SQL,
+                    (str(r_a3), str(tenant_a), "firing", True, "rule_not_evaluable"),
+                )
+        except Exception as exc:  # noqa: BLE001
+            lanzo29b, msg29b = True, str(exc)
+        ok29b = lanzo29b and "row-level security" in msg29b.lower()
+        print(f"[06-29] SIN TENANT -> escribir estado lanza RLS: {ok29b}")
+        if not ok29b:
+            failures.append("(06-29) sin tenant fijado se pudo escribir estado")
     finally:
         # LIMPIEZA con el rol de migraciones (superusuario: bypass RLS). Borrar el
         # tenant cascada a rule_definition -> rule_lifecycle_state y a la pertenencia.
@@ -365,7 +722,7 @@ def main() -> None:  # noqa: PLR0912, PLR0915
         app_db.close()
         rules_db.close()
 
-    total = 6 + 2
+    total = 6 + 2 + 6 + 10
     if failures:
         print(f"RESUMEN: FALLO - {len(failures)} de {total} no se cumplieron:")
         for reason in failures:
@@ -373,7 +730,8 @@ def main() -> None:  # noqa: PLR0912, PLR0915
         raise SystemExit(1)
     print(
         "RESUMEN: OK - aislamiento del motor demostrado: 7/9/10/11/12/16 + positivo y "
-        f"rollback atomicos ({total}/{total})."
+        "rollback atomicos + operacional 25-30 + rule.quarantined CA-P08-06 (14-18, "
+        f"25-29) ({total}/{total})."
     )
 
 
