@@ -1279,14 +1279,37 @@ LAS NUEVE CONSULTAS FIRMADAS (CA-P08-01..09)
   market_candle y NADA MAS), migracion 0016; el SubscriptionIntent lo escribe la AUTORIA,
   atomico con la regla; el ciclo de vida va por enabled, no por salud.
 - CA-P08-08 (correccion): re-evaluado por candle_corrected v5.0 SOLO point-local, ventana
-  [T, T+h-1]; las fuentes no point-local son NO CONFORMES en v5.0 (SKIP con motivo, NO
-  cuarentena) y se difieren a P08b/P08c.
+  [T, T+h-1]. Ante una regla cuyas fuentes NO son point-local, el manejador de correccion
+  OMITE LA CORRECCION con el motivo logueado y deja la regla NO CONFORME v5.0: NO la
+  cuarentena (no es un fallo de la regla, es alcance no construido todavia) y se difiere a
+  P08b/P08c.
+  NOTA DE VOCABULARIO (regla 5.18): esa omision es COMPORTAMIENTO DE RUNTIME del motor y
+  NO tiene ninguna relacion con los skips de pytest. Este documento afirma CERO SKIPS de
+  suite; para que las dos cosas no se confundan al leerlas juntas, el comportamiento de
+  runtime se dice "OMITE la correccion", nunca "skip".
 - CA-P08-09 (correction_revision): pasa a int (no opcional) en CandleCorrectedPayload
   (familia market). Correccion pre-consumidor CROSS-FRONTERA sin bump de version
-  (precedente CA-01). Se demostro que None nunca fue un evento valido: el validador ya lo
-  rechazaba, y no habia productor, consumidor ni fixture que lo aceptara. Se retira la
-  barrera local 7.3-c del worker (el TIPO la hace innecesaria) y el 7.7 se re-baselina en
-  el commit de pieza.
+  (precedente CA-01). Se retira la barrera local 7.3-c del worker (el TIPO la hace
+  innecesaria) y el 7.7 se re-baselina en el commit de pieza.
+  LA REJA DE CINCO EVIDENCIAS. "Sin bump" no es una afirmacion suelta ni una comodidad:
+  es la conclusion de CINCO evidencias verificadas una a una en la tanda CIERRE-1, y son
+  tambien lo que justifica NO aplicar aqui el prerrequisito del 7.7 version-aware. Se
+  dejan por escrito para que cualquiera pueda re-verificarlas sin fiarse del recuerdo:
+    1. El validador de CandleCorrectedPayload YA prohibia None (rechazaba el payload al
+       construirlo); el cambio traslada esa prohibicion del validador al TIPO.
+    2. Ningun PRODUCTOR entregado emite None: no existe camino de emision que construya
+       un candle_corrected sin revision.
+    3. Ningun CONSUMIDOR entregado trata None como valido: nadie lee el campo esperando
+       ausencia.
+    4. No hay fixture, baseline ni evento valido con correction_revision=None en el
+       repositorio.
+    5. El cambio solo ESTRECHA el tipo (int|None -> int, ge=1). No cambia la semantica
+       del campo ni el significado del evento.
+  CONCLUSION: con las CINCO se cumple correccion pre-consumidor y procede sin bump
+  (precedente CA-01). REGLA DE PARADA: si faltara UNA SOLA, se DETIENE y se reclasifica
+  -- opcion (b) de CA-P08-09, o construir ANTES el 7.7 version-aware --, porque entonces
+  habria un consumidor o un dato real al que el estrechamiento le rompe el contrato, y
+  eso ya no es correccion pre-consumidor sino evolucion incompatible.
 
 DECISIONES DE CONSTRUCCION (dentro de area; ninguna reabre un ADR)
 - Presupuesto de complejidad movido a contracts como FUENTE UNICA; se elimina el

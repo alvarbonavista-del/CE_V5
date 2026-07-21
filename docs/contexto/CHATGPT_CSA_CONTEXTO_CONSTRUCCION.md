@@ -373,9 +373,15 @@ vela; la auditoria por-vela se persiste pero NO va al bus. FSM K3 con veto FAIL-
 rules_for_market SECURITY DEFINER donde manda el tenant de la COLUMNA, jamas el del JSON
 (CA-P08-03) -- de ahi nace SystemScopedDatabase, patron reutilizable en P09a/P10b. Rol
 ce_v5_rules estrecho (5.20) con guardias bidireccionales. Correccion POINT-LOCAL
-end-to-end (CA-P08-08). CA-P08-09: correction_revision pasa a int obligatorio, correccion
-pre-consumidor CROSS-FRONTERA sin bump (precedente CA-01), demostrado que None nunca fue
-evento valido.
+end-to-end (CA-P08-08): ante una regla con fuentes no point-local el manejador OMITE la
+correccion con motivo logueado y la deja NO CONFORME v5.0, sin cuarentena (es alcance no
+construido, no un fallo de la regla). CA-P08-09: correction_revision pasa a int
+obligatorio, correccion pre-consumidor CROSS-FRONTERA sin bump (precedente CA-01).
+El "sin bump" NO es una afirmacion suelta: se apoya en una REJA DE CINCO EVIDENCIAS
+enumerada por escrito en REGISTRO_DECISIONES sec.22 (validador que ya prohibia None; cero
+productores que lo emitan; cero consumidores que lo acepten; cero fixtures/baselines con
+None; y estrechamiento de tipo sin cambio de semantica), con REGLA DE PARADA explicita: si
+faltara UNA, se detiene y se reclasifica. Es lo que el CSA debe re-verificar.
 
 LO QUE EL CSA DEBE MIRAR CON MAS DUREZA (se declara sin maquillar):
 El cierre destapo un DEFECTO DE PROCESO, no de codigo: tools/check_rules_access.py estaba
