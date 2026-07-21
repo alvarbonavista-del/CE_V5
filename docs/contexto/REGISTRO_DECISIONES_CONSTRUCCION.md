@@ -176,6 +176,19 @@ que no vivan solo en el chat (anti-deriva, DOC_ENTREGABLES sec.9).
      BLOQUEANTE con pruebas negativas en las dos direcciones. Generaliza CA-03/CA-04/CA-07
      y amplia la 5.19 (que solo cubria SECRETOS) a los PRIVILEGIOS DE FABRICAR HECHOS.
      VINCULANTE para P07, P08 y P10b.
+5.21 SOBRE NO VACIO VALIDADO EN CONSTRUCCION: ningun camino de construccion puede
+     producir un Envelope cuyo payload serializado este vacio o no case con el schema
+     registrado de su event_type. Se hace cumplir en CONSTRUCCION (check estatico +
+     test de round-trip por registro), no solo al publicar. Nace de la Enmienda
+     Historica 1 de P03, reincidente en P08 (B6.5).
+5.22 CHECK BLOQUEANTE ENGANCHADO Y DEMOSTRADO: un check bloqueante que existe pero NO
+     esta enganchado en .github/workflows/ci.yml (y por tanto no corre sobre el commit
+     de pieza) es un check que NO existe. El DoD de cierre de toda pieza debe VERIFICAR
+     que cada check bloqueante de la pieza esta enganchado en CI y DEMOSTRAR que corre
+     en verde sobre el commit de pieza (Actions, no solo barrido local). Misma familia
+     que 5.18. Nace del cierre de P08 (check_rules_access construido pero no
+     enganchado), reincidencia del patron de la Enmienda Historica 1 de P03 (verde
+     ilusorio).
 =====================================================================
 6. CIERRE DE PIEZA P01 - CONTRATOS BASE Y ENVELOPE
 =====================================================================
@@ -1060,3 +1073,294 @@ BARRIDOS 5.15. docs/BARRIDO_SEGURIDAD_T03_OKX.md y docs/BARRIDO_SEGURIDAD_T03_BY
 VALIDACION EN CALIENTE (salida real, exchange REAL, feed publico, jamas dinero). OKX: reconnections=1, bootstrap_candles=9, duplicates_skipped=1, filas=9 == claves distintas=9 (cero duplicados), catalogo 1307 activos. Bybit: reconnections=1, bootstrap_candles=10, duplicates_skipped=1, filas=10 == claves distintas=10 (cero duplicados), catalogo 592 activos. En ambos el MOTOR se rebootstrapeo SOLO tras la reconexion forzada (el arnes no llamo a fetch_recent). CI HERMETICO: connector.py (IO) no se prueba en CI (5.18, declarado); se valida en caliente. Cero skips silenciosos.
 
 RECORDATORIO OPERATIVO. Para conectores reales, la fuente es la DOC OFICIAL VIGENTE del exchange, jamas memoria ni snippets secundarios (D2 y D4 lo demuestran).
+=====================================================================
+21. EXPANSION DE M3 A PARIDAD FUNCIONAL v4 (EXP-M3-01) Y DECISIONES ASOCIADAS
+=====================================================================
+EXP-M3-01 (firmada 2026-07-17; doble revision Central + CSA): M3 EXPANDIDO a paridad
+funcional v4. NO reabre ADR (cubre el hueco del catalogo concreto de DataSources;
+ADR-014/008/015 ya lo preveian). DOC_ROADMAP_V5 se mantiene CONGELADO; la expansion vive
+AQUI (el conteo original de 19 era previo). Piezas y orden:
+  P07 [ENTREGADA] -> T-03 [ENTREGADA] -> P07b (trades+footprint) -> P07c (orderbook L2
+  con estado) -> P08 -> P08b (DataSources candle-derived) -> P08c (DataSources
+  footprint/L2-derived) -> P09a.
+Paralelismo: P08 || P07b || P07c || P08b; P08c tras P07b+P07c; P09a tras P08.
+Inventario: 19 -> 23 unidades.
+CONSTRAINTS:
+  - CE-14 en P07b/P07c: si tocan nucleo, ELEVAR.
+  - trades INDIVIDUALES (trade, no aggTrade).
+  - orderbook por STREAM DE DELTAS publico sin login; integridad POR SECUENCIA sin
+    checksum (el checksum de OKX esta DEPRECADO = 0).
+  - semilla + resync como ancla (Binance REST /api/v3/depth; OKX/Bybit primer msg WS).
+  - DA-02-1 RESUELTA: OKX tiene el libro publico mas profundo (400/100ms).
+Detalle: dictamen CSA 2026-07-17.
+
+DEC-PARIDAD-01: paridad v5.0 = lo que v4 DISENO/construyo, aunque no se integrara. La
+vision futura explicita (flat_with_delta, AREA 4-pre) -> v5.1.
+
+DEC-PROVISIONAL-01: el provisional (pivote/divergencia) es VALOR de DataSource con
+maturity_state + confianza en v5.0 (consultable/dibujable); reglas y alertas disparan
+SOLO en confirmado; alertas provisionales retractables -> v5.1. P08 en v5.0 retracta solo
+por CORRECCION DE DATOS (H-02-3), no por supersion.
+
+DEC-PROVISIONAL-02: el modelo "predecir" consume SOLO datos CERRADOS (candle_closed +
+footprint/delta hasta el ultimo cierre). El pivote es provisional solo porque sus R barras
+derechas aun no cerraron; se RE-EVALUA en cada candle_closed. NO se lee microestructura
+intrabar viva. RESPETA el invariante de P07 (evaluar solo sobre candle_closed, jamas sobre
+candle_updated); no es cambio arquitectonico. Leer intrabar vivo SERIA cambio del
+invariante de P07 -> fuera de v5.0, a ELEVAR.
+
+DEC-CVD-01: CVD (delta acumulada) = DataSource NUEVA en v5.0.
+
+DEC-ABSORCION-01 (cierre de Q-D con el estado real de v4): absorcion CORE footprint-based
+(tipos bid/ask + exhaustion) = v5.0 (el AbsorptionZoneEngine de v4 era footprint-based).
+Absorcion por refill de limitadas / L2-based = v5.1. flat_with_delta ("oculta") = v5.1.
+
+DEC-DIVERGENCIA-01 (cierre de Q-E): divergencia precio-vs-RSI = v5.0 (v4 la tenia).
+Precio-vs-volumen = v5.1 (feature nueva; el DivergenceEngine de v4 no tiene campos de
+volumen).
+
+DEC-AHP-01 (Analisis Historico Previo, POLITICA): obligatorio ANTES de fijar cualquier
+detector estadistico/heuristico-compositivo (absorcion, scores de orderflow, climax, void,
+notrade, pivotphase, cualquier score con umbrales/pesos/ventanas). NO exigido para
+deterministas cerrados (EMA/SMA/RSI/MACD): ahi la prueba es formula + fixtures +
+comparativa. Un AHP registra: hipotesis; variables observadas; formula/score; ventanas;
+umbrales iniciales; limites de interpretacion; falsos positivos esperables;
+dataset/fixtures reproducibles (semilla fija); criterio de aceptacion; razon de descarte.
+Umbrales sin soporte = "a calibrar por AHP", NUNCA inventados. Origen: dictamen CSA de la
+expansion M3.
+
+DEC-SNAPSHOT-REPLAY-01 (formaliza "D-04"): ante correccion append-only (candle_corrected u
+orderbook), los DataSources derivados se recomputan por SNAPSHOT + REPLAY. El snapshot es
+CACHE derivada (NO fuente de verdad); lleva as_of, input_range, formula_version,
+price_source, bucket_offset y referencia al canon del DataSource. Se reabre desde el ultimo
+snapshot valido y se replaya el tramo afectado; NO se muta el pasado canonico; reproducible
+con historico + plan + Clock/SimulatedClock (ADR-007). Exacto y O(1).
+
+CA-P08-01 (firmada 2026-07-17): CLARIFICACION de ADR-015 (no enmienda).
+rule.evaluation_completed se emite solo por TRANSICION DE ESTADO, con EvaluationResult
+granular; rule.firing/resolved = FLANCOS; rule.firing = ANCLA CAUSAL de signal.*/alert.*
+(causation_id). [Ya relayada a P08; se registra aqui como registro central.]
+
+DA-I03-1: ancla determinista del swing = pivote por FUERZA SIMETRICA N=R (el fractal es el
+caso N=R=2); ZigZag/ATR solo para vista/encadenado (repintan).
+
+H-02-5: CERRADA / ABSORBIDA. Provisional-as-of vs confirmado-determinista con correcciones
+append-only cubre AMBAS definiciones de "reproducible"; sin interpretacion extra de
+ADR-007.
+
+DA-I03-4 (cerrada por Central): UNA sola primitiva swing.* (mismo metodo y mismo N/R) para
+los pivotes de PRECIO, de RSI y de CVD. NO se admite una segunda definicion de pivote.
+
+DA-I03-5 (Central; costura importante): la DIVERGENCIA DE CVD (evidencia de orderflow,
+v5.0, alimenta pivotphase y el modo predecir) NO es la DIVERGENCIA DE VOLUMEN (precio
+contra serie/velas de volumen, v5.1 por DEC-DIVERGENCIA-01). Son DISTINTAS; P08c NO las
+confunde ni las mezcla.
+
+RULING OA-1 (reinicio del CVD, mercado 24/7): NO se fija punto unico. El CVD es DataSource
+con reset_policy como PARAMETRO declarado (session-UTC | rolling), en la cache_key, NO
+hardcodeado. RESTRICCION DURA para el modelo de pivote: la divergencia de CVD entre los dos
+swings comparados exige un CVD CONTINUO a traves de ambos (rolling o anclado antes del swing
+anterior); un reinicio NO puede caer entre los dos pivotes. Default por AHP.
+
+RULING OA-2 (correccion de premisa): queda SUPERADA la premisa "OKX da libro publico mas
+grueso". I-02-V (doc primaria) cerro que OKX books = 400 niveles a 100ms, el libro publico
+MAS PROFUNDO de los tres; DA-02-1 resuelta. NO existe la asimetria de profundidad. La
+absorcion por refill/iceberg (que exige L2 fino) es v5.1 (DEC-ABSORCION-01); en v5.0 la
+absorcion es footprint-based, robusta a 100ms. OA-2 RETIRADA de v5.0. Residuo v5.1: graduar
+el refill por cadencia por-exchange (Bybit 10-20ms mas fino).
+
+RULING OA-6 (frontera de la confianza del pivote): la confianza del pivote provisional es
+una DataSource PROPIA (swing.confidence, ADR-008), REFERENCIABLE por las Rules como
+cualquier otra fuente; NO un output enterrado en pivotphase. Coherente con el contrato de
+I-03.
+
+DA-I04-1 (regla anti-doble-conteo INTERNA): pivotphase CONSUME swing.confidence y anade SOLO
+su capa estructural propia (FSM de fases 0-5, vp_level_price/zona, veto notrade); NO
+re-gradua la misma evidencia de orderflow (absorcion/CVD/imbalance/VP) que swing.confidence
+ya incorporo. Doble consumo (swing.confidence + orderflow crudo) contaria DOS VECES la misma
+evidencia. Complementa a la regla semantica 5 (nivel Rule) en el nivel INTERNO. El reparto
+exacto se finaliza en P08c con la FSM de v4 (GAP-P08c).
+
+RULING OA-4 (estructura de combinacion del modelo de probabilidad): APLAZADA a P08c con
+fixtures; no se elige sin datos. Empezar por lo EXPLICABLE (score con pesos AHP) y escalar a
+logistico/calibracion (Platt/isotonica; la isotonica pide >~1000 muestras) SOLO si el volumen
+de fixtures lo justifica. Gateado por DEC-AHP-01.
+
+RULING OA-5 (nivel de rotura que marca retracted): a calibrar por AHP.
+
+GAP-P08c (dependencia de construccion; CERRAR ANTES DE P08c): la FSM de fases 0-5 de
+pivotphase y el mapeo POC/VA de vp_level_price son BESPOKE de v4 y NO estan en el knowledge
+(solo se confirma que existen). Se RECUPERAN del codigo de v4 al construir P08c. Si el
+fuente de v4 no estuviera disponible -> RE-DERIVACION con AHP y RATIFICACION EXPLICITA de la
+deriva por Alvaro (no seria paridad literal).
+
+ESTADO DE INVESTIGACIONES (refleja tambien ESTADO_CONSTRUCCION_V5):
+- I-03 (pivotes/divergencias): COMPLETO (5 secciones). Pendiente solo GAP-P08c en
+  construccion.
+- I-04 (orderflow): EN CURSO. Partes 1 (primitivas) y 2 (modelo de probabilidad)
+  ENTREGADAS; PENDIENTES Partes 3 (AHP), 4 (reproducibilidad) y 5 (decisiones).
+
+ADDENDUM (APPEND-ONLY, cierre de I-04):
+
+OA-7 (clarificacion Central): "AHP" en el proyecto = ANALISIS HISTORICO PREVIO (el
+artefacto de diez campos de DEC-AHP-01), NO el Analytic Hierarchy Process de Saaty. Si
+se usa el metodo de Saaty para derivar pesos w_i, se le nombra "metodo de Saaty" para no
+colisionar. Por defecto: pesos iguales de baseline + refinamiento logistico.
+
+OA-10 / E-1 (Central; confirma DEC-SNAPSHOT-REPLAY-01 para el CVD): el snapshot+replay
+CUBRE el CVD como INTEGRADOR. PRECISION: a diferencia de EMA/RSI (que olvidan; el efecto
+de una correccion decae en ~N barras), el CVD NO olvida: una correccion en la barra k
+desplaza TODO el CVD posterior. La propagacion es ILIMITADA hacia delante SALVO que la
+acote el reset_policy (OA-1: reset de sesion o ventana rolling). CONSTRAINT de
+construccion del DataSource CVD: snapshotear el acumulador POR VENTANA DE RESET; ante
+correccion en k, replay desde el snapshot dentro de la ventana afectada. NO reabre
+ADR-007 ni DEC-SNAPSHOT-REPLAY-01.
+
+OA-8 / OA-9 (APLAZADAS a P08c): el objetivo tolerable de FP y el margen de lift se
+PRE-REGISTRAN en P08c ANTES de ver el test; la granularidad de estratificacion por
+regimen (simbolo/familia/bucket de volatilidad) se decide con datos.
+
+E-2 (nota, sin elevacion): el contrato de pivotphase.confidence como DataSource (id,
+unidades de historia, cache_key con version de formula + reset_policy) se cierra con
+ADR-008 en P08c.
+
+ESTADO DE INVESTIGACIONES (ACTUALIZADO; refleja tambien ESTADO_CONSTRUCCION_V5): I-04
+COMPLETO (Partes 1-5 consolidadas). La investigacion de pivotphase/divergencias/orderflow
+(I-03 + I-04) queda CERRADA; alimenta la construccion de P08b/P08c.
+
+CORRECCION DE DECISION (2026-07-18) -- EL ROADMAP SE AMPLIA, NO SE CONGELA.
+El 2026-07-17, al firmar EXP-M3-01, se eligio -por recomendacion de Central-
+mantener DOC_ROADMAP_V5 CONGELADO como historico, dejando la ampliacion solo
+en este registro. Esa decision se REVIERTE el 2026-07-18, firmada por Alvaro.
+MOTIVO, sin maquillar: el prompt de cada periferico le manda leer "la ficha de
+su pieza" en DOC_ROADMAP. Con el roadmap congelado, los perifericos de P07b,
+P07c, P08b y P08c abririan el documento y NO ENCONTRARIAN SU PROPIA PIEZA. El
+periferico I-04 ya choco con referencias a piezas inexistentes y tuvo que
+elevarlo. Un plan desactualizado no es historia preservada: es desinformacion
+operativa. La regla de oro protege la ARQUITECTURA (los ADR), no el PLAN.
+CORRECCION: DOC_ROADMAP_V5 recibe una SECCION DE AMPLIACION A-1 en APPEND-ONLY
+con el M3 ampliado y la ficha completa de las cuatro piezas nuevas. El
+contenido original v1.0 queda INTACTO y marcado historico (mismo criterio que
+la nota T-01 y que los cierres que dicen "1 de 3 de M3": eran ciertos cuando se
+escribieron). NUNCA reescritura silenciosa.
+El CSA ya habia admitido esta via en su dictamen de EXP-M3-01: "si se edita
+roadmap, debe ser append-only o seccion de ampliacion, no reescritura
+silenciosa".
+=====================================================================
+22. CIERRE DE PIEZA P08 - MOTOR DE REGLAS (ADR-015/016/017)
+=====================================================================
+Estado: CERRADA TECNICAMENTE; EN DOBLE REVISION (Central + CSA); FIRMA PENDIENTE. NO es
+ENTREGADA todavia: lo sera tras la firma. NO cierra M3 (quedan P08b, P08c y P09a).
+Commit de pieza: PENDIENTE de registrar (regla 5.9: un commit no puede contener su
+propio hash; se anota en el commit inmediato posterior).
+Actions: PENDIENTE de confirmar. El workflow dispara en push a main y en pull_request,
+no en push a ramas wip; el cierre va por PR wip->main (decidido por Central), que Alvaro
+abre por la UI de GitHub. Se exige VERDE 3/3 (backend, backend-integration, frontend)
+sobre la cabeza de esa PR antes de la firma (reglas 5.13 y 5.22).
+Suite: 1040 tests, CERO SKIPS en local con los cuatro DSN (regla 5.18).
+
+LAS NUEVE CONSULTAS FIRMADAS (CA-P08-01..09)
+- CA-P08-01 (emision por TRANSICION): se emite solo en el FLANCO; firing/resolved son
+  flancos, no estados repetidos por vela. La auditoria por-vela se persiste, NO va al bus.
+- CA-P08-02 (estado y atomicidad): rule_lifecycle_state tenant-scoped con RLS + FORCE;
+  estado y outbox en UNA sola transaccion; reparto de poder segun 5.20; el hash canonico
+  incluye schema_version; la cuota por plan se difiere a P11.
+- CA-P08-03 (ventanilla): rules_for_market SECURITY DEFINER cross-tenant; manda el tenant
+  de la COLUMNA, NUNCA el del JSON de la definicion; nace SystemScopedDatabase, patron
+  reutilizable en P09a/P10b.
+- CA-P08-04 (FSM): K3 + veto fail-safe. NOT_EVALUABLE mantiene; RESOLVED solo con FALSE
+  real; STALE tras M velas; QUARANTINED por CompilationError o N excepciones. Sin "for"
+  en v5.0.
+- CA-P08-05 (motivos tipados): veto_outcome tipado; resolved_reason y stale_reason;
+  STALE/QUARANTINED como estado OPERACIONAL (no de la FSM); migracion 0014.
+- CA-P08-06 (cuarentena observable): rule.quarantined como tipo de la familia rule.*;
+  ce_v5_app LEE rule_lifecycle_state de su propio tenant (migracion 0015).
+- CA-P08-07 (mercado de solo lectura): ce_v5_rules LEE market publico (SELECT sobre
+  market_candle y NADA MAS), migracion 0016; el SubscriptionIntent lo escribe la AUTORIA,
+  atomico con la regla; el ciclo de vida va por enabled, no por salud.
+- CA-P08-08 (correccion): re-evaluado por candle_corrected v5.0 SOLO point-local, ventana
+  [T, T+h-1]. Ante una regla cuyas fuentes NO son point-local, el manejador de correccion
+  OMITE LA CORRECCION con el motivo logueado y deja la regla NO CONFORME v5.0: NO la
+  cuarentena (no es un fallo de la regla, es alcance no construido todavia) y se difiere a
+  P08b/P08c.
+  NOTA DE VOCABULARIO (regla 5.18): esa omision es COMPORTAMIENTO DE RUNTIME del motor y
+  NO tiene ninguna relacion con los skips de pytest. Este documento afirma CERO SKIPS de
+  suite; para que las dos cosas no se confundan al leerlas juntas, el comportamiento de
+  runtime se dice "OMITE la correccion", nunca "skip".
+- CA-P08-09 (correction_revision): pasa a int (no opcional) en CandleCorrectedPayload
+  (familia market). Correccion pre-consumidor CROSS-FRONTERA sin bump de version
+  (precedente CA-01). Se retira la barrera local 7.3-c del worker (el TIPO la hace
+  innecesaria) y el 7.7 se re-baselina en el commit de pieza.
+  LA REJA DE CINCO EVIDENCIAS. "Sin bump" no es una afirmacion suelta ni una comodidad:
+  es la conclusion de CINCO evidencias verificadas una a una en la tanda CIERRE-1, y son
+  tambien lo que justifica NO aplicar aqui el prerrequisito del 7.7 version-aware. Se
+  dejan por escrito para que cualquiera pueda re-verificarlas sin fiarse del recuerdo:
+    1. El validador de CandleCorrectedPayload YA prohibia None (rechazaba el payload al
+       construirlo); el cambio traslada esa prohibicion del validador al TIPO.
+    2. Ningun PRODUCTOR entregado emite None: no existe camino de emision que construya
+       un candle_corrected sin revision.
+    3. Ningun CONSUMIDOR entregado trata None como valido: nadie lee el campo esperando
+       ausencia.
+    4. No hay fixture, baseline ni evento valido con correction_revision=None en el
+       repositorio.
+    5. El cambio solo ESTRECHA el tipo (int|None -> int, ge=1). No cambia la semantica
+       del campo ni el significado del evento.
+  CONCLUSION: con las CINCO se cumple correccion pre-consumidor y procede sin bump
+  (precedente CA-01). REGLA DE PARADA: si faltara UNA SOLA, se DETIENE y se reclasifica
+  -- opcion (b) de CA-P08-09, o construir ANTES el 7.7 version-aware --, porque entonces
+  habria un consumidor o un dato real al que el estrechamiento le rompe el contrato, y
+  eso ya no es correccion pre-consumidor sino evolucion incompatible.
+
+DECISIONES DE CONSTRUCCION (dentro de area; ninguna reabre un ADR)
+- Presupuesto de complejidad movido a contracts como FUENTE UNICA; se elimina el
+  duplicado MAX_INTENTS_PER_RULE (= MAX_GROUPS_PER_RULE).
+- Mecanismo del guardarrail 5.21: tools/check_envelope_base_usage.py (AST) + test de
+  round-trip por registro, ambos EN CI.
+- tools/check_contract_artifacts.py: paridad EVENT_PAYLOAD_REGISTRY <-> schemas <-> TS,
+  EN CI.
+- Cinco familias de P08 generadas: rule.evaluation_completed, rule.firing, rule.resolved,
+  signal.raised, alert.raised (mas rule.quarantined por CA-P08-06).
+- memory_model en DataSourceDeclaration (market.close = POINT_LOCAL).
+- log_event movido a core/observability para que el worker no importe FastAPI.
+- ENDURECIMIENTO 5.22 (integrado en el cierre, no pieza aparte). Auditoria de los 15
+  checks contra ci.yml: check_rules_access.py era el UNICO dormido. Se engancha en el job
+  backend-integration (misma ubicacion y forma que check_market_access de P07); se
+  provisiona ce_v5_rules alli (CE_V5_RULES_DB_PASSWORD) y se exporta
+  CE_V5_RULES_DATABASE_URL, calcando a ce_v5_ingestion. Sin secretos de repositorio
+  nuevos: el job usa valores inline contra el Postgres efimero del runner.
+  Y el piso de integracion que faltaba (37 tests, Postgres real, role-switching):
+  (a) FRONTERA 5.20 en tests/integration/test_rules_access.py, positivos y negativos
+      BIDIRECCIONALES, cada negativo rechazado por el MOTOR (permission denied /
+      row-level security), no por codigo nuestro: el motor no escribe ni lee
+      rule_definition fila a fila, no toca identidad/policy/kill switch/auditoria, no ve
+      market_instrument ni market_subscription_intent ni market_public_demand (D1 de
+      CA-P08-07), no fabrica ni reescribe market data, no encola familias ajenas
+      (execution./policy./market./billing.) y no borra de la outbox.
+  (b) CICLO NUCLEO ATOMICO en tests/integration/test_rules_cycle.py: candle_closed ->
+      evalua -> FIRING -> evaluation_completed + firing + alert.raised con causation al
+      firing, y estado + eventos en la MISMA transaccion. La PRUEBA DE ATOMICIDAD fuerza
+      el fallo del INSERT de outbox (evento prohibido por la policy de 0013) y demuestra
+      que el estado hace ROLLBACK: sigue en firing con el open_time viejo y la outbox
+      queda intacta. SE VERIFICO QUE EL TEST MUERDE: replicada la version NO atomica
+      (estado y outbox en transacciones separadas) fuera del repositorio, el estado
+      avanzaba a resolved con el evento rechazado; el test lo caza.
+  La fixture rules_db FALLA EN ALTO si hay base de datos y falta su DSN (regla 5.18),
+  como ya hacian operator_db e ingestion_db: verificado.
+- Ninguna migracion se edito. Las 0013-0016 y sus grants quedan bajo la regla 5.14:
+  cualquier correccion futura de un grant va como migracion SUCESORA (0017...), NUNCA
+  editando una migracion ya commiteada.
+
+LIMITACIONES DE v5.0 REGISTRADAS (test 18; NO son deuda oculta, son alcance firmado)
+- La correccion por candle_corrected solo actualiza el ESTADO VIGENTE (reevalua en L):
+  NO reescribe las transiciones historicas de las velas intermedias.
+- Solo fuentes POINT-LOCAL. Las recursivas (EMA/RSI/MACD) y el integrador (CVD) quedan NO
+  CONFORMES en v5.0, diferidas a P08b/P08c (snapshot+replay de VALOR); el snapshot de
+  ESTADO de la FSM se difiere mas alla.
+- El anti-flap / "for" (D4) NO existe en v5.0 (diferido).
+
+DIFERIDOS CON DUENO (regla 5.11)
+- Catalogo de fuentes + investigacion por fuente -> la pieza CONSUMIDORA de cada fuente.
+- Veto con contexto propio (CA-P08-02 p.8) -> pieza de edicion de reglas.
+- Cuota por plan -> P11.
+- Edicion de reglas (intents huerfanos, idempotencia de re-activar) -> pieza de edicion.
+- shared_evaluation + orden por coste -> progresivo, cuando haya volumen que lo pida.

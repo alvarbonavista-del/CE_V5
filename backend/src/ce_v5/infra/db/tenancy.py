@@ -111,6 +111,59 @@ class TenantScopedDatabase:
             yield TenantScopedSession(session, context)
 
 
+class SystemScopedSession:
+    """Sesion con el tenant fijado desde una FILA AUTORITATIVA de servidor."""
+
+    def __init__(self, session: Session, tenant_id: UUID) -> None:
+        self._session = session
+        self._tenant_id = tenant_id
+
+    @property
+    def tenant_id(self) -> UUID:
+        """Tenant efectivo de esta transaccion (recibido por argumento del llamador)."""
+        return self._tenant_id
+
+    @property
+    def session(self) -> Session:
+        """Sesion SQL subyacente, ya bajo contexto de tenant."""
+        return self._session
+
+
+class SystemScopedDatabase:
+    """Abre transacciones con el tenant fijado POR ARGUMENTO (fila autoritativa).
+
+    Espejo SYSTEM-DRIVEN de TenantScopedDatabase: materializa el patron 7 de CA-P08-03
+    ("contexto de tenant para procesos de sistema desde fila autoritativa"). A
+    diferencia del camino user-driven (que RESUELVE el tenant por la pertenencia del
+    principal autenticado), aqui el tenant_id lo decide el LLAMADOR y es SIEMPRE una
+    fila autoritativa de servidor -- por ejemplo el rule_definition.tenant_id que
+    devuelve la ventanilla cross-tenant --, nunca el cliente y nunca un JSON. NO
+    resuelve por pertenencia y NO fija user_id: fija app.current_tenant_id con el MISMO
+    set_config (SET LOCAL) que usa el resolver user-driven, de modo que el identificador
+    nunca se interpola en el SQL.
+
+    Sin tenant fijado no hay contexto: la RLS devuelve cero filas y rechaza las
+    escrituras (fail-closed). Y como en el camino user-driven, si el rol de conexion
+    tuviera SUPERUSER o BYPASSRLS el aislamiento seria decorativo, asi que se rechaza
+    operar.
+    """
+
+    def __init__(self, database: Database) -> None:
+        self._database = database
+
+    @contextmanager
+    def transaction(self, tenant_id: UUID) -> Iterator[SystemScopedSession]:
+        """Abre una transaccion con el tenant de una FILA AUTORITATIVA de servidor.
+
+        tenant_id es SIEMPRE argumento del llamador; no se resuelve por pertenencia y no
+        se fija user_id. Sin el, la RLS da cero filas y rechaza escrituras (fail-close).
+        """
+        with self._database.transaction() as session:
+            assert_app_role_cannot_bypass_rls(session)
+            session.execute(_SET_CURRENT_TENANT, (str(tenant_id),))
+            yield SystemScopedSession(session, tenant_id)
+
+
 class MembershipRepository:
     """Pertenencias del tenant en curso.
 

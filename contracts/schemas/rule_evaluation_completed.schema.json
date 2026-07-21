@@ -1,0 +1,166 @@
+{
+  "$defs": {
+    "EvaluationLifecycleState": {
+      "description": "Estados del ciclo de evaluacion (INFORME 6 sec 11.4).",
+      "enum": [
+        "inactive",
+        "pending",
+        "firing",
+        "resolved"
+      ],
+      "title": "EvaluationLifecycleState",
+      "type": "string"
+    },
+    "EvaluationResult": {
+      "additionalProperties": false,
+      "description": "Resultado granular de una evaluacion (INFORME 6 sec 8.4; CA-P08-01, CA-P08-05).\n\nrule_outcome = el resultado K3 del arbol de condiciones SIN veto, a nivel de regla\n(TRUE/FALSE/NOT_EVALUABLE): es el eje R de la tabla de transiciones. matched es su\nproyeccion booleana de conveniencia (= rule_outcome es TRUE).\n\nveto_outcome = el resultado del veto (NO_VETO/FALSE/TRUE/NOT_EVALUABLE): es el eje V\ny el campo AUTORITATIVO para la FSM. veto_active es una conveniencia DERIVADA\n(= veto_outcome in {TRUE, NOT_EVALUABLE}); el runtime NO debe decidir sobre ella,\nporque colapsa V=TRUE (bloquea y resuelve) con V=NOT_EVALUABLE (bloquea; stale).\n\nmatched_suppressed_by_veto (la regla habria disparado pero el veto lo impidio) NO es\nun campo: es OBSERVABLE de forma derivada (rule_outcome es TRUE y veto_outcome es\nTRUE). Un validador exige que matched y veto_active sean coherentes con sus ejes: no\npuede construirse un resultado inconsistente. diagnostics = codigos de diagnostico\n(ADR-016); el campo tipado SUPERA al diagnostico de texto para el runtime.",
+      "properties": {
+        "diagnostics": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Diagnostics",
+          "type": "array"
+        },
+        "matched": {
+          "title": "Matched",
+          "type": "boolean"
+        },
+        "node_results": {
+          "items": {
+            "$ref": "#/$defs/NodeResult"
+          },
+          "title": "Node Results",
+          "type": "array"
+        },
+        "rule_outcome": {
+          "$ref": "#/$defs/NodeOutcome"
+        },
+        "veto_active": {
+          "title": "Veto Active",
+          "type": "boolean"
+        },
+        "veto_outcome": {
+          "$ref": "#/$defs/VetoOutcome"
+        }
+      },
+      "required": [
+        "matched",
+        "rule_outcome",
+        "veto_outcome",
+        "veto_active",
+        "node_results"
+      ],
+      "title": "EvaluationResult",
+      "type": "object"
+    },
+    "NodeOutcome": {
+      "description": "Resultado de un nodo. NOT_EVALUABLE (dato ausente) NO es FALSE (INFORME 6 9.1).\n\nConjunto cerrado: true / false / not_evaluable.",
+      "enum": [
+        "true",
+        "false",
+        "not_evaluable"
+      ],
+      "title": "NodeOutcome",
+      "type": "string"
+    },
+    "NodeResult": {
+      "additionalProperties": false,
+      "description": "Resultado granular de un nodo, por su node_id estable.\n\nobserved = el VALOR CONCRETO usado, renderizado (None si NOT_EVALUABLE). Minimo\nviable: string; la captura estructurada es mejora progresiva.\n\nnot_evaluable_reason = el MOTIVO cuando outcome es NOT_EVALUABLE (dato ausente,\nhistoria insuficiente, o hijos indecidibles); None en otro caso. La distincion\nFALSE vs NO-EVALUABLE (INFORME 6 sec 9.1) exige que el porque quede registrado, no\nsolo el que: sin el, un NOT_EVALUABLE es opaco al historial y al operador (ADR-016).\nCampo OPCIONAL con default (evolucion aditiva ADR-005): rule.* es pre-consumidor.",
+      "properties": {
+        "node_id": {
+          "format": "uuid",
+          "title": "Node Id",
+          "type": "string"
+        },
+        "not_evaluable_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Not Evaluable Reason"
+        },
+        "observed": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Observed"
+        },
+        "outcome": {
+          "$ref": "#/$defs/NodeOutcome"
+        }
+      },
+      "required": [
+        "node_id",
+        "outcome"
+      ],
+      "title": "NodeResult",
+      "type": "object"
+    },
+    "VetoOutcome": {
+      "description": "Resultado del bloque veto: CUATRO valores DISTINTOS (CA-P08-05).\n\nNO_VETO (la regla no tiene veto), FALSE, TRUE, NOT_EVALUABLE. PROHIBIDO colapsar a\nun veto_active:bool: colapsaria las filas 3 y 4 de la tabla de transiciones (V=TRUE\nbloquea Y RESUELVE; V=NOT_EVALUABLE bloquea pero deja STALE, no resuelve). Es el\nmismo tipo de hueco que costo P03: un bool que esconde dos casos que la FSM separa.",
+      "enum": [
+        "no_veto",
+        "false",
+        "true",
+        "not_evaluable"
+      ],
+      "title": "VetoOutcome",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "rule.evaluation_completed: resultado granular asociado a una transicion.",
+  "properties": {
+    "canonical_rule_hash": {
+      "title": "Canonical Rule Hash",
+      "type": "string"
+    },
+    "new_state": {
+      "$ref": "#/$defs/EvaluationLifecycleState"
+    },
+    "previous_state": {
+      "$ref": "#/$defs/EvaluationLifecycleState"
+    },
+    "reason_code": {
+      "title": "Reason Code",
+      "type": "string"
+    },
+    "result": {
+      "$ref": "#/$defs/EvaluationResult"
+    },
+    "rule_id": {
+      "format": "uuid",
+      "title": "Rule Id",
+      "type": "string"
+    },
+    "tenant_id": {
+      "format": "uuid",
+      "title": "Tenant Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "rule_id",
+    "tenant_id",
+    "canonical_rule_hash",
+    "previous_state",
+    "new_state",
+    "result",
+    "reason_code"
+  ],
+  "title": "RuleEvaluationCompletedPayload",
+  "type": "object"
+}

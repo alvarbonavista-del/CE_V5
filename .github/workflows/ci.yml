@@ -41,6 +41,10 @@ jobs:
         run: uv run python tools/check_component_docs.py
       - name: Contratos - registro event_type -> payload (CA-06)
         run: uv run python tools/check_event_payload_registry.py
+      - name: Contratos - sobre no vacio en emision (guardarrail 5.21)
+        run: uv run python tools/check_envelope_base_usage.py
+      - name: Contratos - paridad registro <-> artefactos schema/TS (ADR-006)
+        run: uv run python tools/check_contract_artifacts.py
       - name: pytest
         run: uv run pytest
 
@@ -90,13 +94,14 @@ jobs:
           python-version: "3.13"
       - name: Sincronizar entorno
         run: uv sync --extra dev
-      - name: Provisionar roles de aplicacion, operador e ingesta (ADR-011, CA-03, 5.20)
-        # El operador y el ingestor se provisionan con el rol de MIGRACIONES;
-        # provision no llama a DbConfig.from_env, asi que la guardia no interviene
-        # aqui.
+      - name: Provisionar roles de aplicacion, operador, ingesta y reglas (ADR-011, CA-03, 5.20)
+        # El operador, el ingestor y el motor de reglas se provisionan con el rol
+        # de MIGRACIONES; provision no llama a DbConfig.from_env, asi que la
+        # guardia no interviene aqui.
         env:
           CE_V5_OPERATOR_DB_PASSWORD: ce_v5_operator
           CE_V5_INGESTION_DB_PASSWORD: ce_v5_ingestion
+          CE_V5_RULES_DB_PASSWORD: ce_v5_rules
         run: uv run python -m ce_v5.infra.db.provision
       - name: Aplicar migraciones
         run: uv run python -m ce_v5.infra.db.migrations
@@ -108,6 +113,8 @@ jobs:
         run: uv run python tools/check_identity_access.py
       - name: Market - rol de ingesta y ventanilla agregada (5.20, CA-P07-D/G)
         run: uv run python tools/check_market_access.py
+      - name: Rules - motor estrecho y ventanilla cross-tenant (5.20, CA-P08-02/03/07)
+        run: uv run python tools/check_rules_access.py
       - name: Tests de integracion (DB + bus + policy)
         # El DSN de operador va SOLO en este paso (CA-03): ningun codigo que
         # corra aqui llama a DbConfig.from_env, que abortaria si lo viera.
@@ -116,6 +123,8 @@ jobs:
           CE_V5_OPERATOR_DB_PASSWORD: ce_v5_operator
           CE_V5_INGESTION_DATABASE_URL: postgresql://ce_v5_ingestion:ce_v5_ingestion@localhost:5432/ce_v5
           CE_V5_INGESTION_DB_PASSWORD: ce_v5_ingestion
+          CE_V5_RULES_DATABASE_URL: postgresql://ce_v5_rules:ce_v5_rules@localhost:5432/ce_v5
+          CE_V5_RULES_DB_PASSWORD: ce_v5_rules
         run: uv run pytest tests/integration -q
 
   frontend:

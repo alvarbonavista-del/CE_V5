@@ -480,3 +480,219 @@ y validaciones. No se duplican: si hay conflicto, ENTREGABLES manda en
 politica de entrega y ROADMAP manda en orden/dependencias.
 
 FIN DOC_ROADMAP_V5 (v1.0, aprobado CSA + firmado Alvaro 2026-07-06).
+
+=====================================================================
+SECCION DE AMPLIACION A-1 (append-only) -- M3 AMPLIADO A PARIDAD
+FUNCIONAL v4 (EXP-M3-01)
+=====================================================================
+Naturaleza: AMPLIACION del plan. Firmada por Alvaro: 2026-07-17 (la
+expansion) y 2026-07-18 (reflejarla aqui). Doble revision Central + CSA.
+NO reabre ningun ADR: cubre el hueco del catalogo concreto de DataSources
+que ADR-014/008/015 ya preveian y que INFORME 6 (12.5/17) dejo
+EXPLICITAMENTE a construccion.
+El contenido ORIGINAL de este documento (v1.0) queda INTACTO y es
+HISTORICO: era cierto cuando se escribio. Donde v1.0 diga que M3 son tres
+piezas (P07, P08, P09a), MANDA ESTA SECCION: M3 son SIETE.
+Decisiones asociadas: REGISTRO_DECISIONES seccion 21.
+Informes que fundamentan estas fichas (en el knowledge): I-01
+(indicadores/KLineChart), I-02 e I-02-V (feasibilidad de ingesta), I-03
+(swings, pivotphase, divergencias), I-04 (orderflow y modelo de confianza).
+
+A-1.1 M3 AMPLIADO: PIEZAS Y ORDEN
+---------------------------------------------------------------------
+  P07  Ingesta de market data (velas) ................ ENTREGADA
+  T-03 Conectores OKX y Bybit (transversal) .......... ENTREGADA
+  P07b Ingesta de trades + footprint ................. NUEVA
+  P07c Ingesta de orderbook L2 con estado ............ NUEVA
+  P08  Motor de reglas ............................... EN CURSO
+  P08b DataSources candle-derived .................... NUEVA
+  P08c DataSources footprint/L2-derived + pivotphase . NUEVA
+  P09a Router de notificaciones backend .............. PENDIENTE
+Orden: P07 -> T-03 -> P07b -> P07c -> P08 -> P08b -> P08c -> P09a.
+Paralelismo admitido: P08 || P07b || P07c || P08b.
+P08c espera a P07b + P07c. P09a va tras P08 (consume alert.*).
+Inventario del proyecto: 19 -> 23 unidades de trabajo.
+M3 no cambia de naturaleza (datos reales + reglas + notificacion backend);
+crece su cobertura de datos hasta la paridad funcional con v4.
+
+A-1.2 FICHA P07b -- INGESTA DE TRADES + FOOTPRINT
+---------------------------------------------------------------------
+OBJETIVO: ingerir el TRADE INDIVIDUAL de los tres exchanges y derivar el
+FOOTPRINT (celda = nivel de precio x barra), base de orderflow, absorcion y
+volume profile.
+DEPENDE DE: P07. Paralela a P07c, P08 y P08b.
+FAMILIA: MarketStreamKey data_family=trades (ADR-014, ya prevista).
+ALCANCE (SI):
+- Trades INDIVIDUALES (no aggTrade): mas fieles; no dependen de la
+  agregacion propia del exchange.
+- Lado AGRESOR por el flag publico del exchange (Binance `m`, Bybit `S`,
+  OKX `side`): clasificacion EXACTA y determinista, NO estimada. Por eso el
+  footprint sale reproducible BIT A BIT (ADR-007). La regla de tick queda
+  solo como fallback degradado documentado.
+- Footprint por celda: volumen agresor comprador/vendedor por nivel de
+  precio y barra; delta por celda y por barra.
+- Ingesta PUBLICA sin tenant (scope=public_market, compartida cross-tenant).
+- Retencion/trimming por familia.
+- Validacion contractual del dato de exchange como entrada NO CONFIABLE
+  (ADR-006): nada de floats/strings opacos sin normalizar.
+ALCANCE (NO): orderbook L2 (P07c); DataSources del catalogo (P08b/P08c);
+reglas (P08).
+RESTRICCIONES VINCULANTES:
+- CE-14: la familia nueva entra por ConnectorRegistry SIN tocar el nucleo de
+  ingesta. Si obliga a tocar nucleo, MarketStreamKey o fronteras, se PARA y
+  se ELEVA (ese fue el sentido de T-03).
+- Regla 5.20: escritura por rol de ingesta estrecho, guardias de arranque
+  bidireccionales.
+- Regla 5.15: barrido de linea base de seguridad de la familia nueva.
+- Medicion EMPIRICA de volumen antes de dimensionar recursos.
+- REPRODUCIBILIDAD DEL FOOTPRINT (marcado NO VERIFICADO por I-04 1.1; se
+  cierra AQUI): fijar orden DETERMINISTA para trades con el mismo timestamp
+  en ms, y declarar la regla de bucketing por vela (timestamp del trade;
+  dimension timezone/offset en la cache_key).
+- AHP (DEC-AHP-01) para cualquier detector estadistico que cuelgue.
+DoD: footprint reproducible BIT A BIT desde los mismos trades; Actions verde
+3/3; barrido 5.15 escrito control por control; cero skips (5.18).
+VALIDACION EN CALIENTE (obligatoria): footprint construido desde los TRES
+exchanges reales; demostrar reproducibilidad (mismo input -> mismo
+footprint) y reconexion sin perder ni duplicar.
+REFERENCIAS: I-02 (lado agresor por exchange), I-04 Parte 1.
+
+A-1.3 FICHA P07c -- INGESTA DE ORDERBOOK L2 CON ESTADO
+---------------------------------------------------------------------
+OBJETIVO: mantener un LIBRO L2 LOCAL CON ESTADO a partir del stream de
+deltas publico. Es PIEZA PROPIA, no "una familia mas" de P07b: introduce
+estado, semilla, aplicacion de deltas, deteccion de huecos, resync y
+semantica de correccion propia.
+DEPENDE DE: P07. Paralela a P07b, P08 y P08b.
+FAMILIA: MarketStreamKey data_family=orderbook (ADR-014).
+FUENTE (VERIFICADA CONTRA DOC PRIMARIA, I-02-V 2026-07-17):
+- Binance Spot: <symbol>@depth@100ms (deltas) + SEMILLA por REST
+  /api/v3/depth. Integridad por U/u; si U > id_local+1 -> reiniciar.
+- OKX: canal `books` (400 niveles, 100 ms), SEMILLA en el primer mensaje WS
+  (action=snapshot, prevSeqId=-1). Integridad por seqId/prevSeqId; ante
+  discontinuidad -> re-suscribir.
+- Bybit v5 Spot: orderbook.{depth}.{symbol} (50=20ms / 200=100ms), SEMILLA
+  en el primer mensaje WS (type=snapshot). Integridad por u/seq; u=1 ->
+  reset.
+PROHIBIDO:
+- Usar como fuente continua las FOTOS PARCIALES periodicas (Binance
+  @depth5/10/20; OKX books5).
+- Usar canales TICK-BY-TICK CON LOGIN (OKX books-l2-tbt / books50-l2-tbt:
+  exigen VIP4, error 64003).
+- Depender de CHECKSUM: el de OKX esta DEPRECADO (valor fijo 0). La
+  integridad es POR NUMEROS DE SECUENCIA en los tres.
+EXCEPCIONES DOCUMENTADAS DE OKX QUE NO SON HUECO: keepalive con
+seqId == prevSeqId (~60 s sin cambios) y reset de mantenimiento con
+seqId < prevSeqId. No tratarlas como discontinuidad.
+ALCANCE (SI): libro local reconstruible; re-snapshot OBSERVABLE con
+metricas; fault isolation por MarketStreamKey; backpressure; reparto de
+canales por limite de conexion; SEMANTICA DE CORRECCION DEL LIBRO PROPIA (no
+copiar candle_corrected).
+ALCANCE (NO): absorcion por refill/iceberg (es v5.1, DEC-ABSORCION-01);
+DataSources del catalogo (P08c).
+RESTRICCIONES VINCULANTES: CE-14; regla 5.20; regla 5.15 con barrido PROPIO
+y mas exigente que P07b; medicion empirica de volumen.
+DoD: tests de HUECO, RESET, DUPLICADO, DELTA FUERA DE ORDEN y SNAPSHOT
+CORRUPTO; Actions verde 3/3; barrido 5.15; cero skips.
+VALIDACION EN CALIENTE (obligatoria): libro vivo contra los TRES exchanges
+reales; provocar un hueco y demostrar el re-sync; metricas de re-snapshot.
+NOTA (DA-02-1, resuelta con doc primaria): OKX publico es el libro MAS
+PROFUNDO de los tres (400 niveles); no hay asimetria de profundidad, y 100 ms
+sobra porque los observables l2.* usan ventanas de 60 s y 300 s.
+REFERENCIAS: I-02, I-02-V.
+
+A-1.4 FICHA P08b -- DATASOURCES CANDLE-DERIVED
+---------------------------------------------------------------------
+OBJETIVO: catalogo de DataSources que solo necesitan VELAS.
+DEPENDE DE: P07. Paralela a P08, P07b y P07c.
+ALCANCE (SI):
+- Indicadores firmados: RSI (Wilder), EMA (sembrada con el primer cierre),
+  MACD (histograma x1), SMA real.
+- candle.*, volume.*, vwap.*, fib.* (contexto fijo 1D segun lo firmado).
+- swing.* GEOMETRICO: primitiva UNICA (mismo metodo y mismo N/R) para los
+  pivotes de PRECIO, de RSI y de CVD (DA-I03-4). Ancla determinista =
+  pivote por FUERZA SIMETRICA N=R (el fractal es el caso N=R=2); ZigZag/ATR
+  solo para la vista y el encadenado, nunca como fuente determinista
+  (DA-I03-1).
+- divergence.* PRECIO-vs-RSI (paridad v4).
+ALCANCE (NO):
+- Divergencia de VOLUMEN: v5.1 (DEC-DIVERGENCIA-01; v4 no la diseno).
+- swing.confidence: NO existe. La confianza de orderflow vive en
+  pivotphase.confidence (DEC-PIVOTPHASE-01). swing.* se queda geometrico.
+- Observables SUBSUMIDOS por las funciones canonicas (value_at, average,
+  change, previous_value, is_active, elapsed_since): NO se implementan como
+  DataSource propia; hacerlo seria codigo muerto.
+- Cualquier cosa que necesite footprint o L2 (P08c).
+RESTRICCIONES VINCULANTES:
+- cache_key_schema COMPLETO desde el PRIMER commit: datasource_id, exchange,
+  symbol, timeframe, price_source, bucket_offset, formula_version,
+  parametros, ventana y as_of si aplica (ADR-008). Dejarlo para despues
+  rompe caches, comparativas y reproducibilidad.
+- snapshot+replay ante correccion (DEC-SNAPSHOT-REPLAY-01): exacto y O(1)
+  para los indicadores recursivos; los derivados por ventana (swings,
+  divergencias) recomputan su VENTANA acotada, sin snapshot propio.
+- Naming en INGLES (ADR-016).
+- El warm-up del RSI GATEA la divergencia (no emparejar con RSI inmaduro).
+- UNA sola implementacion para backtest y produccion (I-01).
+DoD: verificacion contra TradingView como DoD auxiliar; Actions verde 3/3;
+cero skips.
+VALIDACION EN CALIENTE (obligatoria): series calculadas sobre datos reales y
+comparadas con TradingView.
+REFERENCIAS: I-01, I-03 (Tandas 1-2).
+
+A-1.5 FICHA P08c -- DATASOURCES FOOTPRINT/L2-DERIVED + PIVOTPHASE
+---------------------------------------------------------------------
+OBJETIVO: catalogo derivado de footprint y L2, y el motor compuesto
+pivotphase.
+DEPENDE DE: P07b (footprint) y P07c (l2). VA DESPUES DE AMBAS.
+ARRANQUE OBLIGATORIO: volcado de SOLO LECTURA del codigo de v4 (estilo T-03
+Paso 0) para replicar la logica con paridad literal. Ficheros recuperados y
+ya verificados (GAP-P08c cerrado): models/pivot_state_machine.py,
+engines/l1/pivot_phase_engine.py, engines/l1/volume_profile_engine.py.
+NO se arrastra basura del repo de v4 (CE-8: codigo muerto = 0).
+ALCANCE (SI): footprint.*, absorption.* (FOOTPRINT-BASED, tipos bid/ask +
+exhaustion), orderflow.* (delta, delta_momentum), CVD (DataSource NUEVA en
+v5.0), vp.* (POC; value area 70%; VAH/VAL; HVN > media*1.5; LVN < media*0.3;
+ventana 100 -- paridad v4), climax.*, void.*, l2.*, notrade.*, y
+pivotphase.* (FSM de fases 0-5 de v4).
+ALCANCE (NO): absorcion por refill/iceberg (v5.1); divergencia de volumen
+(v5.1); backtester (v5.1); observables subsumidos.
+RESTRICCIONES VINCULANTES:
+- DEC-PIVOTPHASE-01 (firmada; DERIVA RATIFICADA): se replica la ESTRUCTURA
+  de la FSM 0-5 de v4 (IDLE / IMPULSE / ENCOUNTER / ABSORPTION / EXHAUSTION
+  / FLIP, con sus invalidaciones estructurales y sus parametros
+  inyectables), pero la CONFIANZA la produce el modelo rico de I-04 (F1-F7
+  normalizado y calibrado), SUSTITUYENDO la formula simple de v4
+  (50 + zone_strength/2). El proxy de v4 "notrade como exhaustion" (Fase 4)
+  puede sustituirse por un exhaustion de delta real.
+- DA-I04-1 (anti-doble-conteo INTERNO): pivotphase consume cada insumo UNA
+  sola vez via su fase y NO re-gradua evidencia ya incorporada.
+- Regla semantica 5 (nivel Rule): pivotphase.* declara consume_internamente
+  {orderflow, vp, absorption, notrade} y el validador RECHAZA combinarlo con
+  sus insumos en la misma regla (doble conteo).
+- DA-I03-9: pivotphase es ORDERFLOW-DRIVEN (el pivote emerge de la secuencia
+  de fases); NO se unifica con la primitiva geometrica swing.*. Son dos
+  nociones distintas de pivote.
+- l2.* no_combinable si su estado no es algebraicamente combinable.
+- CVD: reset_policy es PARAMETRO declarado (session-UTC | rolling) y entra en
+  la cache_key. El CVD es un INTEGRADOR: no olvida, asi que una correccion en
+  la barra k desplaza TODO el CVD posterior. Se snapshotea el acumulador POR
+  VENTANA DE RESET y se replaya dentro de la ventana afectada. La divergencia
+  de CVD exige CVD CONTINUO entre los dos swings comparados.
+- DA-I03-5: la divergencia de CVD (orderflow, v5.0) NO es la divergencia de
+  volumen (v5.1). No confundirlas.
+- AHP OBLIGATORIO (DEC-AHP-01 = ANALISIS HISTORICO PREVIO, no el metodo de
+  Saaty) para cada detector estadistico: absorcion, scores de orderflow,
+  climax, void, notrade y la confianza de pivotphase. Ningun umbral se fija
+  de memoria. Anti-fuga temporal en la validacion: walk-forward con purga y
+  embargo.
+- cache_key_schema completo; naming en INGLES (ADR-016); una sola
+  implementacion backtest+produccion.
+DoD: un AHP escrito por cada detector estadistico; Actions verde 3/3; cero
+skips.
+VALIDACION EN CALIENTE (obligatoria): pivotphase sobre datos reales;
+demostrar el ciclo provisional -> confirmado / retractado y la
+reproducibilidad tras una correccion.
+REFERENCIAS: I-02, I-03 (completo + addendum de cierre de GAP-P08c), I-04
+(completo).
+FIN DE LA SECCION DE AMPLIACION A-1.

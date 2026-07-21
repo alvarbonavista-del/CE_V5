@@ -26,6 +26,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from source.envelope import EventPayload
+from source.families.alert import AlertEventType, AlertRaisedPayload
 from source.families.component import ComponentEventType, ComponentLifecyclePayload
 from source.families.market import (
     CandleClosedPayload,
@@ -39,6 +40,14 @@ from source.families.policy import (
     PolicyVersionPublishedPayload,
     SubjectInvalidatedPayload,
 )
+from source.families.rule import (
+    RuleEvaluationCompletedPayload,
+    RuleEventType,
+    RuleFiringPayload,
+    RuleQuarantinedPayload,
+    RuleResolvedPayload,
+)
+from source.families.signal import SignalEventType, SignalRaisedPayload
 from source.families.user import UserEventType, UserRegisteredPayload
 
 
@@ -85,6 +94,16 @@ EVENT_PAYLOAD_REGISTRY: dict[str, tuple[type[EventPayload], int]] = {
     MarketCandleEventType.CANDLE_UPDATED.value: (CandleUpdatedPayload, 1),
     MarketCandleEventType.CANDLE_CLOSED.value: (CandleClosedPayload, 1),
     MarketCandleEventType.CANDLE_CORRECTED.value: (CandleCorrectedPayload, 1),
+    # rule.* (P08): ciclo de evaluacion neutral; solo por transicion (CA-P08-01).
+    RuleEventType.EVALUATION_COMPLETED.value: (RuleEvaluationCompletedPayload, 1),
+    RuleEventType.FIRING.value: (RuleFiringPayload, 1),
+    RuleEventType.RESOLVED.value: (RuleResolvedPayload, 1),
+    # rule.quarantined (P08, CA-P08-06): operacional, no transicion de evaluacion;
+    # payload y productor (ce_v5_rules) reales desde hoy -> registrado, no diferido.
+    RuleEventType.QUARANTINED.value: (RuleQuarantinedPayload, 1),
+    # signal.*/alert.* (P08): proyecciones derivadas de rule.firing (causation_id).
+    SignalEventType.RAISED.value: (SignalRaisedPayload, 1),
+    AlertEventType.RAISED.value: (AlertRaisedPayload, 1),
 }
 
 # Estado unico y constante de un tipo diferido: diferido HASTA que cierre su

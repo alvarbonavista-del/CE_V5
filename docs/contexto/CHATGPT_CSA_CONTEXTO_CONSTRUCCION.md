@@ -5,7 +5,7 @@ estable para revisar las piezas. El CSA revisa coherencia y calidad
 contra los documentos-norte; NO decide (firma Alvaro). Archivo vivo
 mantenido por Claude Code.
 
-Ultima actualizacion: 2026-07-15 (entrega de pieza P07; abre el hito M3).
+Ultima actualizacion: 2026-07-21 (P08 cerrada tecnicamente; EN doble revision, firma PENDIENTE).
 
 ## 1. Que construimos
 CE v5: plataforma comercial multiusuario de analisis cuantitativo y
@@ -354,3 +354,62 @@ PARA LA PROXIMA REVISION (P08 - MOTOR DE REGLAS, ADR-015/016/017):
   - INVARIANTE DURO (CA-P07-A): las reglas y senales se evaluan sobre market.candle_closed, JAMAS sobre market.candle_updated (vista viva que puede perderse). Evaluar sobre provisional seria cambio arquitectonico a ELEVAR.
   - Indicadores (decisiones firmadas): convencion TradingView; warm-up con maturity_state; version de formula; UNA sola implementacion para backtest y produccion.
   - Regla 5.20 (menor privilegio por proceso) VINCULANTE para P08.
+
+=====================================================================
+REVISION CSA - PIEZA P08 (hito M3) - 2026-07-21 [EN CURSO]
+=====================================================================
+Estado: CERRADA TECNICAMENTE. EN DOBLE REVISION (Central + CSA). FIRMA PENDIENTE.
+NO es ENTREGADA hasta la firma. NO cierra M3 (quedan P07b, P07c, P08b, P08c, P09a).
+Commit de pieza: PENDIENTE de registrar (regla 5.9: se anota en el commit inmediato
+posterior). ACTIONS: PENDIENTE de confirmar; el workflow no dispara en push a rama wip
+(solo main y pull_request), asi que el cierre va por PR wip->main que abre Alvaro por la
+UI. Se exige VERDE 3/3 sobre la cabeza de esa PR antes de la firma (5.13 y 5.22).
+1040 tests, CERO SKIPS en local con los cinco DSN.
+
+RESUMEN DE LA PIEZA: una Rule dispara sobre market data REAL y proyecta alert.*/signal.*
+POR TRANSICION. Emision por FLANCO (CA-P08-01): firing y resolved no se repiten vela a
+vela; la auditoria por-vela se persiste pero NO va al bus. FSM K3 con veto FAIL-SAFE
+(CA-P08-04). Estado y outbox en UNA sola transaccion (CA-P08-02). Ventanilla cross-tenant
+rules_for_market SECURITY DEFINER donde manda el tenant de la COLUMNA, jamas el del JSON
+(CA-P08-03) -- de ahi nace SystemScopedDatabase, patron reutilizable en P09a/P10b. Rol
+ce_v5_rules estrecho (5.20) con guardias bidireccionales. Correccion POINT-LOCAL
+end-to-end (CA-P08-08): ante una regla con fuentes no point-local el manejador OMITE la
+correccion con motivo logueado y la deja NO CONFORME v5.0, sin cuarentena (es alcance no
+construido, no un fallo de la regla). CA-P08-09: correction_revision pasa a int
+obligatorio, correccion pre-consumidor CROSS-FRONTERA sin bump (precedente CA-01).
+El "sin bump" NO es una afirmacion suelta: se apoya en una REJA DE CINCO EVIDENCIAS
+enumerada por escrito en REGISTRO_DECISIONES sec.22 (validador que ya prohibia None; cero
+productores que lo emitan; cero consumidores que lo acepten; cero fixtures/baselines con
+None; y estrechamiento de tipo sin cambio de semantica), con REGLA DE PARADA explicita: si
+faltara UNA, se detiene y se reclasifica. Es lo que el CSA debe re-verificar.
+
+LO QUE EL CSA DEBE MIRAR CON MAS DUREZA (se declara sin maquillar):
+El cierre destapo un DEFECTO DE PROCESO, no de codigo: tools/check_rules_access.py estaba
+CONSTRUIDO pero NO ENGANCHADO en ci.yml, y P08 no tenia NI UN test de integracion. Es
+decir, el "verde" de P08 habria sido ILUSORIO sobre su propia frontera de seguridad --
+misma familia que la Enmienda Historica 1 de P03 y que el defecto de T-01 (21 tests que
+nunca corrian). De ahi la REGLA 5.22, firmada por Central. Correctivo integrado en el
+cierre: check enganchado, ce_v5_rules provisionado en backend-integration, y 37 tests de
+integracion nuevos contra PostgreSQL real (frontera 5.20 con negativos BIDIRECCIONALES
+rechazados por el MOTOR, y ciclo-nucleo atomico con el ROLLBACK demostrado forzando el
+fallo del INSERT de outbox). El test de atomicidad se verifico que MUERDE: replicada
+fuera del repositorio la version no atomica, el estado avanzaba con el evento rechazado.
+
+REGLAS NUEVAS (verbatim en REGISTRO_DECISIONES sec.5): 5.21 (sobre no vacio validado en
+CONSTRUCCION, no solo al publicar) y 5.22 (check bloqueante enganchado y demostrado).
+
+LIMITACIONES v5.0 DECLARADAS (no son deuda oculta, son alcance firmado): la correccion
+solo actualiza el ESTADO VIGENTE, no reescribe transiciones historicas; solo fuentes
+POINT-LOCAL (EMA/RSI/MACD y CVD NO CONFORMES en v5.0, diferidas a P08b/P08c); anti-flap
+/"for" no existe en v5.0. Migraciones 0013-0016 bajo la regla 5.14: correccion futura de
+un grant = migracion SUCESORA, nunca editar una ya commiteada.
+
+PARA ESTA REVISION, el CSA debe comprobar: que la emision es por TRANSICION y no por vela;
+que el tenant autoritativo sale de la COLUMNA y nunca del JSON; que la atomicidad
+estado+outbox esta probada contra motor real y no con mocks; que los negativos de la
+frontera 5.20 fallan por permiso del MOTOR (permission denied / row-level security) y no
+por codigo nuestro; y que ningun check bloqueante de P08 sigue dormido (regla 5.22).
+
+PARA LA PROXIMA REVISION (tras la firma de P08): el orden de M3 continua con P07b
+(trades+footprint), P07c (orderbook L2), P08b y P08c (DataSources), y P09a (router de
+notificaciones backend), que es quien consume signal.*/alert.*.

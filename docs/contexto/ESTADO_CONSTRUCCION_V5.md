@@ -4,12 +4,34 @@ Archivo vivo de estado de proceso (sin logica). Lo mantiene Claude Code
 en disco; Alvaro lo resube al knowledge cada vez que se cierra una pieza
 o un hito (DOC_ENTREGABLES sec.8).
 
-Ultima actualizacion: 2026-07-16 (T-03 completado: conectores OKX y Bybit).
+Ultima actualizacion: 2026-07-21 (cierre tecnico de P08, motor de reglas; en doble revision).
 
 ## Hito actual
-M3 (datos, reglas y notificacion backend) ABIERTO. Piezas de M3: P07
-(ENTREGADA), P08 (pendiente), P09a (pendiente). 1 de 3.
-Trabajo transversal T-03 (segundo y tercer conector publico, OKX y Bybit) COMPLETADO 2026-07-16; es transversal y NO cierra M3 (M3 = P07 + P08 + P09a). Proxima pieza: P08 (motor de reglas). Pendiente ademas: P09a.
+M3 (datos, reglas y notificacion backend) ABIERTO y EXPANDIDO a paridad
+funcional v4 (EXP-M3-01, firmada 2026-07-17; doble revision Central + CSA;
+no reabre ADR). Piezas de M3 y su estado:
+  - P07  (ingesta de market data) .................... ENTREGADA
+  - T-03 (conectores OKX y Bybit; transversal) ....... ENTREGADA
+  - P07b (trades + footprint) ........................ PENDIENTE
+  - P07c (orderbook L2 con estado) ................... PENDIENTE
+  - P08  (motor de reglas) ........................... CERRADA TECNICAMENTE
+                                                       (en doble revision; firma PENDIENTE)
+  - P08b (DataSources candle-derived) ................ PENDIENTE
+  - P08c (DataSources footprint/L2-derived) .......... PENDIENTE
+  - P09a (router de notificaciones backend) .......... PENDIENTE
+Orden: P07 -> T-03 -> P07b -> P07c -> P08 -> P08b -> P08c -> P09a.
+Paralelismo admitido: P08 || P07b || P07c || P08b; P08c tras P07b+P07c;
+P09a tras P08.
+Investigaciones:
+  - I-03 (pivotes/divergencias) ...... COMPLETO (5 secciones). Pendiente solo
+    GAP-P08c, que se cierra EN CONSTRUCCION, antes de P08c.
+  - I-04 (orderflow) ................. COMPLETO (Partes 1-5 consolidadas).
+La investigacion de pivotphase/divergencias/orderflow (I-03 + I-04) queda
+CERRADA; alimenta la construccion de P08b/P08c.
+DOC_ROADMAP_V5 incorpora la ampliacion en su SECCION A-1 (append-only,
+2026-07-18): alli esta el M3 ampliado y la ficha de P07b, P07c, P08b y P08c.
+El contenido original v1.0 queda intacto como historico. Las decisiones
+asociadas siguen en REGISTRO_DECISIONES sec.21.
 Proximo hito (tras M3): M4.
 
 ## Pieza actual
@@ -34,8 +56,27 @@ P07 - Ingesta de market data (hibrida), ADR-014: ENTREGADA. ABRE el hito M3
   cierre P07' se registra en este commit inmediato posterior. Regla 5.9 cumplida: cero
   cola en el arbol.)
 
-## Proxima pieza
-P08 - Motor de reglas (ADR-015/016/017).
+## Pieza en curso
+P08 - Motor de reglas (ADR-015/016/017). CERRADA TECNICAMENTE; EN DOBLE REVISION
+  (Central + CSA); FIRMA PENDIENTE. NO es ENTREGADA todavia (eso es tras la firma).
+  NO cierra M3: tras ella quedan P08b, P08c y P09a.
+  Commit de pieza: PENDIENTE de registrar (regla 5.9: un commit no puede contener su
+  propio hash; se anota en el commit inmediato posterior).
+  ACTIONS: PENDIENTE de confirmar. El workflow dispara en push a main y en pull_request,
+  NO en push a ramas wip; por eso el cierre va por PR wip->main (decidido por Central),
+  que abre Alvaro por la UI de GitHub. Se exige VERDE 3/3 sobre la cabeza de esa PR antes
+  de la firma (reglas 5.13 y 5.22). No se toca main hasta despues de la firma.
+  1040 tests; CERO SKIPS en local con los cuatro DSN.
+  Resumen: una Rule dispara sobre market data real y proyecta alert.*/signal.* POR
+  TRANSICION (CA-P08-01), con FSM K3 + veto fail-safe, persistencia ATOMICA de estado +
+  outbox en una sola transaccion, ventanilla cross-tenant rules_for_market SECURITY
+  DEFINER donde manda el tenant de la COLUMNA (no el del JSON), rol ce_v5_rules estrecho
+  (regla 5.20) y correccion point-local end-to-end por candle_corrected (CA-P08-08).
+  Endurecimiento de cierre (regla 5.22, NUEVA): check_rules_access estaba construido pero
+  NO enganchado en ci.yml; se engancha, se provisiona ce_v5_rules en backend-integration
+  y se anade el piso de tests de integracion que faltaba (frontera 5.20 y ciclo-nucleo
+  atomico contra PostgreSQL real, con el rollback demostrado y el test verificado que
+  MUERDE).
 
 ## Piezas cerradas
 - P00 - Esqueleto de repositorio + CI base: ENTREGADA (hito M0 CERRADO).
@@ -54,7 +95,9 @@ P08 - Motor de reglas (ADR-015/016/017).
   final 52b26db. Con P06b se cierra el hito M2 (4 de 4).
 - P07 - Ingesta de market data (hibrida): ENTREGADA. Commit de pieza e7c92be;
   commit final f62e4e0. Abre el hito M3.
-Van 10 piezas cerradas de 19.
+Van 10 piezas cerradas de 23 (inventario ampliado de 19 a 23 por EXP-M3-01,
+firmada 2026-07-17: entran P07b, P07c, P08b y P08c). P08 NO suma aqui todavia:
+esta cerrada TECNICAMENTE y en doble revision; entra en el conteo al firmarse.
 
 ## Regla de trabajo (REGISTRO_DECISIONES sec.1)
 Construccion en micro-pasos: el periferico nunca entrega la pieza entera
@@ -175,3 +218,29 @@ de golpe. Un paso, se explica, Alvaro ejecuta y pega salida, siguiente.
 - Commits de T-03 (Actions VERDE 3/3): registro T-03-A f1024ba (run #12); OKX 1daa784 + fix formato 8fdf15f (run #14); Bybit 2061f89 (run #15). CI: Actions verde.
 - Herramientas de validacion en caliente por exchange (tools/, no en CI): probe_okx_live.py, validate_okx_live.py, probe_bybit_live.py, validate_bybit_live.py. Barridos 5.15: docs/BARRIDO_SEGURIDAD_T03_OKX.md y ..._BYBIT.md.
 Hash del commit de cierre de contexto "docs(contexto): cierre T-03": ee40df620b28f8549cc396ea5cab4c733ef3850d. (Regla 5.9: un commit no puede contener su propio hash; se registra en este commit inmediato posterior.)
+- Worker de reglas (P08): proceso propio, "python -m ce_v5.entrypoints.worker_rules". Es
+  el UNICO que escribe rule_lifecycle_state; NO escribe la autoria (rule_definition, que
+  es de ce_v5_app) y NO ingiere market data.
+- Rol de reglas (P08, regla 5.20): CE_V5_RULES_DATABASE_URL (rol ce_v5_rules) y
+  CE_V5_RULES_DB_PASSWORD (para provisionarlo). Guardias de arranque BIDIRECCIONALES,
+  como las de ingesta: el worker de reglas ABORTA si porta el DSN de aplicacion o el de
+  ingesta. Su acceso a la autoria es SOLO la ventanilla SECURITY DEFINER
+  rules_for_market; de mercado solo tiene SELECT sobre market_candle (migracion 0016).
+- Checks activos tras P08: 7.1-7.9 + audit + identity + market + RULES (NUEVO,
+  tools/check_rules_access.py; enganchado al job backend-integration por la regla 5.22:
+  motor estrecho y ventanilla cross-tenant, CA-P08-02/03/07) + registro
+  event_type->payload + guardarrail 5.21 (tools/check_envelope_base_usage.py) + paridad
+  de artefactos de contrato (tools/check_contract_artifacts.py) + integracion DB/bus/API.
+  Migraciones 0013 (rule_definition, rule_lifecycle_state, ventanilla rules_for_market,
+  rol ce_v5_rules, outbox acotada), 0014 (estado operacional), 0015 (ce_v5_app lee el
+  estado de su tenant) y 0016 (ce_v5_rules lee market_candle y nada mas).
+- AVISO OPERATIVO (P08, regla 5.18): para correr la suite ENTERA en local hacen falta
+  ahora los CINCO DSN (app, migraciones, operador, ingesta y REGLAS). Si hay base de
+  datos y falta el de reglas, sus tests FALLAN EN ALTO; no se saltan.
+- Validacion en caliente de P08 (tools/, no en CI): validate_rules_hot.py,
+  validate_rules_cycle.py, validate_rules_intents.py, validate_rules_worker.py y
+  validate_rules_correction.py. Exigen CE_V5_DATABASE_URL, CE_V5_RULES_DATABASE_URL y
+  CE_V5_MIGRATIONS_DATABASE_URL.
+- REGLA 5.22 (nace en el cierre de P08): un check bloqueante que existe pero no esta
+  enganchado en ci.yml es un check que NO existe. El DoD de cierre debe verificar el
+  enganche y demostrar el verde en Actions, no solo en el barrido local.

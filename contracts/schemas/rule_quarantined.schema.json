@@ -1,0 +1,50 @@
+{
+  "$defs": {
+    "QuarantineReason": {
+      "description": "Por que una regla quedo en CUARENTENA (operacional, robustez; CA-P08-04 D3).\n\nENUM UNICO (CA-P08-06 p.3): el MISMO enum sirve a la columna\nrule_lifecycle_state.quarantine_reason y al payload del evento rule.quarantined; el\nruntime (platform.rules.runtime) lo importa de aqui, no lo redefine. Sin strings\nlibres: una razon nueva se versiona por ADR-005 (anadir valor es compatible). Vive\nen contracts porque un evento del bus lo referencia; StaleReason, sin evento, se\nqueda como enum operacional en el runtime.",
+      "enum": [
+        "plan_not_recomputable",
+        "repeated_exceptions"
+      ],
+      "title": "QuarantineReason",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "rule.quarantined: la regla paso a CUARENTENA (OPERACIONAL; CA-P08-06, D3).\n\nNO es una transicion de evaluacion: no pasa por el validador de flanco de CA-P08-01\n(sin previous_state), NO proyecta signal.*/alert.* ni sustituye firing/resolved.\nSe emite SOLO en la transicion operacional is_quarantined false->true (el runtime lo\ndecide; no en bucle si ya estaba quarantined) y en la MISMA transaccion que la\nescritura del estado (atomicidad, CA-P08-02).\n\nFamilia rule.* (NUNCA component.*): una Regla es DATO evaluado tenant-scoped, no un\nComponente con manifest/discovery/lifecycle; component.quarantined (ADR-010) es para\ninstancias de Componente (CA-P08-06 p.6).\n\nquarantine_reason usa el ENUM UNICO compartido con rule_lifecycle_state.quarantine_\nreason (p.3). technical_detail es OPCIONAL, acotado por schema y sin secretos (p.4).\ntenant_id viaja en el payload ademas del envelope; su coherencia con el tenant\nautoritativo del envelope la exige el productor (p.2), server-authoritative.",
+  "properties": {
+    "quarantine_reason": {
+      "$ref": "#/$defs/QuarantineReason"
+    },
+    "rule_id": {
+      "format": "uuid",
+      "title": "Rule Id",
+      "type": "string"
+    },
+    "technical_detail": {
+      "anyOf": [
+        {
+          "maxLength": 280,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Technical Detail"
+    },
+    "tenant_id": {
+      "format": "uuid",
+      "title": "Tenant Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "rule_id",
+    "tenant_id",
+    "quarantine_reason"
+  ],
+  "title": "RuleQuarantinedPayload",
+  "type": "object"
+}

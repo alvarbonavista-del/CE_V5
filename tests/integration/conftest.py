@@ -20,20 +20,48 @@ import pytest
 from ce_v5.infra.db.config import (
     INGESTION_DSN_ENV_VAR,
     OPERATOR_DSN_ENV_VAR,
+    RULES_DSN_ENV_VAR,
     DbConfig,
     IngestionDbConfig,
     OperatorDbConfig,
+    RulesDbConfig,
 )
 from ce_v5.infra.db.identity import register_user
 from ce_v5.infra.db.migrations.runner import apply_migrations
 from ce_v5.infra.db.provision import (
     INGESTION_PASSWORD_ENV_VAR,
     OPERATOR_PASSWORD_ENV_VAR,
+    RULES_PASSWORD_ENV_VAR,
     provision_app_role,
     provision_ingestion_role,
     provision_operator_role,
+    provision_rules_role,
 )
 from ce_v5.infra.db.psycopg_adapter import PsycopgDatabase
+from ce_v5.infra.db.rules import insert_rule_definition
+from ce_v5.infra.db.tenancy import TenantScopedDatabase, provision_tenant_for_user
+from ce_v5.platform.rules.canonical import canonical_rule_hash
+from ce_v5.platform.rules.rawclose import MARKET_CLOSE_SOURCE_ID
+from source.rules.condition import Condition
+from source.rules.feature import Feature
+from source.rules.group import Group
+from source.rules.market_rules import (
+    AlertRule,
+    AnyRule,
+    MarketScope,
+    RuleProduct,
+    TradingSignalRule,
+)
+from source.rules.reference import DataSourceRef
+from source.rules.rule import BindingKind, TargetBinding
+from source.rules.scalar import ScalarType, ScalarValue
+from source.rules.term import SourceTerm, Term, TermKind
+from source.rules.vocab import (
+    CombineMode,
+    ComparisonOperator,
+    RuleCombineMode,
+    TriggerPolicy,
+)
 
 _APP_DSN = os.environ.get("CE_V5_DATABASE_URL")
 _MIGRATIONS_DSN = os.environ.get("CE_V5_MIGRATIONS_DATABASE_URL")
@@ -42,6 +70,8 @@ _OPERATOR_DSN = os.environ.get(OPERATOR_DSN_ENV_VAR)
 _OPERATOR_PASSWORD = os.environ.get(OPERATOR_PASSWORD_ENV_VAR)
 _INGESTION_DSN = os.environ.get(INGESTION_DSN_ENV_VAR)
 _INGESTION_PASSWORD = os.environ.get(INGESTION_PASSWORD_ENV_VAR)
+_RULES_DSN = os.environ.get(RULES_DSN_ENV_VAR)
+_RULES_PASSWORD = os.environ.get(RULES_PASSWORD_ENV_VAR)
 
 _MISSING_ENV = _APP_DSN is None or _MIGRATIONS_DSN is None or _APP_PASSWORD is None
 
@@ -73,6 +103,8 @@ def _provision_and_migrate() -> Iterator[None]:
             provision_operator_role(database, _OPERATOR_PASSWORD)
         if _INGESTION_PASSWORD is not None:
             provision_ingestion_role(database, _INGESTION_PASSWORD)
+        if _RULES_PASSWORD is not None:
+            provision_rules_role(database, _RULES_PASSWORD)
         apply_migrations(database)
     finally:
         database.close()
@@ -163,6 +195,39 @@ def ingestion_db() -> Iterator[PsycopgDatabase]:
         database.close()
 
 
+@pytest.fixture
+def rules_db() -> Iterator[PsycopgDatabase]:
+    """Conexion con el rol del MOTOR DE REGLAS (regla 5.20), via su propio cargador.
+
+    RulesDbConfig.from_env ABORTA si encuentra en el entorno el DSN de la aplicacion o
+    el de ingesta (guardia bidireccional de 5.20), y el proceso de pytest los lleva
+    TODOS. Por eso se le pasa un entorno EXPLICITO con solo lo suyo, igual que hace
+    ingestion_db: el guardia sigue vivo y aqui se le da justamente el entorno que
+    tendria el worker de reglas de verdad.
+
+    FALLA, NO SE SALTA (regla 5.18), por el mismo motivo que operator_db e
+    ingestion_db: sin el DSN de reglas, la frontera 5.20 del motor (no escribe autoria,
+    no toca identidad/policy/billing/execution, no ve mas mercado que market_candle) y
+    la atomicidad estado+outbox de CA-P08-02 no se ejecutarian, y la suite mentiria
+    diciendo que P08 esta cubierta. Es el defecto de T-01, que no se repite: hasta esta
+    tanda el check de reglas ni siquiera estaba enganchado en CI (regla 5.22).
+    """
+    if _RULES_DSN is None or _RULES_PASSWORD is None:
+        pytest.fail(
+            "Faltan CE_V5_RULES_DATABASE_URL y/o CE_V5_RULES_DB_PASSWORD, y hay base "
+            "de datos: los tests del rol de REGLAS (frontera 5.20 en sus dos "
+            "direcciones y atomicidad estado+outbox de CA-P08-02) se estarian quedando "
+            "SIN EJECUTAR. Un test que se salta en silencio es un test que no existe "
+            "(regla 5.18, origen T-01). Ponlas en el entorno; no se saltan."
+        )
+    config = RulesDbConfig.from_env({RULES_DSN_ENV_VAR: _RULES_DSN})
+    database = PsycopgDatabase(DbConfig(dsn=config.dsn))
+    try:
+        yield database
+    finally:
+        database.close()
+
+
 def _wipe_identidad(migrator_db: PsycopgDatabase) -> None:
     with migrator_db.transaction() as session:
         # Identidad (P06b): se limpia con el rol de MIGRACIONES porque el rol de
@@ -195,6 +260,100 @@ def _limpiar_identidad(migrator_db: PsycopgDatabase) -> Iterator[None]:
     _wipe_identidad(migrator_db)
     yield
     _wipe_identidad(migrator_db)
+
+
+def _condicion_close_mayor_que(umbral: str) -> Condition:
+    """close > umbral, sobre la unica fuente POINT-LOCAL conforme en v5.0."""
+    return Condition(
+        node_id=uuid4(),
+        left=Term(
+            term_kind=TermKind.SOURCE,
+            source=SourceTerm(ref=DataSourceRef(source_id=MARKET_CLOSE_SOURCE_ID)),
+        ),
+        operator=ComparisonOperator.GT,
+        right=Term(
+            term_kind=TermKind.CONSTANT,
+            constant=ScalarValue(scalar_type=ScalarType.DECIMAL, decimal_value=umbral),
+        ),
+    )
+
+
+def _mkrule(tenant_id: UUID, product: RuleProduct, *, umbral: str = "30000") -> AnyRule:
+    """Una regla MINIMA y valida: un grupo, una feature, una condicion close > umbral.
+
+    Vive en el conftest porque la usan los dos ficheros de integracion de P08 (la
+    frontera 5.20 y el ciclo-nucleo-atomico) y tests/integration no es un paquete.
+    """
+    group = Group(
+        node_id=uuid4(),
+        evaluation_context="1h",
+        combine_mode=CombineMode.ALL,
+        features=(
+            Feature(
+                node_id=uuid4(),
+                conditions=(_condicion_close_mayor_que(umbral),),
+                combine_mode=CombineMode.ALL,
+            ),
+        ),
+    )
+    rule_id = uuid4()
+    binding = TargetBinding(binding_kind=BindingKind.MARKET)
+    scope = MarketScope(exchange="binance", symbol="BTC-USDT")
+    if product is RuleProduct.ALERT:
+        return AlertRule(
+            product=RuleProduct.ALERT,
+            rule_id=rule_id,
+            tenant_id=tenant_id,
+            name="regla-de-integracion",
+            target_binding=binding,
+            trigger_policy=TriggerPolicy.CANDLE_CLOSE,
+            groups=(group,),
+            veto=None,
+            rule_combine_mode=RuleCombineMode.ALL,
+            enabled=True,
+            market_scope=scope,
+        )
+    return TradingSignalRule(
+        product=RuleProduct.TRADING_SIGNAL,
+        rule_id=rule_id,
+        tenant_id=tenant_id,
+        name="regla-de-integracion",
+        target_binding=binding,
+        trigger_policy=TriggerPolicy.CANDLE_CLOSE,
+        groups=(group,),
+        veto=None,
+        rule_combine_mode=RuleCombineMode.ALL,
+        enabled=True,
+        market_scope=scope,
+    )
+
+
+@pytest.fixture
+def fabricar_regla() -> Callable[[UUID, RuleProduct], AnyRule]:
+    """Fabrica reglas validas en memoria (sin tocar la base)."""
+    return _mkrule
+
+
+@pytest.fixture
+def regla_autorizada(
+    app_db: PsycopgDatabase, crear_usuario: Callable[[], UUID]
+) -> Callable[[RuleProduct], tuple[UUID, AnyRule]]:
+    """Un tenant con UNA regla escrita por su AUTORIA (ce_v5_app), no por el motor.
+
+    Es el reparto de CA-P08-02: la regla la escribe la aplicacion; el motor solo la LEE
+    por la ventanilla cross-tenant y escribe su ESTADO. Sin esta fila no hay donde
+    colgar el rule_lifecycle_state (FK a rule_definition, 0013).
+    """
+
+    def _autorizar(product: RuleProduct) -> tuple[UUID, AnyRule]:
+        user = crear_usuario()
+        tenant = provision_tenant_for_user(app_db, user)
+        rule = _mkrule(tenant, product)
+        with TenantScopedDatabase(app_db).transaction(user) as scoped:
+            insert_rule_definition(scoped, rule, canonical_rule_hash(rule))
+        return tenant, rule
+
+    return _autorizar
 
 
 @pytest.fixture

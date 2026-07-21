@@ -35,6 +35,7 @@ from source.api import (  # noqa: E402
 )
 from source.envelope import Envelope, EventPayload  # noqa: E402
 from source.families import Family  # noqa: E402
+from source.families.alert import AlertRaisedPayload  # noqa: E402
 from source.families.component import ComponentLifecyclePayload  # noqa: E402
 from source.families.market import (  # noqa: E402
     CandleClosedPayload,
@@ -46,6 +47,13 @@ from source.families.policy import (  # noqa: E402
     PolicyVersionPublishedPayload,
     SubjectInvalidatedPayload,
 )
+from source.families.rule import (  # noqa: E402
+    RuleEvaluationCompletedPayload,
+    RuleFiringPayload,
+    RuleQuarantinedPayload,
+    RuleResolvedPayload,
+)
+from source.families.signal import SignalRaisedPayload  # noqa: E402
 from source.families.user import UserRegisteredPayload  # noqa: E402
 
 
@@ -101,6 +109,20 @@ def build_schemas() -> dict[str, dict[str, object]]:
     realtime_event_schema["title"] = "RealtimeEvent"
     user_registered_schema = UserRegisteredPayload.model_json_schema()
     user_registered_schema["title"] = "UserRegisteredPayload"
+    rule_quarantined_schema = RuleQuarantinedPayload.model_json_schema()
+    rule_quarantined_schema["title"] = "RuleQuarantinedPayload"
+    rule_evaluation_completed_schema = (
+        RuleEvaluationCompletedPayload.model_json_schema()
+    )
+    rule_evaluation_completed_schema["title"] = "RuleEvaluationCompletedPayload"
+    rule_firing_schema = RuleFiringPayload.model_json_schema()
+    rule_firing_schema["title"] = "RuleFiringPayload"
+    rule_resolved_schema = RuleResolvedPayload.model_json_schema()
+    rule_resolved_schema["title"] = "RuleResolvedPayload"
+    signal_raised_schema = SignalRaisedPayload.model_json_schema()
+    signal_raised_schema["title"] = "SignalRaisedPayload"
+    alert_raised_schema = AlertRaisedPayload.model_json_schema()
+    alert_raised_schema["title"] = "AlertRaisedPayload"
     return {
         "envelope.schema.json": envelope_schema,
         "family.schema.json": family_schema,
@@ -123,6 +145,12 @@ def build_schemas() -> dict[str, dict[str, object]]:
         "api_realtime_error.schema.json": realtime_error_schema,
         "api_realtime_event.schema.json": realtime_event_schema,
         "user_registered.schema.json": user_registered_schema,
+        "rule_quarantined.schema.json": rule_quarantined_schema,
+        "rule_evaluation_completed.schema.json": rule_evaluation_completed_schema,
+        "rule_firing.schema.json": rule_firing_schema,
+        "rule_resolved.schema.json": rule_resolved_schema,
+        "signal_raised.schema.json": signal_raised_schema,
+        "alert_raised.schema.json": alert_raised_schema,
     }
 
 

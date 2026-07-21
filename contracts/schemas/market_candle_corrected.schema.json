@@ -34,7 +34,7 @@
     }
   },
   "additionalProperties": false,
-  "description": "market.candle_corrected: correccion de una vela ya cerrada (ADR-007).\n\nNo muta el original (append-only): es un hecho NUEVO que referencia por\ncorrects_idempotency_key la vela corregida (regla heredada de\nMaturityAwarePayload) y numera su revision.",
+  "description": "market.candle_corrected: correccion de una vela ya cerrada (ADR-007).\n\nNo muta el original (append-only): es un hecho NUEVO que referencia por\ncorrects_idempotency_key la vela corregida (regla heredada de\nMaturityAwarePayload) y numera su revision.\n\ncorrection_revision es OBLIGATORIO (>=1) en este tipo (CA-P08-09): estrecha el\nint|None de CandlePayload a un int requerido. Sin el, dos correcciones de la misma\nvela colisionarian en la idempotency_key y la outbox (indice UNIQUE, P02b) se\ntragaria la segunda EN SILENCIO. La obligatoriedad la impone ahora el TIPO del campo\n-- no un validador aparte -- de modo que el schema generado lo refleja y ningun\nconsumidor la recibe como null. Correccion pre-consumidor (None nunca fue un evento\nvalido: ningun productor lo emitio ni ningun consumidor lo acepto).",
   "properties": {
     "close": {
       "anyOf": [
@@ -56,17 +56,9 @@
       "type": "integer"
     },
     "correction_revision": {
-      "anyOf": [
-        {
-          "minimum": 1,
-          "type": "integer"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "default": null,
-      "title": "Correction Revision"
+      "minimum": 1,
+      "title": "Correction Revision",
+      "type": "integer"
     },
     "corrects_idempotency_key": {
       "anyOf": [
@@ -167,7 +159,8 @@
     "high",
     "low",
     "close",
-    "volume"
+    "volume",
+    "correction_revision"
   ],
   "title": "CandleCorrectedPayload",
   "type": "object"

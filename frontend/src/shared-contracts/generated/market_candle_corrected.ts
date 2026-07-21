@@ -5,7 +5,7 @@ export type Close = (number | string)
  * Instante en UTC epoch milliseconds (int64). Formato canonico de tiempo en cable (ADR-007).
  */
 export type CloseTime = number
-export type CorrectionRevision = (number | null)
+export type CorrectionRevision = number
 export type CorrectsIdempotencyKey = (string | null)
 export type Exchange = string
 export type High = (number | string)
@@ -46,11 +46,19 @@ export type Volume = (number | string)
  * No muta el original (append-only): es un hecho NUEVO que referencia por
  * corrects_idempotency_key la vela corregida (regla heredada de
  * MaturityAwarePayload) y numera su revision.
+ * 
+ * correction_revision es OBLIGATORIO (>=1) en este tipo (CA-P08-09): estrecha el
+ * int|None de CandlePayload a un int requerido. Sin el, dos correcciones de la misma
+ * vela colisionarian en la idempotency_key y la outbox (indice UNIQUE, P02b) se
+ * tragaria la segunda EN SILENCIO. La obligatoriedad la impone ahora el TIPO del campo
+ * -- no un validador aparte -- de modo que el schema generado lo refleja y ningun
+ * consumidor la recibe como null. Correccion pre-consumidor (None nunca fue un evento
+ * valido: ningun productor lo emitio ni ningun consumidor lo acepto).
  */
 export interface CandleCorrectedPayload {
 close: Close
 close_time: CloseTime
-correction_revision?: CorrectionRevision
+correction_revision: CorrectionRevision
 corrects_idempotency_key?: CorrectsIdempotencyKey
 exchange: Exchange
 high: High

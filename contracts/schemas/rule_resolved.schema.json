@@ -1,0 +1,58 @@
+{
+  "$defs": {
+    "EvaluationLifecycleState": {
+      "description": "Estados del ciclo de evaluacion (INFORME 6 sec 11.4).",
+      "enum": [
+        "inactive",
+        "pending",
+        "firing",
+        "resolved"
+      ],
+      "title": "EvaluationLifecycleState",
+      "type": "string"
+    },
+    "ResolvedReason": {
+      "description": "Por que una regla salio de FIRING a RESOLVED (CA-P08-05).\n\ncondition_false = el arbol (sin veto) dejo de cumplirse. veto_true = un veto se\nactivo y bloqueo. data_correction = una correccion de vela cambio el resultado (D5).\ndata_correction se USA en el Bloque 7, pero el enum se cierra aqui: es valor firmado\ncon uso conocido, no un \"por si acaso\" (regla 5.11 admite el valor con uso pactado).",
+      "enum": [
+        "condition_false",
+        "veto_true",
+        "data_correction"
+      ],
+      "title": "ResolvedReason",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "rule.resolved: la regla salio del estado activo (flanco de bajada).\n\nNO proyecta cierre especulativo (CA-P08-01 p.8): es el evento de desactivacion que\nv4 no tenia. resolved_reason (aditivo, CA-P08-05) dice POR QUE se resolvio\n(condition_false / veto_true / data_correction); el porque es observable, no se\ninfiere del estado.",
+  "properties": {
+    "canonical_rule_hash": {
+      "title": "Canonical Rule Hash",
+      "type": "string"
+    },
+    "previous_state": {
+      "$ref": "#/$defs/EvaluationLifecycleState"
+    },
+    "resolved_reason": {
+      "$ref": "#/$defs/ResolvedReason"
+    },
+    "rule_id": {
+      "format": "uuid",
+      "title": "Rule Id",
+      "type": "string"
+    },
+    "tenant_id": {
+      "format": "uuid",
+      "title": "Tenant Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "rule_id",
+    "tenant_id",
+    "canonical_rule_hash",
+    "previous_state",
+    "resolved_reason"
+  ],
+  "title": "RuleResolvedPayload",
+  "type": "object"
+}
