@@ -1249,15 +1249,20 @@ silenciosa".
 =====================================================================
 22. CIERRE DE PIEZA P08 - MOTOR DE REGLAS (ADR-015/016/017)
 =====================================================================
-Estado: CERRADA TECNICAMENTE; EN DOBLE REVISION (Central + CSA); FIRMA PENDIENTE. NO es
-ENTREGADA todavia: lo sera tras la firma. NO cierra M3 (quedan P08b, P08c y P09a).
-Commit de pieza: PENDIENTE de registrar (regla 5.9: un commit no puede contener su
-propio hash; se anota en el commit inmediato posterior).
-Actions: PENDIENTE de confirmar. El workflow dispara en push a main y en pull_request,
-no en push a ramas wip; el cierre va por PR wip->main (decidido por Central), que Alvaro
-abre por la UI de GitHub. Se exige VERDE 3/3 (backend, backend-integration, frontend)
-sobre la cabeza de esa PR antes de la firma (reglas 5.13 y 5.22).
-Suite: 1040 tests, CERO SKIPS en local con los cuatro DSN (regla 5.18).
+Estado: ENTREGADA. Doble revision Central + CSA conforme; firmado por Alvaro 2026-07-21.
+NO cierra M3 (quedan P07b, P07c, P08b, P08c y P09a).
+Commit de pieza: 59855bf (59855bfceb66dce28eb62858dec9788da2008e45). Refinamiento
+documental de las puertas de revision: 107e94f
+(107e94f476a7b9de1067cd9d214069ec084b2ee5).
+ACTIONS VERDE 3/3 sobre 107e94f, cabeza del PR wip->main (run #18): Backend,
+Backend-integration y Frontend, los tres Success. El job backend-integration corrio por
+PRIMERA VEZ la provision de ce_v5_rules y el check_rules_access sobre un PostgreSQL
+VIRGEN del runner, que es justo lo que la regla 5.22 exige demostrar (no basta el barrido
+local). El merge a main se hizo por git con --no-ff para PRESERVAR ambos hashes, que este
+registro cita: la caja "Merge" de GitHub los habria reescrito.
+Suite: 1040 tests, CERO SKIPS en local con los CINCO DSN -- app, migraciones, operador,
+ingesta y REGLAS (regla 5.18). El quinto (CE_V5_RULES_DATABASE_URL) lo estrena esta pieza;
+una version anterior de esta linea decia "cuatro" y se corrige aqui.
 
 LAS NUEVE CONSULTAS FIRMADAS (CA-P08-01..09)
 - CA-P08-01 (emision por TRANSICION): se emite solo en el FLANCO; firing/resolved son

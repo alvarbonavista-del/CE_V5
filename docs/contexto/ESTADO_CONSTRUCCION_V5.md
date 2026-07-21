@@ -4,7 +4,7 @@ Archivo vivo de estado de proceso (sin logica). Lo mantiene Claude Code
 en disco; Alvaro lo resube al knowledge cada vez que se cierra una pieza
 o un hito (DOC_ENTREGABLES sec.8).
 
-Ultima actualizacion: 2026-07-21 (cierre tecnico de P08, motor de reglas; en doble revision).
+Ultima actualizacion: 2026-07-21 (P08 ENTREGADA: motor de reglas, firmada; M3 sigue abierto).
 
 ## Hito actual
 M3 (datos, reglas y notificacion backend) ABIERTO y EXPANDIDO a paridad
@@ -14,8 +14,7 @@ no reabre ADR). Piezas de M3 y su estado:
   - T-03 (conectores OKX y Bybit; transversal) ....... ENTREGADA
   - P07b (trades + footprint) ........................ PENDIENTE
   - P07c (orderbook L2 con estado) ................... PENDIENTE
-  - P08  (motor de reglas) ........................... CERRADA TECNICAMENTE
-                                                       (en doble revision; firma PENDIENTE)
+  - P08  (motor de reglas) ........................... ENTREGADA
   - P08b (DataSources candle-derived) ................ PENDIENTE
   - P08c (DataSources footprint/L2-derived) .......... PENDIENTE
   - P09a (router de notificaciones backend) .......... PENDIENTE
@@ -35,6 +34,32 @@ asociadas siguen en REGISTRO_DECISIONES sec.21.
 Proximo hito (tras M3): M4.
 
 ## Pieza actual
+P08 - Motor de reglas (ADR-015/016/017): ENTREGADA. NO cierra M3 (tras ella
+  quedan P07b, P07c, P08b, P08c y P09a).
+  Commit de pieza: 59855bf.
+  Refinamiento documental de las puertas de revision: 107e94f.
+  ACTIONS VERDE 3/3 (backend, backend-integration, frontend) sobre 107e94f,
+  cabeza del PR wip->main (run #18). El job backend-integration corrio por
+  PRIMERA VEZ la provision de ce_v5_rules y el check_rules_access sobre un
+  PostgreSQL VIRGEN del runner: es lo que exige la regla 5.22 (no basta el
+  barrido local). 1040 tests; CERO SKIPS en local con los CINCO DSN.
+  Merge a main por git con --no-ff (143f4f0) para PRESERVAR los hashes que el
+  registro cita; la caja "Merge" de GitHub los habria reescrito.
+  Doble revision Central + CSA conforme; firmado por Alvaro 2026-07-21.
+  Resumen: una Rule dispara sobre market data real y proyecta alert.*/signal.*
+  POR TRANSICION (CA-P08-01), con FSM K3 + veto fail-safe, persistencia ATOMICA
+  de estado + outbox en una sola transaccion (rollback demostrado contra
+  PostgreSQL real), ventanilla cross-tenant rules_for_market SECURITY DEFINER
+  donde manda el tenant de la COLUMNA (no el del JSON), rol ce_v5_rules estrecho
+  (regla 5.20) y correccion point-local end-to-end por candle_corrected
+  (CA-P08-08). Reglas nuevas 5.21 y 5.22; la 5.22 nace de un defecto real del
+  cierre (check_rules_access construido pero NO enganchado en ci.yml, y P08 sin
+  ningun test de integracion), corregido dentro de la propia pieza.
+  Cierre de contexto en el commit "docs(contexto): registra hash, Actions y firma
+  del cierre de P08" (regla 5.9); su hash se registra en el commit inmediato
+  posterior.
+
+## Pieza anterior
 P07 - Ingesta de market data (hibrida), ADR-014: ENTREGADA. ABRE el hito M3
   (no lo cierra: M3 = P07 + P08 + P09a).
   Commit de pieza: e7c92be.
@@ -57,26 +82,8 @@ P07 - Ingesta de market data (hibrida), ADR-014: ENTREGADA. ABRE el hito M3
   cola en el arbol.)
 
 ## Pieza en curso
-P08 - Motor de reglas (ADR-015/016/017). CERRADA TECNICAMENTE; EN DOBLE REVISION
-  (Central + CSA); FIRMA PENDIENTE. NO es ENTREGADA todavia (eso es tras la firma).
-  NO cierra M3: tras ella quedan P08b, P08c y P09a.
-  Commit de pieza: PENDIENTE de registrar (regla 5.9: un commit no puede contener su
-  propio hash; se anota en el commit inmediato posterior).
-  ACTIONS: PENDIENTE de confirmar. El workflow dispara en push a main y en pull_request,
-  NO en push a ramas wip; por eso el cierre va por PR wip->main (decidido por Central),
-  que abre Alvaro por la UI de GitHub. Se exige VERDE 3/3 sobre la cabeza de esa PR antes
-  de la firma (reglas 5.13 y 5.22). No se toca main hasta despues de la firma.
-  1040 tests; CERO SKIPS en local con los cuatro DSN.
-  Resumen: una Rule dispara sobre market data real y proyecta alert.*/signal.* POR
-  TRANSICION (CA-P08-01), con FSM K3 + veto fail-safe, persistencia ATOMICA de estado +
-  outbox en una sola transaccion, ventanilla cross-tenant rules_for_market SECURITY
-  DEFINER donde manda el tenant de la COLUMNA (no el del JSON), rol ce_v5_rules estrecho
-  (regla 5.20) y correccion point-local end-to-end por candle_corrected (CA-P08-08).
-  Endurecimiento de cierre (regla 5.22, NUEVA): check_rules_access estaba construido pero
-  NO enganchado en ci.yml; se engancha, se provisiona ce_v5_rules en backend-integration
-  y se anade el piso de tests de integracion que faltaba (frontera 5.20 y ciclo-nucleo
-  atomico contra PostgreSQL real, con el rollback demostrado y el test verificado que
-  MUERDE).
+NINGUNA. P08 queda ENTREGADA y no hay pieza abierta. La siguiente del orden de
+M3 es P07b (trades + footprint); admiten paralelismo P07b, P07c y P08b.
 
 ## Piezas cerradas
 - P00 - Esqueleto de repositorio + CI base: ENTREGADA (hito M0 CERRADO).
@@ -95,9 +102,11 @@ P08 - Motor de reglas (ADR-015/016/017). CERRADA TECNICAMENTE; EN DOBLE REVISION
   final 52b26db. Con P06b se cierra el hito M2 (4 de 4).
 - P07 - Ingesta de market data (hibrida): ENTREGADA. Commit de pieza e7c92be;
   commit final f62e4e0. Abre el hito M3.
-Van 10 piezas cerradas de 23 (inventario ampliado de 19 a 23 por EXP-M3-01,
-firmada 2026-07-17: entran P07b, P07c, P08b y P08c). P08 NO suma aqui todavia:
-esta cerrada TECNICAMENTE y en doble revision; entra en el conteo al firmarse.
+- P08 - Motor de reglas (ADR-015/016/017): ENTREGADA. Commit de pieza 59855bf;
+  refinamiento documental 107e94f; merge a main 143f4f0. Actions verde 3/3 sobre
+  107e94f. NO cierra M3.
+Van 11 piezas cerradas de 23 (inventario ampliado de 19 a 23 por EXP-M3-01,
+firmada 2026-07-17: entran P07b, P07c, P08b y P08c).
 
 ## Regla de trabajo (REGISTRO_DECISIONES sec.1)
 Construccion en micro-pasos: el periferico nunca entrega la pieza entera

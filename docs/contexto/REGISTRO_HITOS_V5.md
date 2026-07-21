@@ -3,14 +3,14 @@
 Archivo vivo (sin logica). Mantenido por Claude Code; Alvaro lo resube
 al knowledge al cerrar cada pieza o hito (DOC_ENTREGABLES sec.8).
 
-Ultima actualizacion: 2026-07-21 (cierre tecnico de P08, motor de reglas; M3 SIGUE ABIERTO).
+Ultima actualizacion: 2026-07-21 (P08 ENTREGADA: motor de reglas, firmada; M3 SIGUE ABIERTO).
 
 | Hito | Definicion breve (DOC_ROADMAP sec.4) | Piezas | Estado |
 |------|--------------------------------------|--------|--------|
 | M0 | Repo creado + CI de guardarrailes en verde (base estructural) | P00 | CERRADO |
 | M1 | Un evento viaja de punta a punta con envelope, idempotencia y Clock sobre el bus externo, con outbox transaccional; reinicio sin perdida | P01, P02, P02b, P03 | CERRADO |
 | M2 | Un Componente se descubre por carpeta, aislado por tenant/RLS, con capacidades por el gate fail-closed; API/auth/realtime en pie; kill switch en caliente | P04, P05, P06, P06b | CERRADO |
-| M3 | Una Rule dispara sobre datos reales y proyecta signal.*/alert.*; el router backend entrega por un canal no-PWA/mock (sin overlay, sin ejecucion) | P07, P07b, P07c, P08, P08b, P08c, P09a | ABIERTO (1 de 7 firmadas + P08 cerrada tecnicamente, en doble revision; faltan P07b, P07c, P08b, P08c, P09a; EXPANDIDO por EXP-M3-01) |
+| M3 | Una Rule dispara sobre datos reales y proyecta signal.*/alert.*; el router backend entrega por un canal no-PWA/mock (sin overlay, sin ejecucion) | P07, P07b, P07c, P08, P08b, P08c, P09a | ABIERTO (2 de 7: P07 y P08 ENTREGADAS; faltan P07b, P07c, P08b, P08c y P09a; EXPANDIDO por EXP-M3-01) |
 | M4 | PWA instalable con dashboard, chart y overlays de signal.* en movil real; push PWA; geo-blocking corta ejecucion, no visualizacion | P12a, P12b, P13, P09b | PENDIENTE |
 | M5 | Ejecucion gateada: bloqueo UE/EEA/UK, orden manual BYOC, autotrade BYOC, reconciliacion | P10a, P10b, P11 | PENDIENTE |
 
@@ -160,15 +160,16 @@ se escribio y se conserva sin tocar; queda DEROGADA hacia delante (regla
   estrecho (regla 5.20, nueva) con check bloqueante MARKET y pruebas negativas
   bidireccionales. Barrido de seguridad 5.15 escrito, control por control.
   M3: 1 de 3 (faltan P08 motor de reglas y P09a router de notificaciones backend).
-- P08 - Motor de reglas (ADR-015/016/017): CERRADA TECNICAMENTE 2026-07-21; EN DOBLE
-  REVISION (Central + CSA); FIRMA PENDIENTE. NO es ENTREGADA hasta la firma, y NO cierra
-  M3: tras ella quedan P08b, P08c y P09a.
-  Commit de pieza: PENDIENTE de registrar (regla 5.9: un commit no puede contener su
-  propio hash; se anota en el commit inmediato posterior).
-  ACTIONS: PENDIENTE de confirmar. El workflow dispara en push a main y en pull_request,
-  NO en push a ramas wip, asi que el cierre va por PR wip->main (decidido por Central) que
-  abre Alvaro por la UI. Se exige VERDE 3/3 sobre la cabeza de esa PR antes de la firma
-  (reglas 5.13 y 5.22). 1040 tests, CERO SKIPS en local con los cinco DSN.
+- P08 - Motor de reglas (ADR-015/016/017): ENTREGADA 2026-07-21 (2 de 7 de M3). NO cierra
+  M3: tras ella quedan P07b, P07c, P08b, P08c y P09a.
+  Commit de pieza 59855bf; refinamiento documental de las puertas de revision 107e94f;
+  merge a main 143f4f0 (por git, con --no-ff, para PRESERVAR ambos hashes: la caja "Merge"
+  de GitHub los habria reescrito). ACTIONS VERDE 3/3 sobre 107e94f, cabeza del PR wip->main
+  (run #18: Backend, Backend-integration y Frontend, los tres Success). El job
+  backend-integration corrio por PRIMERA VEZ la provision de ce_v5_rules y el
+  check_rules_access sobre un PostgreSQL VIRGEN del runner, que es lo que la regla 5.22
+  exige demostrar. 1040 tests, CERO SKIPS en local con los cinco DSN.
+  Doble revision Central + CSA conforme; firmado por Alvaro 2026-07-21.
   Demostracion: una Rule dispara sobre market data REAL y proyecta alert.*/signal.* POR
   TRANSICION (CA-P08-01: firing y resolved son FLANCOS, no estados repetidos por vela; la
   auditoria por-vela se persiste pero NO va al bus). FSM K3 con veto FAIL-SAFE
@@ -190,7 +191,7 @@ se escribio y se conserva sin tocar; queda DEROGADA hacia delante (regla
   no tenia NI UN test de integracion. Se engancho el check, se provisiono ce_v5_rules en
   backend-integration y se anadieron 37 tests de integracion (frontera 5.20 con negativos
   bidireccionales rechazados por el MOTOR, y el ciclo-nucleo atomico).
-  M3: P08 cerrada tecnicamente; SIGUE ABIERTO (faltan P07b, P07c, P08b, P08c y P09a).
+  M3: 2 de 7; SIGUE ABIERTO (faltan P07b, P07c, P08b, P08c y P09a).
 
 ## Nota EXP-M3-01 (2026-07-17): M3 AMPLIADO A PARIDAD FUNCIONAL v4
 M3 queda AMPLIADO a paridad funcional v4. Firmado por Alvaro 2026-07-17, con doble

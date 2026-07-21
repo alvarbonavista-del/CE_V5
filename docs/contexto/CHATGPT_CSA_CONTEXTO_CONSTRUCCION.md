@@ -5,7 +5,7 @@ estable para revisar las piezas. El CSA revisa coherencia y calidad
 contra los documentos-norte; NO decide (firma Alvaro). Archivo vivo
 mantenido por Claude Code.
 
-Ultima actualizacion: 2026-07-21 (P08 cerrada tecnicamente; EN doble revision, firma PENDIENTE).
+Ultima actualizacion: 2026-07-21 (P08 ENTREGADA: motor de reglas, firmada; M3 sigue abierto).
 
 ## 1. Que construimos
 CE v5: plataforma comercial multiusuario de analisis cuantitativo y
@@ -356,15 +356,17 @@ PARA LA PROXIMA REVISION (P08 - MOTOR DE REGLAS, ADR-015/016/017):
   - Regla 5.20 (menor privilegio por proceso) VINCULANTE para P08.
 
 =====================================================================
-REVISION CSA - PIEZA P08 (hito M3) - 2026-07-21 [EN CURSO]
+REVISION CSA - PIEZA P08 (hito M3) - 2026-07-21
 =====================================================================
-Estado: CERRADA TECNICAMENTE. EN DOBLE REVISION (Central + CSA). FIRMA PENDIENTE.
-NO es ENTREGADA hasta la firma. NO cierra M3 (quedan P07b, P07c, P08b, P08c, P09a).
-Commit de pieza: PENDIENTE de registrar (regla 5.9: se anota en el commit inmediato
-posterior). ACTIONS: PENDIENTE de confirmar; el workflow no dispara en push a rama wip
-(solo main y pull_request), asi que el cierre va por PR wip->main que abre Alvaro por la
-UI. Se exige VERDE 3/3 sobre la cabeza de esa PR antes de la firma (5.13 y 5.22).
-1040 tests, CERO SKIPS en local con los cinco DSN.
+Veredicto: CONFORME (Central y CSA), por bloques. Firmado por Alvaro 2026-07-21.
+P08 ENTREGADA (2/7 de M3). NO cierra M3: quedan P07b, P07c, P08b, P08c y P09a.
+Commit de pieza 59855bf; refinamiento documental de las puertas de revision 107e94f;
+merge a main 143f4f0 (por git con --no-ff, para PRESERVAR ambos hashes que el registro
+cita). ACTIONS VERDE 3/3 sobre 107e94f, cabeza del PR wip->main (run #18: Backend,
+Backend-integration y Frontend, los tres Success). El job backend-integration corrio por
+PRIMERA VEZ la provision de ce_v5_rules y el check_rules_access sobre un PostgreSQL VIRGEN
+del runner: es exactamente lo que la regla 5.22 exige demostrar, y no lo daba el barrido
+local. 1040 tests, CERO SKIPS en local con los cinco DSN.
 
 RESUMEN DE LA PIEZA: una Rule dispara sobre market data REAL y proyecta alert.*/signal.*
 POR TRANSICION. Emision por FLANCO (CA-P08-01): firing y resolved no se repiten vela a
@@ -404,12 +406,17 @@ POINT-LOCAL (EMA/RSI/MACD y CVD NO CONFORMES en v5.0, diferidas a P08b/P08c); an
 /"for" no existe en v5.0. Migraciones 0013-0016 bajo la regla 5.14: correccion futura de
 un grant = migracion SUCESORA, nunca editar una ya commiteada.
 
-PARA ESTA REVISION, el CSA debe comprobar: que la emision es por TRANSICION y no por vela;
-que el tenant autoritativo sale de la COLUMNA y nunca del JSON; que la atomicidad
-estado+outbox esta probada contra motor real y no con mocks; que los negativos de la
-frontera 5.20 fallan por permiso del MOTOR (permission denied / row-level security) y no
-por codigo nuestro; y que ningun check bloqueante de P08 sigue dormido (regla 5.22).
+VERIFICADO EN ESTA REVISION: que la emision es por TRANSICION y no por vela; que el tenant
+autoritativo sale de la COLUMNA y nunca del JSON; que la atomicidad estado+outbox esta
+probada contra motor real y no con mocks; que los negativos de la frontera 5.20 fallan por
+permiso del MOTOR (permission denied / row-level security) y no por codigo nuestro; y que
+ningun check bloqueante de P08 sigue dormido (regla 5.22). Se cerraron ademas tres puertas
+documentales: la reja de CINCO evidencias de CA-P08-09 por escrito con su regla de parada;
+el deslinde de vocabulario entre la omision de correccion en RUNTIME y los skips de pytest;
+y la correccion de la errata "cuatro DSN" -> "cinco DSN", registrada en este cierre.
 
-PARA LA PROXIMA REVISION (tras la firma de P08): el orden de M3 continua con P07b
-(trades+footprint), P07c (orderbook L2), P08b y P08c (DataSources), y P09a (router de
-notificaciones backend), que es quien consume signal.*/alert.*.
+PARA LA PROXIMA REVISION: el orden de M3 continua con P07b (trades+footprint), P07c
+(orderbook L2), P08b y P08c (DataSources), y P09a (router de notificaciones backend), que
+es quien consume signal.*/alert.*. Para P09a, la herencia dura de P08 es que las
+proyecciones alert.raised/signal.raised salen POR TRANSICION y ya vienen unidas a su
+rule.firing por causation_id: el router entrega esos hechos, no los reinterpreta.
