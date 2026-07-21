@@ -324,21 +324,9 @@ def _correct_one(
         prev = _previous_state(scoped.session, discovered.rule_id)
         data = _series_for(scoped.session, plan, timeframe, last_open)
 
-    # El tipo heredado admite None, pero CandleCorrectedPayload lo PROHIBE por validador
-    # y el payload llego por model_validate: aqui no puede serlo. Se comprueba con un
-    # RAISE, no con un assert, porque este valor alimenta la idempotency_key: un None
-    # que colara no reventaria, se colaria en la clave como ":correction:None" y
-    # perderia una correccion EN SILENCIO -- justo el enmascaramiento que prohibe el
-    # guardarrail 5.21. Y a diferencia del assert, la guarda sobrevive a python -O.
-    # Tampoco se inventa un valor por defecto: una revision fabricada colisionaria con
-    # la de otra correccion de la misma vela y perderiamos una de las dos igualmente.
-    if payload.correction_revision is None:
-        msg = (
-            "candle_corrected sin correction_revision: CandleCorrectedPayload lo "
-            "prohibe por validador; fabricar un valor colisionaria en la "
-            "idempotency_key y perderia una correccion en silencio (guardarrail 5.21)"
-        )
-        raise ValueError(msg)
+    # correction_revision es int por CONTRATO (CandleCorrectedPayload, CA-P08-09): el
+    # payload no se pudo construir sin ella, asi que aqui alimenta la idempotency_key
+    # directamente. Ya no hay guarda de None: el tipo la hace innecesaria (CE-8).
     process_rule_cycle(
         scoped_db,
         rule,

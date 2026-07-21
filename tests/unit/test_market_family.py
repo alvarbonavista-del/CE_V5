@@ -265,6 +265,19 @@ class TestMadurezPorTipo:
                 **_ohlcv(),
             )
 
+    def test_correccion_con_revision_none_rechazada(self) -> None:
+        # CA-P08-09: correction_revision es int OBLIGATORIO en este tipo. None se
+        # rechaza AL CONSTRUIR el payload (el TIPO del campo, no un validador aparte ni
+        # una guarda en el worker): antes de esto el worker tenia una barrera manual
+        # (7.3-c) que ahora es innecesaria. Un None jamas llega al motor.
+        with pytest.raises(ValidationError):
+            CandleCorrectedPayload(
+                maturity_state=MaturityState.CORRECTION,
+                corrects_idempotency_key="market.candle_closed|x|0|closed",
+                correction_revision=None,
+                **_ohlcv(),
+            )
+
     def test_revision_en_vela_provisional_rechazada(self) -> None:
         with pytest.raises(ValidationError):
             CandleUpdatedPayload(

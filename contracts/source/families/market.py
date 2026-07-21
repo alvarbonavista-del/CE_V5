@@ -359,19 +359,22 @@ class CandleCorrectedPayload(CandlePayload):
     No muta el original (append-only): es un hecho NUEVO que referencia por
     corrects_idempotency_key la vela corregida (regla heredada de
     MaturityAwarePayload) y numera su revision.
+
+    correction_revision es OBLIGATORIO (>=1) en este tipo (CA-P08-09): estrecha el
+    int|None de CandlePayload a un int requerido. Sin el, dos correcciones de la misma
+    vela colisionarian en la idempotency_key y la outbox (indice UNIQUE, P02b) se
+    tragaria la segunda EN SILENCIO. La obligatoriedad la impone ahora el TIPO del campo
+    -- no un validador aparte -- de modo que el schema generado lo refleja y ningun
+    consumidor la recibe como null. Correccion pre-consumidor (None nunca fue un evento
+    valido: ningun productor lo emitio ni ningun consumidor lo acepto).
     """
+
+    correction_revision: int = Field(ge=1)
 
     @model_validator(mode="after")
     def _madurez_del_tipo(self) -> "CandleCorrectedPayload":
         if self.maturity_state is not MaturityState.CORRECTION:
             msg = "market.candle_corrected exige maturity_state=correction."
-            raise ValueError(msg)
-        if self.correction_revision is None:
-            msg = (
-                "market.candle_corrected exige correction_revision (>=1): sin ella, "
-                "dos correcciones de la misma vela colisionarian en idempotency_key "
-                "y la outbox se tragaria la segunda en silencio."
-            )
             raise ValueError(msg)
         return self
 

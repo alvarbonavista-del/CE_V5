@@ -176,6 +176,19 @@ que no vivan solo en el chat (anti-deriva, DOC_ENTREGABLES sec.9).
      BLOQUEANTE con pruebas negativas en las dos direcciones. Generaliza CA-03/CA-04/CA-07
      y amplia la 5.19 (que solo cubria SECRETOS) a los PRIVILEGIOS DE FABRICAR HECHOS.
      VINCULANTE para P07, P08 y P10b.
+5.21 SOBRE NO VACIO VALIDADO EN CONSTRUCCION: ningun camino de construccion puede
+     producir un Envelope cuyo payload serializado este vacio o no case con el schema
+     registrado de su event_type. Se hace cumplir en CONSTRUCCION (check estatico +
+     test de round-trip por registro), no solo al publicar. Nace de la Enmienda
+     Historica 1 de P03, reincidente en P08 (B6.5).
+5.22 CHECK BLOQUEANTE ENGANCHADO Y DEMOSTRADO: un check bloqueante que existe pero NO
+     esta enganchado en .github/workflows/ci.yml (y por tanto no corre sobre el commit
+     de pieza) es un check que NO existe. El DoD de cierre de toda pieza debe VERIFICAR
+     que cada check bloqueante de la pieza esta enganchado en CI y DEMOSTRAR que corre
+     en verde sobre el commit de pieza (Actions, no solo barrido local). Misma familia
+     que 5.18. Nace del cierre de P08 (check_rules_access construido pero no
+     enganchado), reincidencia del patron de la Enmienda Historica 1 de P03 (verde
+     ilusorio).
 =====================================================================
 6. CIERRE DE PIEZA P01 - CONTRATOS BASE Y ENVELOPE
 =====================================================================
@@ -1233,3 +1246,98 @@ escribieron). NUNCA reescritura silenciosa.
 El CSA ya habia admitido esta via en su dictamen de EXP-M3-01: "si se edita
 roadmap, debe ser append-only o seccion de ampliacion, no reescritura
 silenciosa".
+=====================================================================
+22. CIERRE DE PIEZA P08 - MOTOR DE REGLAS (ADR-015/016/017)
+=====================================================================
+Estado: CERRADA TECNICAMENTE; EN DOBLE REVISION (Central + CSA); FIRMA PENDIENTE. NO es
+ENTREGADA todavia: lo sera tras la firma. NO cierra M3 (quedan P08b, P08c y P09a).
+Commit de pieza: PENDIENTE de registrar (regla 5.9: un commit no puede contener su
+propio hash; se anota en el commit inmediato posterior).
+Actions: PENDIENTE de confirmar. El workflow dispara en push a main y en pull_request,
+no en push a ramas wip; el cierre va por PR wip->main (decidido por Central), que Alvaro
+abre por la UI de GitHub. Se exige VERDE 3/3 (backend, backend-integration, frontend)
+sobre la cabeza de esa PR antes de la firma (reglas 5.13 y 5.22).
+Suite: 1040 tests, CERO SKIPS en local con los cuatro DSN (regla 5.18).
+
+LAS NUEVE CONSULTAS FIRMADAS (CA-P08-01..09)
+- CA-P08-01 (emision por TRANSICION): se emite solo en el FLANCO; firing/resolved son
+  flancos, no estados repetidos por vela. La auditoria por-vela se persiste, NO va al bus.
+- CA-P08-02 (estado y atomicidad): rule_lifecycle_state tenant-scoped con RLS + FORCE;
+  estado y outbox en UNA sola transaccion; reparto de poder segun 5.20; el hash canonico
+  incluye schema_version; la cuota por plan se difiere a P11.
+- CA-P08-03 (ventanilla): rules_for_market SECURITY DEFINER cross-tenant; manda el tenant
+  de la COLUMNA, NUNCA el del JSON de la definicion; nace SystemScopedDatabase, patron
+  reutilizable en P09a/P10b.
+- CA-P08-04 (FSM): K3 + veto fail-safe. NOT_EVALUABLE mantiene; RESOLVED solo con FALSE
+  real; STALE tras M velas; QUARANTINED por CompilationError o N excepciones. Sin "for"
+  en v5.0.
+- CA-P08-05 (motivos tipados): veto_outcome tipado; resolved_reason y stale_reason;
+  STALE/QUARANTINED como estado OPERACIONAL (no de la FSM); migracion 0014.
+- CA-P08-06 (cuarentena observable): rule.quarantined como tipo de la familia rule.*;
+  ce_v5_app LEE rule_lifecycle_state de su propio tenant (migracion 0015).
+- CA-P08-07 (mercado de solo lectura): ce_v5_rules LEE market publico (SELECT sobre
+  market_candle y NADA MAS), migracion 0016; el SubscriptionIntent lo escribe la AUTORIA,
+  atomico con la regla; el ciclo de vida va por enabled, no por salud.
+- CA-P08-08 (correccion): re-evaluado por candle_corrected v5.0 SOLO point-local, ventana
+  [T, T+h-1]; las fuentes no point-local son NO CONFORMES en v5.0 (SKIP con motivo, NO
+  cuarentena) y se difieren a P08b/P08c.
+- CA-P08-09 (correction_revision): pasa a int (no opcional) en CandleCorrectedPayload
+  (familia market). Correccion pre-consumidor CROSS-FRONTERA sin bump de version
+  (precedente CA-01). Se demostro que None nunca fue un evento valido: el validador ya lo
+  rechazaba, y no habia productor, consumidor ni fixture que lo aceptara. Se retira la
+  barrera local 7.3-c del worker (el TIPO la hace innecesaria) y el 7.7 se re-baselina en
+  el commit de pieza.
+
+DECISIONES DE CONSTRUCCION (dentro de area; ninguna reabre un ADR)
+- Presupuesto de complejidad movido a contracts como FUENTE UNICA; se elimina el
+  duplicado MAX_INTENTS_PER_RULE (= MAX_GROUPS_PER_RULE).
+- Mecanismo del guardarrail 5.21: tools/check_envelope_base_usage.py (AST) + test de
+  round-trip por registro, ambos EN CI.
+- tools/check_contract_artifacts.py: paridad EVENT_PAYLOAD_REGISTRY <-> schemas <-> TS,
+  EN CI.
+- Cinco familias de P08 generadas: rule.evaluation_completed, rule.firing, rule.resolved,
+  signal.raised, alert.raised (mas rule.quarantined por CA-P08-06).
+- memory_model en DataSourceDeclaration (market.close = POINT_LOCAL).
+- log_event movido a core/observability para que el worker no importe FastAPI.
+- ENDURECIMIENTO 5.22 (integrado en el cierre, no pieza aparte). Auditoria de los 15
+  checks contra ci.yml: check_rules_access.py era el UNICO dormido. Se engancha en el job
+  backend-integration (misma ubicacion y forma que check_market_access de P07); se
+  provisiona ce_v5_rules alli (CE_V5_RULES_DB_PASSWORD) y se exporta
+  CE_V5_RULES_DATABASE_URL, calcando a ce_v5_ingestion. Sin secretos de repositorio
+  nuevos: el job usa valores inline contra el Postgres efimero del runner.
+  Y el piso de integracion que faltaba (37 tests, Postgres real, role-switching):
+  (a) FRONTERA 5.20 en tests/integration/test_rules_access.py, positivos y negativos
+      BIDIRECCIONALES, cada negativo rechazado por el MOTOR (permission denied /
+      row-level security), no por codigo nuestro: el motor no escribe ni lee
+      rule_definition fila a fila, no toca identidad/policy/kill switch/auditoria, no ve
+      market_instrument ni market_subscription_intent ni market_public_demand (D1 de
+      CA-P08-07), no fabrica ni reescribe market data, no encola familias ajenas
+      (execution./policy./market./billing.) y no borra de la outbox.
+  (b) CICLO NUCLEO ATOMICO en tests/integration/test_rules_cycle.py: candle_closed ->
+      evalua -> FIRING -> evaluation_completed + firing + alert.raised con causation al
+      firing, y estado + eventos en la MISMA transaccion. La PRUEBA DE ATOMICIDAD fuerza
+      el fallo del INSERT de outbox (evento prohibido por la policy de 0013) y demuestra
+      que el estado hace ROLLBACK: sigue en firing con el open_time viejo y la outbox
+      queda intacta. SE VERIFICO QUE EL TEST MUERDE: replicada la version NO atomica
+      (estado y outbox en transacciones separadas) fuera del repositorio, el estado
+      avanzaba a resolved con el evento rechazado; el test lo caza.
+  La fixture rules_db FALLA EN ALTO si hay base de datos y falta su DSN (regla 5.18),
+  como ya hacian operator_db e ingestion_db: verificado.
+- Ninguna migracion se edito. Las 0013-0016 y sus grants quedan bajo la regla 5.14:
+  cualquier correccion futura de un grant va como migracion SUCESORA (0017...), NUNCA
+  editando una migracion ya commiteada.
+
+LIMITACIONES DE v5.0 REGISTRADAS (test 18; NO son deuda oculta, son alcance firmado)
+- La correccion por candle_corrected solo actualiza el ESTADO VIGENTE (reevalua en L):
+  NO reescribe las transiciones historicas de las velas intermedias.
+- Solo fuentes POINT-LOCAL. Las recursivas (EMA/RSI/MACD) y el integrador (CVD) quedan NO
+  CONFORMES en v5.0, diferidas a P08b/P08c (snapshot+replay de VALOR); el snapshot de
+  ESTADO de la FSM se difiere mas alla.
+- El anti-flap / "for" (D4) NO existe en v5.0 (diferido).
+
+DIFERIDOS CON DUENO (regla 5.11)
+- Catalogo de fuentes + investigacion por fuente -> la pieza CONSUMIDORA de cada fuente.
+- Veto con contexto propio (CA-P08-02 p.8) -> pieza de edicion de reglas.
+- Cuota por plan -> P11.
+- Edicion de reglas (intents huerfanos, idempotencia de re-activar) -> pieza de edicion.
+- shared_evaluation + orden por coste -> progresivo, cuando haya volumen que lo pida.
