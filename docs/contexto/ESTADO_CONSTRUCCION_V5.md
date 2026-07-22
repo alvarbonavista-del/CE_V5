@@ -84,6 +84,8 @@ P07 - Ingesta de market data (hibrida), ADR-014: ENTREGADA. ABRE el hito M3
 ## Pieza en curso
 NINGUNA. P08 queda ENTREGADA y no hay pieza abierta. La siguiente del orden de
 M3 es P07b (trades + footprint); admiten paralelismo P07b, P07c y P08b.
+T-05 (visor de desarrollo, transversal): EN CURSO. Porcion de API publica de lectura de velas
+aterrizada en abb7324 (ver REGISTRO_DECISIONES, seccion T-05); el visor en si continua.
 
 ## Piezas cerradas
 - P00 - Esqueleto de repositorio + CI base: ENTREGADA (hito M0 CERRADO).

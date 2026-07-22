@@ -224,6 +224,15 @@ regla 3 de DOC_ENTREGABLES (destino etiquetado de cada instruccion) y la 5.10.
 5.28 MISMO PATRON EN ELEVACIONES E INFORMES. Las elevaciones a Central y los informes se
 redactan con el mismo patron de las reglas anteriores: bloque limpio, copy-paste, ASCII-safe y
 preciso.
+
+5.29 AISLAMIENTO DE COMMIT POR TANDA (construccion en paralelo). Cuando varias piezas o tareas
+construyen EN PARALELO sobre el mismo repositorio, cada commit incluye SOLO los ficheros de su
+propia tanda: git add con LISTA EXPLICITA DE RUTAS, nunca git add . ni git add -A (que pueden
+arrastrar trabajo concurrente sin commitear de otra pieza). La etiqueta del commit refleja
+EXACTAMENTE su contenido. Si un commit ya empujado resulto mixto, NO se reescribe la historia
+(5.14): se DOCUMENTA la realidad (que trabajos contiene) en el registro y se da a cada trabajo
+su trazabilidad. Nace del commit mixto abb7324 (P07b 3a-i + T-05) durante la construccion
+paralela de M3.
 =====================================================================
 6. CIERRE DE PIEZA P01 - CONTRATOS BASE Y ENVELOPE
 =====================================================================
@@ -1404,3 +1413,32 @@ DIFERIDOS CON DUENO (regla 5.11)
 - Cuota por plan -> P11.
 - Edicion de reglas (intents huerfanos, idempotencia de re-activar) -> pieza de edicion.
 - shared_evaluation + orden por coste -> progresivo, cuando haya volumen que lo pida.
+=====================================================================
+23. T-05 -- VISOR DE DESARROLLO (TAREA TRANSVERSAL) Y NOTA DE TRAZABILIDAD DE abb7324
+=====================================================================
+NATURALEZA: tarea TRANSVERSAL (no pieza del roadmap), autorizada por Alvaro y Central 2026-07-21.
+Herramienta de validacion desechable / semilla de P13; NO es el chart del producto.
+ALCANCE (SI): pagina minima de KLineChart que pinta series CALCULADAS POR EL BACKEND (chart
+tonto, I-01); velas de P07 (ya servibles) y, segun lleguen, DataSources de P08b/P08c; enchufe
+con forma metainfo ligera (nombre, overlay-vs-panel, precision). Vive en frontend/src/dev-viewer
+(cubierto por los checks; aislado de ui-core por depcruise).
+DECISIONES DE T-05 (firmadas): (1B) live por SONDEO al endpoint publico, NO por realtime -el
+canal de P06b es fail-closed y no entrega public_market; ampliarlo tocaria auth, descartado para
+una herramienta-; (2) ubicacion frontend/src/dev-viewer; (3) Vite minimo (solo dev-server, no
+build de producto; siembra la tooling de M4).
+ALCANCE (NO): no es P13; sin herramientas de dibujo, sin PWA, sin overlays de producto, sin
+logica de dominio en el chart. No VERIFICA (la verificacion es numerica: TradingView/fixtures).
+CIERRE: ligero (informe breve + revision Central + OK Alvaro + commit + Actions verde); CSA solo
+si toca superficie arquitectonica.
+PORCION YA ATERRIZADA (commit abb7324): API publica de LECTURA de velas -- endpoint
+GET /v1/public/market/candles (SOLO lectura, publico sin superficie de tenant; market_candle es
+public_market), read_ohlcv_window + CandleOHLCV en infra/db/market_candles.py, wiring en
+app.py/composition.py, tests. La 5.20 queda INTACTA: ce_v5_app solo tiene SELECT sobre
+market_candle (la API no fabrica velas). read_close_window (camino de lectura que usa P08) quedo
+factorizado en _WINDOW_SQL compartido, BYTE A BYTE identico y con test -> refactor cross-pieza
+aceptable por preservar comportamiento, registrado aqui. T-05 CONTINUA (el visor en si).
+NOTA DE TRAZABILIDAD DE abb7324 (feat(p07b): maquinaria de ingesta de trades, Tanda 3a-i;
+empujado a main, Actions verde 3/3): contiene DOS trabajos AUTORIZADOS -- P07b 3a-i (completo) +
+la porcion de T-05 de arriba. La etiqueta solo menciono P07b: infravaloracion documentada AQUI,
+sin reescribir la historia (5.14). CAUSA: un git add amplio en la tanda de commit de P07b
+arrastro trabajo concurrente de T-05 sin commitear; origen de la regla 5.29.
