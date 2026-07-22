@@ -233,6 +233,19 @@ EXACTAMENTE su contenido. Si un commit ya empujado resulto mixto, NO se reescrib
 (5.14): se DOCUMENTA la realidad (que trabajos contiene) en el registro y se da a cada trabajo
 su trazabilidad. Nace del commit mixto abb7324 (P07b 3a-i + T-05) durante la construccion
 paralela de M3.
+
+5.30 VERDE = LA BATERIA COMPLETA DEL CI, NO UN SUBCONJUNTO. Antes de cada push, el periferico
+corre EN LOCAL la bateria COMPLETA que corre el CI -definida por .github/workflows/ci.yml, que
+es la FUENTE DE VERDAD y CRECE con el proyecto-, no un subconjunto elegido a ojo: todos los
+checks Python del workflow (check_generated, check_tenancy, check_market_access,
+check_rules_access, lint-imports y los que se anadan), el check de TS (check_generated_ts) y las
+dos suites (unit+components, e integration con los DSN que exija). El periferico NO decide que
+checks son "relevantes": si el CI lo corre, se corre en local antes del push. Un fallo de un
+check bloqueante es un fallo de la tanda, aunque el codigo compile. MECANISMO: la bateria local
+se invoca por UN SOLO comando espejo de ci.yml (para que "la bateria completa" no sea un
+ensamblaje manual que pueda olvidar un check -el fallo que origina esta regla-); si ese comando
+no existe, se crea y se mantiene. Nace del run #26 (437a1dc verde en ruff+mypy+pytest pero rojo
+en check_tenancy: la tabla public_market market_trade_gap no estaba declarada).
 =====================================================================
 6. CIERRE DE PIEZA P01 - CONTRATOS BASE Y ENVELOPE
 =====================================================================
