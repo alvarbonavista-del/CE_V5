@@ -40,3 +40,17 @@ def to_stream_name(canonical: str, timeframe: str) -> str:
     datos nunca. Un fallo silencioso, que es el peor tipo.
     """
     return f"{to_native(canonical).lower()}@kline_{timeframe}"
+
+
+def to_trade_stream_name(canonical: str) -> str:
+    """El nombre del stream de TRADES que Binance exige, en MINUSCULAS.
+
+    'BTC-USDT' -> 'btcusdt@trade'. Espejo de to_stream_name, pero SIN intervalo, y no
+    es una omision: el flujo de trades es continuo y NO se bucketea a nivel de stream
+    (MarketStreamKey lo prohibe para data_kind=trades, ADR-014). El bucketeo por barra
+    es del footprint, que es dato DERIVADO, no un stream del exchange.
+
+    Las minusculas importan por lo MISMO que en velas: en mayusculas Binance no
+    reconoce el stream, no da error, y la suscripcion se queda muda para siempre.
+    """
+    return f"{to_native(canonical).lower()}@trade"

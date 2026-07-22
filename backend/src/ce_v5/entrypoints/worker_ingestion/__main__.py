@@ -52,6 +52,38 @@ def _print_metrics(context: IngestionContext) -> None:
         f"degradados={sorted(m.degraded_streams)}",
         flush=True,
     )
+    if context.trade_engine is None:
+        return
+    t = context.trade_engine.metrics
+    print(
+        f"[trades] persistidos={t.trades_persisted} duplicados={t.duplicates_skipped} "
+        f"sin_suscripcion={t.unsubscribed_dropped} bootstrap={t.bootstrap_trades} "
+        f"errores_bootstrap={t.bootstrap_errors} rechazos={t.rejected} "
+        f"degradados={sorted(t.degraded_streams)}",
+        flush=True,
+    )
+
+
+def _drain_trades(context: IngestionContext) -> None:
+    """Un ciclo del motor de TRADES, junto al tick del de velas y NO dentro de el.
+
+    El componente de velas no conoce el motor de trades ni tiene por que: son dos
+    motores independientes que comparten conector, proceso y credencial (Central Q3).
+
+    CON SU PROPIA FAULT ISOLATION, por el mismo motivo que la del componente: un poll
+    que falla, o una base que parpadea, degradan ESTE ciclo y el siguiente reintenta.
+    Si la excepcion subiera al bucle, un fallo transitorio de TRADES tumbaria tambien
+    la ingesta de VELAS, para todos los usuarios a la vez.
+    """
+    if context.trade_engine is None:
+        return
+    try:
+        context.trade_engine.drain_once()
+    except Exception as exc:  # noqa: BLE001 - la aislacion es el objetivo.
+        print(
+            f"[trades] ciclo degradado: {type(exc).__name__}: {exc}",
+            flush=True,
+        )
 
 
 def main() -> None:
@@ -78,10 +110,20 @@ def main() -> None:
         context.supervisor.initialize(context.instance_id)
         context.supervisor.start(context.instance_id)
         print("[ingesta] ingestor en RUNNING. Ctrl-C para parar.", flush=True)
+        # DECLARADO, no supuesto: si el feed cableado no sirve trades, el worker corre
+        # sin ese motor y hay que verlo en el arranque, no deducirlo de un contador que
+        # nunca sube.
+        print(
+            "[trades] motor ACTIVO sobre el mismo conector."
+            if context.trade_engine is not None
+            else "[trades] motor AUSENTE: el feed cableado no sirve trades.",
+            flush=True,
+        )
 
         ciclos = 0
         while not stop.requested:
             context.component.tick()  # reconcile + drain, con fault isolation propia.
+            _drain_trades(context)  # motor de trades, con la suya.
             ciclos += 1
             if ciclos % _METRICS_EVERY == 0:
                 _print_metrics(context)

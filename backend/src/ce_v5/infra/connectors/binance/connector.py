@@ -36,16 +36,23 @@ from typing import Any
 import websockets.sync.client as ws_client
 
 from ce_v5.infra.connectors.binance.pool import BinanceLimits, ConnectionPlanner
-from ce_v5.infra.connectors.binance.symbols import to_native, to_stream_name
+from ce_v5.infra.connectors.binance.symbols import (
+    to_native,
+    to_stream_name,
+    to_trade_stream_name,
+)
 from ce_v5.infra.connectors.binance.translate import (
     BinanceTranslationError,
     raw_candle_from_binance,
+    raw_trade_from_binance,
     supported_binance_timeframes,
 )
 from source.families.market import (
     Instrument,
+    MarketDataKind,
     MarketStreamKey,
     RawCandle,
+    RawTrade,
     Timeframe,
 )
 
@@ -77,15 +84,27 @@ class ConnectorMetrics:
     """Observabilidad: sin esto, una cola que descarta es un agujero invisible."""
 
     dropped_full_queue: int = 0
+    # Contador PROPIO para los trades: sumarlos al de velas ocultaria CUAL de los dos
+    # flujos esta perdiendo datos, y son de escalas muy distintas (un par liquido
+    # publica miles de trades por minuto y una vela por minuto).
+    dropped_full_queue_trades: int = 0
     translation_errors: int = 0
     reconnections: int = 0
     degraded_streams: set[str] = field(default_factory=set)
 
 
 class BinanceSpotConnector:
-    """Feed publico de Binance Spot. Cumple MarketDataSourcePort por FORMA.
+    """Feed publico de Binance Spot. Cumple MarketDataSourcePort y TradeDataSourcePort
+    por FORMA.
 
-    NO importa platform: el puerto se satisface estructuralmente.
+    NO importa platform: los dos puertos se satisfacen estructuralmente.
+
+    VELAS Y TRADES VIAJAN POR LA MISMA CONEXION, multiplexados sobre el endpoint
+    combinado (?streams=a/b/c). Abrir un socket aparte para los trades del mismo par
+    gastaria el doble contra el limite de conexiones por IP -- el limite que un baneo
+    hace cumplir -- sin ganar absolutamente nada: el mensaje ya viene etiquetado con su
+    campo 'e', asi que separarlos es enrutar, no reconectar. Lo que SI esta separado es
+    la COLA de cada clase: un pico de trades no puede desalojar velas, ni al reves.
     """
 
     def __init__(
@@ -100,6 +119,13 @@ class BinanceSpotConnector:
         # se puede deducir donde parte (BTC-USDT o BT-CUSDT). El catalogo lo dice.
         self._native_to_canonical: dict[str, str] = native_to_canonical or {}
         self._cola: queue.Queue[RawCandle] = queue.Queue(maxsize=self._config.max_queue)
+        # Cola SEPARADA para los trades, con el mismo tope y el mismo backpressure
+        # observable. Compartir cola con las velas dejaria que una avalancha de trades
+        # (miles por minuto en un par liquido) expulsase las velas, que son el dato
+        # sobre el que se evaluan las reglas.
+        self._cola_trades: queue.Queue[RawTrade] = queue.Queue(
+            maxsize=self._config.max_queue
+        )
         self._lectores: dict[int, threading.Thread] = {}
         self._parar = threading.Event()
         self._ssl = ssl.create_default_context()  # verificacion ON. No se toca.
@@ -204,6 +230,85 @@ class BinanceSpotConnector:
     def supported_timeframes(self) -> frozenset[Timeframe]:
         return supported_binance_timeframes()
 
+    # -- TradeDataSourcePort -------------------------------------------------
+    #
+    # open/close/active/drain_reconnected los comparte con el puerto de velas: son las
+    # MISMAS suscripciones sobre la MISMA conexion, distinguidas por el data_kind de la
+    # clave. Aqui solo estan los dos metodos propios de trades.
+
+    def poll_trades(self, timeout_ms: int) -> Sequence[RawTrade]:
+        """DRENA la cola de trades. Espejo exacto de poll(): PULL con tope, manda el
+        motor y no el exchange. En trades importa aun mas, porque el caudal es de otro
+        orden de magnitud.
+        """
+        lote: list[RawTrade] = []
+        try:
+            primero = self._cola_trades.get(timeout=timeout_ms / 1000.0)
+        except queue.Empty:
+            return lote
+        lote.append(primero)
+        while True:
+            try:
+                lote.append(self._cola_trades.get_nowait())
+            except queue.Empty:
+                break
+        return lote
+
+    def fetch_recent_trades(
+        self, key: MarketStreamKey, limit: int
+    ) -> Sequence[RawTrade]:
+        """BOOTSTRAP REST de trades tras una reconexion (ADR-014): rellena el hueco.
+
+        Datos TAMPOCO validados, igual que en velas: el REST de un exchange no es mas
+        confiable que su WebSocket, y los valida la MISMA frontera de confianza. El
+        solape con lo ya persistido lo absorbe el dedup por identidad natural.
+        """
+        params = urllib.parse.urlencode(
+            {
+                "symbol": to_native(key.symbol),
+                "limit": max(1, min(limit, 1000)),
+            }
+        )
+        datos = self._get_json(f"/api/v3/trades?{params}")
+        if not isinstance(datos, list):
+            return []
+        trades: list[RawTrade] = []
+        for fila in datos:
+            traducido = self._trade_rest(fila, key)
+            if traducido is not None:
+                trades.append(traducido)
+        return trades
+
+    def _trade_rest(self, fila: object, key: MarketStreamKey) -> RawTrade | None:
+        """Una fila de /api/v3/trades (objeto) -> RawTrade.
+
+        FAULT ISOLATION POR FILA: una fila mala se cuenta y se SALTA. Perder un trade
+        del bootstrap es infinitamente menos grave que perder los otros noventa y
+        nueve porque el exchange colo uno con un campo raro.
+        """
+        if not isinstance(fila, dict):
+            self.metrics.translation_errors += 1
+            return None
+        try:
+            return RawTrade(
+                exchange="binance",
+                market_type=_MARKET_TYPE,
+                symbol=key.symbol,
+                trade_id=str(fila["id"]),
+                # TEXTO TAL CUAL, como en el WebSocket.
+                price=str(fila["price"]),
+                qty=str(fila["qty"]),
+                # isBuyerMaker: si el COMPRADOR fue el maker, quien cruzo el spread fue
+                # el VENDEDOR. Mismo hecho que el flag 'm' del socket, otro nombre.
+                aggressor_side="sell" if bool(fila["isBuyerMaker"]) else "buy",
+                # 'time' es el instante del trade en el EXCHANGE (ADR-007).
+                event_time_ms=int(fila["time"]),
+                source_sequence=int(fila["id"]),
+            )
+        except (KeyError, TypeError, ValueError):
+            self.metrics.translation_errors += 1
+            return None
+
     # -- Cableado del catalogo (B6b) -----------------------------------------
 
     def set_symbol_map(self, instruments: Sequence[Instrument]) -> None:
@@ -227,12 +332,35 @@ class BinanceSpotConnector:
 
     # -- IO interno ----------------------------------------------------------
 
+    def _nombre_de_stream(self, key: MarketStreamKey) -> str | None:
+        """El nombre de stream de Binance de una clave deseada. None si no aplica.
+
+        Es el UNICO sitio donde se decide como se llama un stream, y por eso lo usan
+        tanto _replanificar (para suscribirse) como _key_for_stream_name (para resolver
+        la vuelta al marcar reconexiones): si las dos direcciones no derivasen del mismo
+        sitio, un dia dejarian de coincidir y las reconexiones marcarian el stream
+        equivocado -- o ninguno.
+
+        FOOTPRINT devuelve None a proposito: tiene timeframe, pero es dato DERIVADO que
+        agregamos NOSOTROS, no un flujo que Binance publique. Suscribirse a el seria
+        pedirle al exchange algo que no existe.
+        """
+        if key.data_kind is MarketDataKind.TRADES:
+            return to_trade_stream_name(key.symbol)
+        if key.data_kind is MarketDataKind.CANDLES and key.timeframe is not None:
+            return to_stream_name(key.symbol, key.timeframe.value)
+        return None
+
     def _replanificar(self) -> None:
-        """Reparte los streams deseados y (re)arranca los lectores que hagan falta."""
+        """Reparte los streams deseados y (re)arranca los lectores que hagan falta.
+
+        Velas y trades entran en el MISMO reparto: ambos son nombres de stream que
+        viajan por las mismas conexiones combinadas.
+        """
         nombres = {
-            to_stream_name(key.symbol, key.timeframe.value)
+            nombre
             for key in self._deseados.values()
-            if key.timeframe is not None
+            if (nombre := self._nombre_de_stream(key)) is not None
         }
         plan = self._planner.assign(nombres)
         for indice, streams in plan.items():
@@ -292,12 +420,15 @@ class BinanceSpotConnector:
 
     def _key_for_stream_name(self, nombre: str) -> MarketStreamKey | None:
         """El MarketStreamKey deseado cuyo nombre de stream de Binance coincide con
-        ``nombre`` (p.ej. 'btcusdt@kline_1m'). None si ninguno. PURO: sin red.
+        ``nombre`` (p.ej. 'btcusdt@kline_1m' o 'btcusdt@trade'). None si ninguno.
+        PURO: sin red.
+
+        Resuelve las DOS clases porque la reconexion afecta a las dos: una conexion
+        multiplexada que se cae deja un hueco de velas Y un hueco de trades, y ambos
+        streams tienen que quedar marcados para que sus motores rebootstrapeen.
         """
         for key in self._deseados.values():
-            if key.timeframe is None:
-                continue
-            if to_stream_name(key.symbol, key.timeframe.value) == nombre:
+            if self._nombre_de_stream(key) == nombre:
                 return key
         return None
 
@@ -359,7 +490,12 @@ class BinanceSpotConnector:
         return cerradas
 
     def _encolar(self, mensaje: str | bytes) -> None:
-        """Traduce y encola. Si la cola esta llena, DESCARTA Y CUENTA."""
+        """Traduce y encola, ENRUTANDO POR CLASE DE DATO. Cola llena: descarta y cuenta.
+
+        Velas y trades llegan MEZCLADOS por la misma conexion y el campo 'e' dice cual
+        es cual. Cualquier otro valor (serverShutdown y demas eventos de control) se
+        ignora, exactamente como antes de que existieran los trades.
+        """
         try:
             sobre = json.loads(mensaje)
         except json.JSONDecodeError:
@@ -370,7 +506,13 @@ class BinanceSpotConnector:
             return
         # El endpoint combinado envuelve el payload: {"stream": ..., "data": {...}}
         datos = sobre.get("data", sobre)
-        if not isinstance(datos, dict) or datos.get("e") != "kline":
+        if not isinstance(datos, dict):
+            return
+        evento = datos.get("e")
+        if evento == "trade":
+            self._encolar_trade(datos)
+            return
+        if evento != "kline":
             return  # serverShutdown y demas eventos de control: no son velas.
 
         canonico = self._canonical_de(datos)
@@ -390,6 +532,29 @@ class BinanceSpotConnector:
             # cola que crece sin limite tumba el proceso; una que descarta sin contarlo
             # es un agujero invisible.
             self.metrics.dropped_full_queue += 1
+            self.metrics.degraded_streams.add(canonico)
+
+    def _encolar_trade(self, datos: dict[str, Any]) -> None:
+        """Un mensaje @trade -> RawTrade en la cola de TRADES. Espejo del camino de
+        velas: mismo canonico consultado (jamas deducido), misma conversion de la
+        excepcion de traduccion en metrica observable, mismo backpressure con descarte
+        contado.
+        """
+        canonico = self._canonical_de(datos)
+        if canonico is None:
+            self.metrics.translation_errors += 1
+            return
+        try:
+            trade = raw_trade_from_binance(datos, canonico, _MARKET_TYPE)
+        except BinanceTranslationError:
+            self.metrics.translation_errors += 1
+            return
+
+        try:
+            self._cola_trades.put_nowait(trade)
+        except queue.Full:
+            # BACKPRESSURE OBSERVABLE, con su contador propio (ver ConnectorMetrics).
+            self.metrics.dropped_full_queue_trades += 1
             self.metrics.degraded_streams.add(canonico)
 
     def _canonical_de(self, datos: dict[str, Any]) -> str | None:

@@ -20,6 +20,7 @@ import os
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 
 from ce_v5.components.market_ingestor_public import PublicMarketIngestorComponent
 from ce_v5.core.bus import EventBus
@@ -34,10 +35,13 @@ from ce_v5.infra.db.market_store import (
     PostgresInstrumentCatalog,
     PostgresPublicDemand,
 )
+from ce_v5.infra.db.market_trades import PostgresTradeWriter
 from ce_v5.infra.db.psycopg_adapter import PsycopgDatabase
 from ce_v5.platform.market.datasource import MarketDataSourcePort
 from ce_v5.platform.market.ingestor import IngestionEngine
 from ce_v5.platform.market.subscriptions import SubscriptionManager
+from ce_v5.platform.market.trade_ingestor import TradeIngestionEngine
+from ce_v5.platform.market.trade_source import TradeDataSourcePort
 
 _COMPONENTS_ROOT = Path(__file__).resolve().parents[2] / "components"
 _INGESTOR_ID = "market_ingestor_public"
@@ -56,6 +60,9 @@ class IngestionContext:
     instance_id: str
     component: PublicMarketIngestorComponent
     engine: IngestionEngine
+    # None cuando el feed cableado NO sirve trades (ver _as_trade_source). El bucle lo
+    # comprueba y lo DICE al arrancar: una degradacion declarada, no un motor mudo.
+    trade_engine: TradeIngestionEngine | None
     subscription_manager: SubscriptionManager
     datasource: MarketDataSourcePort
     catalog: _CatalogOnDb
@@ -84,6 +91,36 @@ def _build_datasource(
     del catalog  # el mapa nativo->canonico lo puebla __main__ tras sync_catalog.
     kind = os.environ.get(_DATASOURCE_ENV, "binance")
     return build_default_registry().resolve(kind)
+
+
+# Los metodos que un feed debe servir para que se le pueda pedir trades. open/close/
+# active/drain_reconnected ya los exige el puerto de velas: aqui solo van los propios.
+_TRADE_PORT_METHODS = ("poll_trades", "fetch_recent_trades")
+
+
+def _as_trade_source(source: MarketDataSourcePort) -> TradeDataSourcePort | None:
+    """EL MISMO feed visto por su otra cara, si de verdad sirve trades.
+
+    Aqui NO se construye un segundo feed, y ese es el punto de la tanda (Central Q3):
+    el conector real multiplexa velas y trades sobre la MISMA conexion, asi que el
+    motor de trades recibe el objeto que ya existe. Dos feeds serian dos sockets contra
+    el mismo par y el doble de gasto contra el limite de conexiones por IP.
+
+    Un feed que solo sirve velas -- el fake CONTROLADO de los tests, o un exchange cuyo
+    adaptador de trades aun no existe -- devuelve None, y el worker corre sin motor de
+    trades. NO es un default silencioso: es la unica respuesta honesta a "este feed no
+    tiene trades", y el arranque lo imprime. Fingir un motor sobre un feed que no los
+    sirve daria un stream mudo con pinta de sano, que es justo lo que
+    TradeDataSourcePort existe para evitar.
+    """
+    if not all(
+        callable(getattr(source, nombre, None)) for nombre in _TRADE_PORT_METHODS
+    ):
+        return None
+    # El puerto se satisface por FORMA (Protocol estructural); mypy no puede probarlo
+    # desde el tipo declarado del feed de velas, y la comprobacion de arriba es la que
+    # lo garantiza en ejecucion.
+    return cast(TradeDataSourcePort, source)
 
 
 def build_context(
@@ -125,6 +162,20 @@ def build_context(
         component_source=_INGESTOR_ID,
     )
 
+    # Motor de TRADES sobre el MISMO conector y la MISMA conexion a la base, con el
+    # MISMO rol ce_v5_ingestion (regla 5.20): un solo proceso, una sola credencial.
+    # Sin bus: los trades NO se publican (I-02); lo que se publicara por barra es el
+    # footprint.
+    trade_source = _as_trade_source(source)
+    trade_engine = (
+        None
+        if trade_source is None
+        else TradeIngestionEngine(
+            source=trade_source,
+            writer=PostgresTradeWriter(database),
+        )
+    )
+
     definition, component = _discover_and_wire(subscription_manager, engine, source)
 
     # El feed PUBLICO no tiene sujeto: la instancia es GLOBAL (ADR-011). El connector
@@ -144,6 +195,7 @@ def build_context(
         instance_id=instance.instance_id,
         component=component,
         engine=engine,
+        trade_engine=trade_engine,
         subscription_manager=subscription_manager,
         datasource=source,
         catalog=catalog_adapter,

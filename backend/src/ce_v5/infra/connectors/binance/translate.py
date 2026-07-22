@@ -1,4 +1,4 @@
-"""Traduccion de un mensaje kline de Binance a RawCandle. SIN IO.
+"""Traduccion de los mensajes de Binance a los DTO crudos (RawCandle, RawTrade). SIN IO.
 
 ESTE MODULO SOLO TRADUCE FORMATO. No valida rango, ni coherencia, ni nada de dominio:
 de eso se encarga la FRONTERA DE CONFIANZA (platform/market/normalize.py), que es una
@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from source.families.market import RawCandle, Timeframe
+from source.families.market import RawCandle, RawTrade, Timeframe
 
 # Los intervalos de Binance coinciden en texto con los canonicos, pero eso es una
 # COINCIDENCIA, no un contrato: se valida contra el vocabulario cerrado. Binance sirve
@@ -100,4 +100,39 @@ def raw_candle_from_binance(
         source_sequence=(
             int(kline["L"]) if isinstance(kline.get("L"), int | str) else None
         ),
+    )
+
+
+def raw_trade_from_binance(
+    msg: dict[str, Any], canonical_symbol: str, market_type: str
+) -> RawTrade:
+    """Un mensaje @trade de Binance -> RawTrade (dato CRUDO, sin validar).
+
+    canonical_symbol lo resuelve el LLAMADOR consultando el catalogo, igual que en las
+    velas: de 'BTCUSDT' no se puede deducir donde parte.
+
+    EL LADO AGRESOR NO SE ESTIMA: SE LEE. Binance publica 'm' = "is the buyer the
+    market maker?". Si m es FALSE, el maker fue el vendedor y por tanto el COMPRADOR
+    cruzo el spread: agresor 'buy'. Si m es TRUE, el comprador estaba en el libro y
+    quien cruzo fue el VENDEDOR: agresor 'sell'. Es un HECHO que publica el exchange,
+    y de ahi que el footprint salga reproducible bit a bit. La regla de tick (deducir
+    el lado comparando con el precio anterior) queda SOLO como fallback degradado
+    documentado para un exchange que no publicase el flag; aqui SIEMPRE viene.
+    """
+    trade_id = _requerido(msg, "t", "el mensaje")
+    return RawTrade(
+        exchange="binance",
+        market_type=market_type,
+        symbol=canonical_symbol,
+        trade_id=str(trade_id),
+        # TEXTO TAL CUAL: ni float, ni redondeo, ni limpieza. En M5 esto es dinero.
+        price=str(_requerido(msg, "p", "el mensaje")),
+        qty=str(_requerido(msg, "q", "el mensaje")),
+        aggressor_side="sell" if bool(_requerido(msg, "m", "el mensaje")) else "buy",
+        # 'T' es el instante del PROPIO TRADE en el exchange (ADR-007: el event_time lo
+        # fija el ORIGEN del hecho, jamas nuestro reloj). NO se usa 'E', que es cuando
+        # el exchange EMITIO el mensaje: parecido, pero no es el mismo hecho.
+        event_time_ms=int(_requerido(msg, "T", "el mensaje")),
+        # El trade id de Binance es monotono por simbolo: sirve de secuencia de origen.
+        source_sequence=int(trade_id),
     )
