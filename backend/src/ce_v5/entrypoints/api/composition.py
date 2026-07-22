@@ -45,6 +45,7 @@ from ce_v5.infra.db.identity import (
 )
 from ce_v5.infra.db.outbox_publisher import OutboxPublisher
 from ce_v5.infra.db.policy_store import PostgresPolicyStore
+from ce_v5.infra.db.ports import Database
 from ce_v5.infra.db.psycopg_adapter import PsycopgDatabase
 from ce_v5.infra.db.sensitive_audit import PostgresSensitiveActionAudit
 from ce_v5.infra.db.tenancy import TenantScopedDatabase
@@ -63,6 +64,13 @@ class ApiContext:
     auth: AuthService
     tokens: AccessTokenService
     scoped_db: TenantScopedDatabase
+    # Conexion SIN contexto de tenant, para las tablas public_market (0012): el dato de
+    # mercado es PUBLICO y no tiene tenant_id, asi que no hay tenant que fijar. No es un
+    # atajo alrededor del RLS: el rol de aplicacion no tiene BYPASSRLS, de modo que por
+    # aqui las tablas con RLS no devuelven NADA (sin app.current_tenant_id fijado, la
+    # policy no casa) y las escrituras se rechazan. Lo unico que la API puede hacer con
+    # market_candle es SELECT, y eso lo decide el GRANT, no este campo.
+    market_db: Database
     config: AuthConfig
     api_config: ApiConfig
     limiter: AuthRateLimiter
@@ -126,6 +134,7 @@ def build_context() -> ApiContext:
         auth=auth,
         tokens=tokens,
         scoped_db=TenantScopedDatabase(database),
+        market_db=database,
         config=config,
         api_config=api_config,
         limiter=limiter,

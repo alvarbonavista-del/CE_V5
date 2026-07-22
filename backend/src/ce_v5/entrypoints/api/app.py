@@ -43,6 +43,7 @@ from ce_v5.entrypoints.api.observability import (
 from ce_v5.entrypoints.api.realtime import router as realtime_router
 from ce_v5.entrypoints.api.routes_auth import router as auth_router
 from ce_v5.entrypoints.api.routes_capabilities import router as capabilities_router
+from ce_v5.entrypoints.api.routes_market import router as market_router
 from source.api import ApiError
 
 # Mensaje UNICO para todo fallo de autenticacion: cubre los cuatro casos (usuario
@@ -65,6 +66,7 @@ def create_app(context: ApiContext) -> FastAPI:
     app.state.context = context
     app.include_router(auth_router)
     app.include_router(capabilities_router)
+    app.include_router(market_router)
     app.include_router(realtime_router)
 
     # El ULTIMO en anadirse es el MAS EXTERNO. SecurityHeaders va fuera de los otros dos

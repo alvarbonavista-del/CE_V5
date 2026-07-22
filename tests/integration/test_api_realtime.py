@@ -133,6 +133,7 @@ def _context(app_db: PsycopgDatabase, bus: RedisEventBus) -> ApiContext:
         ),
         tokens=tokens,
         scoped_db=TenantScopedDatabase(app_db),
+        market_db=app_db,
         config=_CONFIG,
         api_config=ApiConfig(),
         limiter=limiter,

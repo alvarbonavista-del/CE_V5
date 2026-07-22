@@ -9,11 +9,17 @@ este modulo NO importa platform, ni platform importa infra.
 LECTURA (P08 D1): read_close_window sirve la ventana de cierres que consume el
 evaluador de reglas. Es SOLO LECTURA y la ejecuta ce_v5_rules con el GRANT SELECT de la
 0016; la escritura sigue siendo exclusiva del rol de ingesta.
+
+LECTURA (T-05): read_ohlcv_window sirve la MISMA ventana con el cuerpo entero de la vela
+para el camino de lectura del historico. La ejecuta ce_v5_app con el GRANT SELECT de la
+0012, que es solo eso: SELECT. Que la API pueda LEER velas no le da ningun poder para
+fabricarlas (regla 5.20); lo impone el motor, no este fichero.
 """
 
 from __future__ import annotations
 
 import uuid
+from dataclasses import dataclass
 from decimal import Decimal
 
 from ce_v5.infra.db.ports import Database, Session
@@ -81,10 +87,19 @@ ON CONFLICT (idempotency_key) DO NOTHING
 # market_candle es public_market (0012): sin tenant_id y sin RLS, asi que esta lectura
 # NO lleva filtro de tenant. No hay frontera de tenant que cruzar porque el dato de
 # mercado no es dato de sujeto.
-_CLOSE_WINDOW_SQL = """
-SELECT w.close
+#
+# EL ESQUELETO SE ESCRIBE UNA SOLA VEZ. La ventana de cierres (evaluador) y la de OHLCV
+# (lectura del historico) piden lo mismo con distinta anchura: identico filtrado,
+# identico dedup por revision e identico recorte a las `bars` mas recientes; lo unico
+# que cambia son las columnas proyectadas. Duplicar el esqueleto permitiria que un dia
+# se arreglara el dedup en una consulta y no en la otra, y entonces el grafico y el
+# evaluador contarian historias distintas de la misma vela. Las columnas son literales
+# DE ESTE MODULO: no hay SQL dinamico que dependa de la peticion, y los seis valores del
+# WHERE/LIMIT siguen viajando como parametros.
+_WINDOW_SQL = """
+SELECT {externas}
 FROM (
-    SELECT DISTINCT ON (open_time) open_time, close
+    SELECT DISTINCT ON (open_time) {internas}
     FROM market_candle
     WHERE exchange = %s
       AND market_type = %s
@@ -97,6 +112,13 @@ FROM (
 ) AS w
 ORDER BY w.open_time
 """
+
+_CLOSE_WINDOW_SQL = _WINDOW_SQL.format(externas="w.close", internas="open_time, close")
+
+_OHLCV_WINDOW_SQL = _WINDOW_SQL.format(
+    externas="w.open_time, w.open, w.high, w.low, w.close, w.volume",
+    internas="open_time, open, high, low, close, volume",
+)
 
 # La ULTIMA vela madura del flujo (L). Es la vela sobre la que la regla tiene su estado
 # VIGENTE: una correccion solo puede cambiar el estado actual si L cae dentro de la
@@ -125,6 +147,26 @@ def _decimal(valor: object) -> Decimal:
         msg = f"Se esperaba un Decimal de la base y llego {type(valor)!r}."
         raise TypeError(msg)
     return valor
+
+
+@dataclass(frozen=True, slots=True)
+class CandleOHLCV:
+    """Una vela madura del historico, tal como sale de la lectura.
+
+    INMUTABLE y con los precios en Decimal: quien la recibe no puede alterarla por
+    accidente, y el valor que salio de la base llega intacto a quien lo consume.
+    Convertir a float aqui perderia digitos en silencio, y en M5 eso es dinero.
+
+    Es un tipo de LECTURA de este adapter, no un contrato de producto: no viaja por el
+    bus ni se publica. Los contratos viven en contracts/source.
+    """
+
+    open_time: int
+    open: Decimal
+    high: Decimal
+    low: Decimal
+    close: Decimal
+    volume: Decimal
 
 
 class PostgresCandleWriter:
@@ -245,6 +287,54 @@ def read_close_window(
         ),
     )
     return tuple(_decimal(row[0]) for row in rows)
+
+
+def read_ohlcv_window(
+    session: Session,
+    exchange: str,
+    symbol: str,
+    timeframe: str,
+    up_to_open_time: int,
+    bars: int,
+) -> tuple[CandleOHLCV, ...]:
+    """La ventana OHLCV completa de un flujo hasta una vela dada, oldest->newest.
+
+    HERMANA de read_close_window: mismo filtrado, mismo dedup por revision vigente y
+    mismo recorte a las `bars` velas mas recientes con open_time <= up_to_open_time. La
+    UNICA diferencia es la anchura: aqui salen open/high/low/close/volume ademas del
+    open_time, porque quien dibuja una vela necesita su cuerpo entero y no solo su
+    cierre. Comparten el esqueleto SQL a proposito (_WINDOW_SQL): si el dedup se
+    separase, el grafico y el evaluador leerian historias distintas de la misma vela.
+
+    Devuelve menos de `bars` elementos si el historico no da para mas -- e incluso la
+    tupla VACIA -- y NO rellena nada, igual que read_close_window: un hueco es un hecho
+    ausente, y una vela inventada seria un hecho falso dibujado como de mercado.
+
+    market_type esta FIJADO a spot porque v5.0 solo tiene spot (MarketType), por el
+    mismo motivo que en read_close_window.
+    """
+    rows = session.fetchall(
+        _OHLCV_WINDOW_SQL,
+        (
+            exchange,
+            MarketType.SPOT.value,
+            symbol,
+            timeframe,
+            up_to_open_time,
+            bars,
+        ),
+    )
+    return tuple(
+        CandleOHLCV(
+            open_time=_entero(row[0]),
+            open=_decimal(row[1]),
+            high=_decimal(row[2]),
+            low=_decimal(row[3]),
+            close=_decimal(row[4]),
+            volume=_decimal(row[5]),
+        )
+        for row in rows
+    )
 
 
 def read_last_closed_open_time(

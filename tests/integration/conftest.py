@@ -27,6 +27,7 @@ from ce_v5.infra.db.config import (
     RulesDbConfig,
 )
 from ce_v5.infra.db.identity import register_user
+from ce_v5.infra.db.market_candles import PostgresCandleWriter
 from ce_v5.infra.db.migrations.runner import apply_migrations
 from ce_v5.infra.db.provision import (
     INGESTION_PASSWORD_ENV_VAR,
@@ -42,6 +43,10 @@ from ce_v5.infra.db.rules import insert_rule_definition
 from ce_v5.infra.db.tenancy import TenantScopedDatabase, provision_tenant_for_user
 from ce_v5.platform.rules.canonical import canonical_rule_hash
 from ce_v5.platform.rules.rawclose import MARKET_CLOSE_SOURCE_ID
+from source.envelope import Envelope
+from source.envelope.enums import Scope
+from source.families.market import CandlePayload, MarketCandleEventType
+from source.families.registry import expected_event_schema_version
 from source.rules.condition import Condition
 from source.rules.feature import Feature
 from source.rules.group import Group
@@ -260,6 +265,60 @@ def _limpiar_identidad(migrator_db: PsycopgDatabase) -> Iterator[None]:
     _wipe_identidad(migrator_db)
     yield
     _wipe_identidad(migrator_db)
+
+
+def _envelope_de(
+    payload: CandlePayload, event_type: MarketCandleEventType, event_time: int
+) -> bytes:
+    """El sobre canonico de una vela, igual que lo construye la ingesta (ADR-003/007).
+
+    event_time lo fija el EXCHANGE, nunca nuestro reloj: por eso entra por argumento.
+    """
+    envelope = Envelope[CandlePayload](
+        event_type=event_type.value,
+        event_schema_version=expected_event_schema_version(event_type.value),
+        source="market-ingestor",
+        idempotency_key=payload.idempotency_key(event_type),
+        stream_key=payload.stream_key(),
+        scope=Scope.PUBLIC_MARKET,  # los publicos NO llevan tenant (ADR-011).
+        event_time=event_time,
+        ingestion_time=event_time,
+        processing_time=event_time,
+        correlation_id=payload.stream_key(),
+        payload=payload,
+    )
+    return envelope.model_dump_json().encode()
+
+
+@pytest.fixture
+def persistir_vela(
+    ingestion_db: PsycopgDatabase,
+) -> Callable[[CandlePayload, MarketCandleEventType, int], bool]:
+    """Escribe una vela por el camino REAL de escritura: historico + outbox, ATOMICO.
+
+    Vive en el conftest porque la usan los ficheros de integracion del historico de
+    velas y el del endpoint de lectura, y tests/integration no es un paquete. Que el
+    dato lo siembre el MISMO PostgresCandleWriter de produccion (con el rol de INGESTA)
+    y no un INSERT a mano es lo que hace que la lectura se pruebe contra velas de
+    verdad: si el escritor y el lector dejaran de entenderse, un INSERT de juguete lo
+    taparia.
+
+    Devuelve False si la vela ya estaba (dedup por idempotency_key).
+    """
+    writer = PostgresCandleWriter(ingestion_db)
+
+    def _persistir(
+        payload: CandlePayload, event_type: MarketCandleEventType, event_time: int
+    ) -> bool:
+        return writer.persist_and_enqueue(
+            envelope_json=_envelope_de(payload, event_type, event_time),
+            payload=payload,
+            event_type=event_type.value,
+            stream_key=payload.stream_key(),
+            idempotency_key=payload.idempotency_key(event_type),
+        )
+
+    return _persistir
 
 
 def _condicion_close_mayor_que(umbral: str) -> Condition:

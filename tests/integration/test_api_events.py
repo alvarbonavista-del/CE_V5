@@ -96,6 +96,12 @@ _RUTAS_PERMITIDAS = {
     ("/v1/auth/logout", "POST"),
     ("/v1/me", "GET"),
     ("/v1/capabilities", "GET"),
+    # LECTURA del historico de velas (T-05). Entra en la lista cerrada con su motivo
+    # escrito: es una ventana de SOLO LECTURA al historico canonico, publica porque el
+    # dato de mercado no es dato de nadie (public_market, 0012). No evalua reglas, no
+    # ejecuta nada y no tiene superficie de tenant; y la API sigue sin poder fabricar
+    # una vela, porque sobre market_candle solo tiene SELECT (regla 5.20).
+    ("/v1/public/market/candles", "GET"),
     ("/v1/realtime", "WEBSOCKET"),
 }
 
@@ -143,6 +149,7 @@ def _context(
         ),
         tokens=tokens,
         scoped_db=TenantScopedDatabase(app_db),
+        market_db=app_db,
         config=_CONFIG,
         api_config=ApiConfig(),
         limiter=limiter,

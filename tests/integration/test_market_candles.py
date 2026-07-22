@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 import os
 import uuid
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from decimal import Decimal
 
 import pytest
@@ -27,8 +27,6 @@ from ce_v5.infra.bus_redis import RedisBusConfig, RedisEventBus, create_client
 from ce_v5.infra.db.market_candles import PostgresCandleWriter
 from ce_v5.infra.db.outbox_publisher import OutboxPublisher, topic_for
 from ce_v5.infra.db.psycopg_adapter import PsycopgDatabase
-from source.envelope import Envelope
-from source.envelope.enums import Scope
 from source.families.market import (
     CandleClosedPayload,
     CandleCorrectedPayload,
@@ -39,7 +37,6 @@ from source.families.market import (
     MarketType,
     Timeframe,
 )
-from source.families.registry import expected_event_schema_version
 from source.time import MaturityState
 
 _DSN = os.environ.get("CE_V5_DATABASE_URL")
@@ -52,6 +49,10 @@ pytestmark = pytest.mark.skipif(
 _OPEN = 1_784_073_600_000
 _CLOSE = _OPEN + 59_999
 _EVENT_TIME = _OPEN + 42
+
+# La fixture persistir_vela del conftest: escribe por el camino REAL (historico +
+# outbox, con el rol de INGESTA). El alias existe para anotarla sin repetir la firma.
+Persistir = Callable[[CandlePayload, MarketCandleEventType, int], bool]
 
 _CLAVE = MarketStreamKey(
     exchange="binance",
@@ -123,38 +124,6 @@ def _correccion(revision: int, corrige: str, close: str) -> CandleCorrectedPaylo
     )
 
 
-def _envelope_de(payload: CandlePayload, event_type: MarketCandleEventType) -> bytes:
-    """El sobre canonico, igual que lo construye el motor de ingesta (ADR-003/007)."""
-    envelope = Envelope[CandlePayload](
-        event_type=event_type.value,
-        event_schema_version=expected_event_schema_version(event_type.value),
-        source="market-ingestor",
-        idempotency_key=payload.idempotency_key(event_type),
-        stream_key=payload.stream_key(),
-        scope=Scope.PUBLIC_MARKET,  # los publicos NO llevan tenant (ADR-011).
-        event_time=_EVENT_TIME,  # lo fija el EXCHANGE (ADR-007).
-        ingestion_time=_EVENT_TIME,
-        processing_time=_EVENT_TIME,
-        correlation_id=payload.stream_key(),
-        payload=payload,
-    )
-    return envelope.model_dump_json().encode()
-
-
-def _persistir(
-    writer: PostgresCandleWriter,
-    payload: CandlePayload,
-    event_type: MarketCandleEventType,
-) -> bool:
-    return writer.persist_and_enqueue(
-        envelope_json=_envelope_de(payload, event_type),
-        payload=payload,
-        event_type=event_type.value,
-        stream_key=payload.stream_key(),
-        idempotency_key=payload.idempotency_key(event_type),
-    )
-
-
 def _contar(db: PsycopgDatabase, sql: str, params: tuple[object, ...] = ()) -> int:
     with db.transaction() as session:
         row = session.fetchone(sql, params)
@@ -166,12 +135,18 @@ def _contar(db: PsycopgDatabase, sql: str, params: tuple[object, ...] = ()) -> i
 
 class TestIdaYVuelta:
     def test_una_cerrada_se_lee_con_sus_ohlcv_exactos(
-        self, ingestion_db: PsycopgDatabase, limpiar_market: None
+        self,
+        ingestion_db: PsycopgDatabase,
+        persistir_vela: Persistir,
+        limpiar_market: None,
     ) -> None:
         writer = PostgresCandleWriter(ingestion_db)
         payload = _cerrada()
 
-        assert _persistir(writer, payload, MarketCandleEventType.CANDLE_CLOSED) is True
+        assert (
+            persistir_vela(payload, MarketCandleEventType.CANDLE_CLOSED, _EVENT_TIME)
+            is True
+        )
 
         guardada = writer.existing(_STREAM_KEY, _OPEN)
         assert guardada is not None
@@ -193,16 +168,24 @@ class TestIdaYVuelta:
 
 class TestDedup:
     def test_la_misma_vela_dos_veces_no_duplica_ni_reencola(
-        self, ingestion_db: PsycopgDatabase, limpiar_market: None
+        self,
+        ingestion_db: PsycopgDatabase,
+        persistir_vela: Persistir,
+        limpiar_market: None,
     ) -> None:
         # El caso NORMAL tras una reconexion + bootstrap REST. Si se duplicara, el
         # historico tendria el mismo hecho dos veces; si se reencolara, el bus
         # publicaria dos veces la misma vela.
-        writer = PostgresCandleWriter(ingestion_db)
         payload = _cerrada()
 
-        assert _persistir(writer, payload, MarketCandleEventType.CANDLE_CLOSED) is True
-        assert _persistir(writer, payload, MarketCandleEventType.CANDLE_CLOSED) is False
+        assert (
+            persistir_vela(payload, MarketCandleEventType.CANDLE_CLOSED, _EVENT_TIME)
+            is True
+        )
+        assert (
+            persistir_vela(payload, MarketCandleEventType.CANDLE_CLOSED, _EVENT_TIME)
+            is False
+        )
 
         assert _contar(ingestion_db, "SELECT count(*) FROM market_candle") == 1
         assert _contar(ingestion_db, "SELECT count(*) FROM outbox") == 1
@@ -210,18 +193,23 @@ class TestDedup:
 
 class TestCorrecciones:
     def test_una_correccion_no_toca_el_original_y_sube_la_revision(
-        self, ingestion_db: PsycopgDatabase, limpiar_market: None
+        self,
+        ingestion_db: PsycopgDatabase,
+        persistir_vela: Persistir,
+        limpiar_market: None,
     ) -> None:
         # APPEND-ONLY (ADR-007): la correccion es un hecho NUEVO que REFERENCIA al
         # corregido. El original NO se modifica: su verdad de entonces sigue ahi.
         writer = PostgresCandleWriter(ingestion_db)
         original = _cerrada(close="105")
-        _persistir(writer, original, MarketCandleEventType.CANDLE_CLOSED)
+        persistir_vela(original, MarketCandleEventType.CANDLE_CLOSED, _EVENT_TIME)
         clave_original = original.idempotency_key(MarketCandleEventType.CANDLE_CLOSED)
 
         correccion = _correccion(1, clave_original, close="106")
         assert (
-            _persistir(writer, correccion, MarketCandleEventType.CANDLE_CORRECTED)
+            persistir_vela(
+                correccion, MarketCandleEventType.CANDLE_CORRECTED, _EVENT_TIME
+            )
             is True
         )
 
@@ -235,7 +223,10 @@ class TestCorrecciones:
         assert _contar(ingestion_db, "SELECT count(*) FROM market_candle") == 2
 
     def test_una_segunda_correccion_llega_a_la_revision_2(
-        self, ingestion_db: PsycopgDatabase, limpiar_market: None
+        self,
+        ingestion_db: PsycopgDatabase,
+        persistir_vela: Persistir,
+        limpiar_market: None,
     ) -> None:
         # LA SUBCONSULTA DE max(correction_revision) ES LO QUE SE PRUEBA AQUI. Si
         # estuviera mal, la segunda correccion naceria otra vez con revision 1,
@@ -243,14 +234,15 @@ class TestCorrecciones:
         # SILENCIO. Un doble en memoria no puede cazar eso.
         writer = PostgresCandleWriter(ingestion_db)
         original = _cerrada(close="105")
-        _persistir(writer, original, MarketCandleEventType.CANDLE_CLOSED)
+        persistir_vela(original, MarketCandleEventType.CANDLE_CLOSED, _EVENT_TIME)
         clave_original = original.idempotency_key(MarketCandleEventType.CANDLE_CLOSED)
 
         primera = _correccion(1, clave_original, close="106")
-        _persistir(writer, primera, MarketCandleEventType.CANDLE_CORRECTED)
+        persistir_vela(primera, MarketCandleEventType.CANDLE_CORRECTED, _EVENT_TIME)
         segunda = _correccion(2, clave_original, close="107")
         assert (
-            _persistir(writer, segunda, MarketCandleEventType.CANDLE_CORRECTED) is True
+            persistir_vela(segunda, MarketCandleEventType.CANDLE_CORRECTED, _EVENT_TIME)
+            is True
         )
 
         guardada = writer.existing(_STREAM_KEY, _OPEN)
@@ -305,17 +297,19 @@ class TestProvisionalNoEsHistoria:
 
 class TestAtomicidad:
     def test_historico_y_outbox_o_los_dos_o_ninguno(
-        self, ingestion_db: PsycopgDatabase, limpiar_market: None
+        self,
+        ingestion_db: PsycopgDatabase,
+        persistir_vela: Persistir,
+        limpiar_market: None,
     ) -> None:
         # ADR-013 verificado contra el MOTOR, no contra un mock: tras un
         # persist_and_enqueue exitoso hay UNA fila en market_candle Y UNA en outbox,
         # con el MISMO idempotency_key. Es imposible que exista una vela que nadie
         # publico, o un evento publicado sin vela detras.
-        writer = PostgresCandleWriter(ingestion_db)
         payload = _cerrada()
         clave = payload.idempotency_key(MarketCandleEventType.CANDLE_CLOSED)
 
-        _persistir(writer, payload, MarketCandleEventType.CANDLE_CLOSED)
+        persistir_vela(payload, MarketCandleEventType.CANDLE_CLOSED, _EVENT_TIME)
 
         assert (
             _contar(
@@ -337,7 +331,10 @@ class TestAtomicidad:
 
 class TestElEventoEncoladoEsPublicable:
     def test_el_publisher_lo_valida_y_lo_saca_al_bus(
-        self, ingestion_db: PsycopgDatabase, limpiar_market: None
+        self,
+        ingestion_db: PsycopgDatabase,
+        persistir_vela: Persistir,
+        limpiar_market: None,
     ) -> None:
         # END TO END: si el envelope que escribimos no cumpliera el registro
         # event_type -> payload (CA-06), el publisher lo RECHAZARIA y no llegaria al
@@ -351,9 +348,8 @@ class TestElEventoEncoladoEsPublicable:
         client: redis.Redis = create_client(config)
         try:
             bus = RedisEventBus(client, config)
-            writer = PostgresCandleWriter(ingestion_db)
             payload = _cerrada()
-            _persistir(writer, payload, MarketCandleEventType.CANDLE_CLOSED)
+            persistir_vela(payload, MarketCandleEventType.CANDLE_CLOSED, _EVENT_TIME)
 
             publisher = OutboxPublisher(db=ingestion_db, bus=bus)
             assert publisher.drain_once() == 1

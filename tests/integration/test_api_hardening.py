@@ -100,6 +100,7 @@ def _context(app_db: PsycopgDatabase, api_config: ApiConfig) -> ApiContext:
         ),
         tokens=tokens,
         scoped_db=TenantScopedDatabase(app_db),
+        market_db=app_db,
         config=_CONFIG,
         api_config=api_config,
         limiter=limiter,
