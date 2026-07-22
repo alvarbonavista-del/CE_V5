@@ -49,16 +49,75 @@ from ce_v5.infra.connectors.binance.translate import (
 )
 from source.families.market import (
     Instrument,
+    LastSeenTrade,
     MarketDataKind,
     MarketStreamKey,
     RawCandle,
     RawTrade,
     Timeframe,
+    TradeBackfillResult,
 )
 
 _WS_BASE = "wss://stream.binance.com:9443/stream"
 _REST_BASE = "https://api.binance.com"
 _MARKET_TYPE = "spot"
+# Techo de /api/v3/trades SIN clave de API. NO es un parametro de configuracion: es lo
+# que el endpoint publico da. De aqui sale la cota REAL del relleno tras una reconexion.
+_REST_TRADES_MAX = 1000
+
+
+def _menor_event_time(trades: Sequence[RawTrade]) -> int | None:
+    """El event_time mas antiguo del lote, o None si esta vacio."""
+    return min((trade.event_time_ms for trade in trades), default=None)
+
+
+def _coverage_binance(
+    last_seen: LastSeenTrade, backfill: Sequence[RawTrade]
+) -> tuple[bool, int | None, int | None]:
+    """Decide si el relleno REST alcanzo lo que ya teniamos. PURA: sin red, sin reloj.
+
+    Binance numera los trades de cada simbolo con un id MONOTONO, y eso es lo que
+    permite responder la pregunta con exactitud en vez de con una estimacion temporal:
+    si el trade mas antiguo del relleno es el SIGUIENTE al ultimo que ya teniamos (o uno
+    anterior, es decir, hay solape), la serie quedo CONTIGUA y no falta nada. Si es
+    posterior, entre medias hay trades que este relleno no alcanzo y que el endpoint
+    publico ya no puede devolver: hueco real.
+
+    Devuelve (covered, gap_from_event_time_ms, gap_to_event_time_ms). Con covered=True
+    los limites van a None: no hay hueco que delimitar.
+
+    FAIL-SAFE EN LOS TRES CAMINOS INCIERTOS -- ids no numericos, relleno vacio, o
+    cualquier cosa que impida razonar sobre contiguidad -- se declara hueco. Declarar un
+    hueco que no existe marca barras como incompletas sin motivo; NO declarar uno que si
+    existe publica una barra a la que le faltan trades como si estuviera completa.
+    """
+    if last_seen.trade_id is None:
+        # PRIMERA CONEXION: no hay nada persistido, luego no hay hueco posible. No se
+        # puede haber perdido lo que nunca se tuvo.
+        return True, None, None
+
+    try:
+        ultimo_id = int(last_seen.trade_id)
+        ids = [int(trade.trade_id) for trade in backfill]
+    except (TypeError, ValueError):
+        # Un id que no es un entero rompe el razonamiento por contiguidad. No se
+        # improvisa otro criterio: se declara hueco y se acota por event_time.
+        return False, last_seen.event_time_ms, _menor_event_time(backfill)
+
+    if not ids:
+        # El REST no devolvio NADA con lo que acotar el extremo superior. Se declara el
+        # hueco con ese extremo DESCONOCIDO (None) en vez de inventarle un limite: un
+        # limite inventado es peor que un limite ausente.
+        return False, last_seen.event_time_ms, None
+
+    indice_mas_antiguo = min(range(len(ids)), key=lambda i: ids[i])
+    if ids[indice_mas_antiguo] <= ultimo_id + 1:
+        return True, None, None
+    return (
+        False,
+        last_seen.event_time_ms,
+        backfill[indice_mas_antiguo].event_time_ms,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -254,30 +313,40 @@ class BinanceSpotConnector:
                 break
         return lote
 
-    def fetch_recent_trades(
-        self, key: MarketStreamKey, limit: int
-    ) -> Sequence[RawTrade]:
-        """BOOTSTRAP REST de trades tras una reconexion (ADR-014): rellena el hueco.
+    def backfill_after_reconnect(
+        self, key: MarketStreamKey, last_seen: LastSeenTrade
+    ) -> TradeBackfillResult:
+        """RELLENA el hueco de una reconexion por REST publico y DICE si lo cubrio.
+
+        La cota NO es configurable: es _REST_TRADES_MAX (1000), el techo de
+        /api/v3/trades SIN clave de API. Pedir mas no es cuestion de subir un numero,
+        es que el endpoint publico no lo da.
 
         Datos TAMPOCO validados, igual que en velas: el REST de un exchange no es mas
         confiable que su WebSocket, y los valida la MISMA frontera de confianza. El
         solape con lo ya persistido lo absorbe el dedup por identidad natural.
+
+        El IO vive aqui; la DECISION de cobertura vive en _coverage_binance, que es pura
+        y se prueba en frio. Un calculo de cobertura enterrado en el camino de red seria
+        un calculo que solo se puede probar contra el mercado real.
         """
         params = urllib.parse.urlencode(
-            {
-                "symbol": to_native(key.symbol),
-                "limit": max(1, min(limit, 1000)),
-            }
+            {"symbol": to_native(key.symbol), "limit": _REST_TRADES_MAX}
         )
         datos = self._get_json(f"/api/v3/trades?{params}")
-        if not isinstance(datos, list):
-            return []
         trades: list[RawTrade] = []
-        for fila in datos:
-            traducido = self._trade_rest(fila, key)
-            if traducido is not None:
-                trades.append(traducido)
-        return trades
+        if isinstance(datos, list):
+            for fila in datos:
+                traducido = self._trade_rest(fila, key)
+                if traducido is not None:
+                    trades.append(traducido)
+        covered, gap_from, gap_to = _coverage_binance(last_seen, trades)
+        return TradeBackfillResult(
+            raw_trades=trades,
+            covered=covered,
+            gap_from_event_time_ms=gap_from,
+            gap_to_event_time_ms=gap_to,
+        )
 
     def _trade_rest(self, fila: object, key: MarketStreamKey) -> RawTrade | None:
         """Una fila de /api/v3/trades (objeto) -> RawTrade.

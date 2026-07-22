@@ -63,6 +63,7 @@ def _footprint(**overrides: object) -> dict[str, object]:
         "bar_sell_volume": Decimal("3"),
         "bar_delta": Decimal("2"),
         "trade_count": 8,
+        "is_complete": True,
     }
     base.update(overrides)
     return base
@@ -186,6 +187,63 @@ class TestFootprintPayload:
         fp = FootprintClosedPayload(maturity_state=MaturityState.CLOSED, **_footprint())
         assert fp.stream_key() == "market:footprint:binance:spot:BTC-USDT:1m"
         assert fp.bar_delta == Decimal("2")
+
+
+class TestCompletitud:
+    """is_complete: si la barra vio TODOS sus trades (P07b, modelo de backfill honesto).
+
+    True = se capturaron todos los trades de la ventana. False = un hueco de reconexion
+    NO cubierto se solapa con esta barra, asi que le faltan trades y sus celdas no son
+    la verdad completa del mercado.
+    """
+
+    def test_se_puede_declarar_completo_e_incompleto(self) -> None:
+        datos = _footprint()
+        datos.pop("is_complete")
+
+        completo = FootprintClosedPayload(
+            maturity_state=MaturityState.CLOSED, is_complete=True, **datos
+        )
+        incompleto = FootprintClosedPayload(
+            maturity_state=MaturityState.CLOSED, is_complete=False, **datos
+        )
+
+        assert completo.is_complete is True
+        assert incompleto.is_complete is False
+
+    def test_omitirlo_da_INCOMPLETO_no_completo(self) -> None:
+        # EL DEFAULT ES FAIL-SAFE, y este test es el que lo fija. Un default True
+        # convertiria el olvido de un productor en una barra publicada como completa sin
+        # serlo, que es exactamente la mentira que el campo existe para impedir. El
+        # agregador de 3b lo pone SIEMPRE explicito; el default solo cubre el olvido.
+        datos = _footprint()
+        datos.pop("is_complete")
+
+        fp = FootprintClosedPayload(maturity_state=MaturityState.CLOSED, **datos)
+
+        assert fp.is_complete is False
+
+    def test_es_ORTOGONAL_a_la_madurez(self) -> None:
+        # Una barra puede estar CERRADA (su ventana temporal termino) y ser INCOMPLETA a
+        # la vez: durante esa ventana el socket estuvo caido mas de lo que el REST pudo
+        # rellenar. Por eso no hay validador que cruce los dos campos.
+        datos = _footprint()
+        datos.pop("is_complete")
+
+        cerrada_incompleta = FootprintClosedPayload(
+            maturity_state=MaturityState.CLOSED, is_complete=False, **datos
+        )
+        corregida_completa = FootprintCorrectedPayload(
+            maturity_state=MaturityState.CORRECTION,
+            correction_revision=1,
+            corrects_idempotency_key="market.footprint_closed|k|1|closed",
+            is_complete=True,
+            **datos,
+        )
+
+        assert cerrada_incompleta.maturity_state is MaturityState.CLOSED
+        assert cerrada_incompleta.is_complete is False
+        assert corregida_completa.is_complete is True
 
     def test_celdas_desordenadas_rechazadas(self) -> None:
         descendente = tuple(reversed(_cells()))

@@ -36,22 +36,62 @@ from ce_v5.platform.market.trade_normalize import (
     RawTradeRejected,
     trade_from_raw,
 )
-from ce_v5.platform.market.trade_source import TradeDataSourcePort
+from ce_v5.platform.market.trade_source import (
+    LastSeenTrade,
+    TradeBackfillResult,
+    TradeDataSourcePort,
+)
 from source.families.footprint import MarketTrade
 from source.families.market import MarketStreamKey, RawTrade
 
 
 class TradeWriterPort(Protocol):
-    """Puerto de escritura de trades. Lo cumple infra/db por FORMA (estructural)."""
+    """Puerto del STORE de trades. Lo cumple infra/db por FORMA (estructural).
+
+    Escribe y, ademas, RESPONDE POR LO QUE TIENE: last_seen es una lectura, y esta aqui
+    a proposito. Quien sabe cual fue el ultimo trade contiguo antes de un corte es la
+    tabla, no la memoria del proceso; preguntarselo a la base es lo que hace que un
+    REINICIO con un hueco mayor que el techo REST tambien se detecte, en vez de
+    arrancar creyendo que no habia nada que rellenar.
+    """
 
     def persist(self, trade: MarketTrade) -> bool:
         """Guarda el trade. Devuelve False si YA ESTABA (dedup por su clave unica).
 
-        UN SOLO METODO, y sin outbox: el trade no se publica (evita la avalancha, I-02).
-        El booleano es dedup HONESTO: lo dice la base (ON CONFLICT ... RETURNING), no
-        una consulta previa que otro proceso podria invalidar entre el SELECT y el
-        INSERT. Distinguir "entro" de "ya estaba" es lo que permite que una reconexion
-        reprocese su solape sin inflar las metricas ni el historico.
+        Sin outbox: el trade no se publica (evita la avalancha, I-02). El booleano es
+        dedup HONESTO: lo dice la base (ON CONFLICT ... RETURNING), no una consulta
+        previa que otro proceso podria invalidar entre el SELECT y el INSERT. Distinguir
+        "entro" de "ya estaba" es lo que permite que una reconexion reprocese su solape
+        sin inflar las metricas ni el historico.
+        """
+        ...
+
+    def last_seen(self, exchange: str, market_type: str, symbol: str) -> LastSeenTrade:
+        """El trade persistido de mayor (event_time, trade_id) de ese flujo.
+
+        Es el punto desde el que el conector tiene que rellenar. Campos a None si no hay
+        ni una fila: primera conexion, no hay hueco posible.
+        """
+        ...
+
+    def record_gap(
+        self,
+        exchange: str,
+        market_type: str,
+        symbol: str,
+        gap_from_event_time_ms: int | None,
+        gap_to_event_time_ms: int | None,
+    ) -> bool:
+        """Apunta un HUECO no cubierto. Devuelve True SOLO si la fila entro.
+
+        IDEMPOTENTE: apuntar el mismo hueco dos veces no lo duplica (lo decide el UNIQUE
+        de la tabla con ON CONFLICT DO NOTHING, no un SELECT previo). El booleano
+        distingue "hueco nuevo" de "ya estaba apuntado", que es lo que permite contar
+        huecos REALES en vez de reconexiones.
+
+        Registrar la AUSENCIA de datos es tan importante como registrar los datos: sin
+        esta fila, una barra de footprint a la que le faltan trades se publicaria como
+        completa y nadie podria saberlo despues.
         """
         ...
 
@@ -67,10 +107,13 @@ class TradeIngestionConfig:
 
     max_batch: int = 500
     poll_timeout_ms: int = 200
-    # Cuantos trades recientes pedir por stream tras reconectar. MUY por encima del
-    # bootstrap de velas (10) a proposito: en el mismo hueco de tiempo caben ordenes de
-    # magnitud mas trades que velas. El dedup absorbe el solape con lo ya persistido.
-    bootstrap_limit: int = 100
+    # NO hay bootstrap_limit, y su ausencia es una decision: cuanto rellenar tras una
+    # reconexion NO es un numero que el nucleo pueda elegir. Lo fija el techo del
+    # endpoint publico de cada exchange, que es el unico limite real. Un numero de
+    # config aqui daba una falsa sensacion de control -- no guarda ninguna relacion con
+    # lo que duro el corte -- y ademas ocultaba el caso importante: que el hueco fuera
+    # MAYOR que lo que el REST puede devolver. Eso ahora lo responde el conector
+    # (TradeBackfillResult.covered) y se registra como hueco explicito.
 
 
 DEFAULT_TRADE_INGESTION_CONFIG = TradeIngestionConfig()
@@ -85,10 +128,16 @@ class TradeIngestionMetrics:
     trades_persisted: int = 0
     duplicates_skipped: int = 0
     unsubscribed_dropped: int = 0
-    # Bootstrap REST tras reconexion: cuantos trades se reprocesaron y cuantos streams
-    # fallaron su bootstrap (fault isolation: el fallo de uno no tumba a los demas).
+    # Backfill REST tras reconexion: cuantos trades se reprocesaron y cuantos streams
+    # fallaron su backfill (fault isolation: el fallo de uno no tumba a los demas).
     bootstrap_trades: int = 0
     bootstrap_errors: int = 0
+    # HUECOS NUEVOS registrados: reconexiones cuyo relleno NO llego a cubrir el corte.
+    # Cuenta filas REALMENTE insertadas, no reconexiones: re-apuntar un hueco ya
+    # conocido no lo incrementa. Si este contador sube, hay barras de footprint que
+    # NUNCA podran emitirse como completas, y eso es una perdida de dato permanente que
+    # tiene que verse.
+    uncovered_gaps: int = 0
     rejected: dict[str, int] = field(default_factory=dict)  # por reason code
     degraded_streams: set[str] = field(default_factory=set)
 
@@ -121,6 +170,19 @@ class TradeIngestionEngine:
             clave: MarketStreamKey.parse(clave) for clave in self._source.active()
         }
 
+        # EL BACKFILL VA ANTES DEL POLL, y el orden es la parte que importa. last_seen
+        # tiene que ser el ultimo trade CONTIGUO previo al corte; si primero drenasemos
+        # el socket ya reanudado, la base contendria trades POSTERIORES al hueco y
+        # last_seen apuntaria al otro lado del agujero: el conector compararia contra un
+        # trade que llego DESPUES y concluiria que no falta nada. El hueco se cerraria
+        # solo, en silencio, en los libros.
+        #
+        # LIMITACION CONOCIDA Y ACEPTADA (Central): si el stream ya reanudo y persistio
+        # antes de que este ciclo corra, un hueco interno puede quedar enmascarado. Este
+        # orden lo hace improbable, no imposible. Se documenta en vez de fingir que no
+        # existe.
+        self._backfill_reconectados()
+
         procesados = 0
         while procesados < self._config.max_batch:
             crudos = self._source.poll_trades(self._config.poll_timeout_ms)
@@ -130,22 +192,25 @@ class TradeIngestionEngine:
                 self._procesar(raw, suscritas)
                 procesados += 1
 
-        self._bootstrap_reconectados()
         return self.metrics
 
-    def _bootstrap_reconectados(self) -> None:
-        """Rellena el hueco de cada stream que reconecto, por el MISMO camino de
-        normalizacion+dedup que los trades del poll (ADR-014).
+    def _backfill_reconectados(self) -> None:
+        """Rellena el hueco de cada stream que reconecto y REGISTRA lo que no se cubrio.
 
         El conector senala que streams reconectaron (drain_reconnected); por cada uno se
-        pide su historico reciente por REST (fetch_recent_trades) y se procesa como uno
-        mas. El bootstrap REexpone trades que probablemente YA estan persistidos: el
-        dedup por PK los absorbe (duplicates_skipped), y si hubo un hueco real, los que
-        falten SI entran. Asi la reconexion no pierde ni duplica.
+        le pide que rellene desde el ultimo trade que la BASE dice que teniamos
+        (last_seen) y que responda si con eso basto. Los trades del relleno se procesan
+        como uno mas, por el MISMO camino de normalizacion + dedup: el solape con lo ya
+        persistido lo absorbe la PK (duplicates_skipped) y lo que falte SI entra.
 
-        FAULT ISOLATION POR STREAM: un bootstrap fallido de UN stream (un
-        fetch_recent_trades que lanza, o una clave corrupta) se cuenta y se salta; jamas
-        tumba el ciclo ni a los demas streams.
+        Y SI NO BASTO, SE ESCRIBE. Un hueco que el REST no alcanzo a cubrir es dato
+        perdido para siempre; lo unico honesto es dejar constancia de DONDE falta, para
+        que 3b marque como incompletas las barras que se solapen con el. Callarlo
+        publicaria barras a las que les faltan trades como si estuvieran completas.
+
+        FAULT ISOLATION POR STREAM: una clave corrupta, un backfill que lanza o un
+        registro de hueco que falla se cuentan y se saltan; jamas tumban el ciclo ni a
+        los demas streams.
         """
         for clave_texto in self._source.drain_reconnected():
             try:
@@ -155,16 +220,54 @@ class TradeIngestionEngine:
                 self.metrics.bootstrap_errors += 1
                 continue
             try:
-                trades = self._source.fetch_recent_trades(
-                    clave, self._config.bootstrap_limit
+                ultimo = self._writer.last_seen(
+                    clave.exchange, clave.market_type.value, clave.symbol
                 )
-            except Exception:  # noqa: BLE001 - un bootstrap fallido no tumba el ciclo.
+                resultado = self._source.backfill_after_reconnect(clave, ultimo)
+            except Exception:  # noqa: BLE001 - un backfill fallido no tumba el ciclo.
                 self.metrics.bootstrap_errors += 1
                 self.metrics.degraded_streams.add(clave_texto)
                 continue
-            for raw in trades:
+
+            for raw in resultado.raw_trades:
                 self._procesar(raw, {clave_texto: clave})
                 self.metrics.bootstrap_trades += 1
+
+            if resultado.covered:
+                continue
+            self._registrar_hueco(clave, clave_texto, resultado)
+
+    def _registrar_hueco(
+        self,
+        clave: MarketStreamKey,
+        clave_texto: str,
+        resultado: TradeBackfillResult,
+    ) -> None:
+        """Apunta un hueco no cubierto y lo cuenta SOLO si era nuevo.
+
+        La metrica sigue a la BASE, no a la reconexion: si el mismo hueco se vuelve a
+        detectar (otra reconexion antes de que nadie lo consuma), el UNIQUE de la tabla
+        lo absorbe y record_gap devuelve False. Contar reconexiones en vez de huecos
+        haria creer que se pierde dato nuevo cada vez.
+
+        Un stream con un hueco queda marcado como DEGRADADO: no es un ciclo fallido,
+        pero tampoco es normalidad, y quien mire las metricas tiene que verlo.
+        """
+        try:
+            nuevo = self._writer.record_gap(
+                clave.exchange,
+                clave.market_type.value,
+                clave.symbol,
+                resultado.gap_from_event_time_ms,
+                resultado.gap_to_event_time_ms,
+            )
+        except Exception:  # noqa: BLE001 - no poder apuntarlo no tumba el ciclo.
+            self.metrics.bootstrap_errors += 1
+            self.metrics.degraded_streams.add(clave_texto)
+            return
+        if nuevo:
+            self.metrics.uncovered_gaps += 1
+        self.metrics.degraded_streams.add(clave_texto)
 
     def _procesar(
         self, raw: RawTrade, suscritas: Mapping[str, MarketStreamKey]

@@ -53,6 +53,21 @@ def limpiar_trades(migrator_db: PsycopgDatabase) -> Iterator[None]:
     _wipe()
 
 
+@pytest.fixture
+def limpiar_huecos(migrator_db: PsycopgDatabase) -> Iterator[None]:
+    """market_trade_gap tambien es append-only: al rol de ingesta le esta REVOCADO el
+    DELETE (0018), asi que limpia el rol de MIGRACIONES.
+    """
+
+    def _wipe() -> None:
+        with migrator_db.transaction() as session:
+            session.execute("DELETE FROM market_trade_gap")
+
+    _wipe()
+    yield
+    _wipe()
+
+
 def _trade(trade_id: str = "77001", **overrides: object) -> MarketTrade:
     base: dict[str, object] = {
         "exchange": "binance",
@@ -188,3 +203,128 @@ class TestSinOutbox:
 
         assert _contar(ingestion_db, "SELECT count(*) FROM market_trade") == 1
         assert _contar(ingestion_db, "SELECT count(*) FROM outbox") == 0
+
+
+class TestLastSeen:
+    """El punto desde el que hay que rellenar tras una reconexion, SEGUN LA BASE.
+
+    Sale del store y no de la memoria del proceso, y eso es lo que hace que un REINICIO
+    con un hueco mayor que el techo REST tambien se detecte: un proceso que arranca de
+    cero no recuerda nada, pero la tabla si.
+    """
+
+    def test_sin_filas_devuelve_vacio(
+        self, ingestion_db: PsycopgDatabase, limpiar_trades: None
+    ) -> None:
+        # PRIMERA CONEXION: no hay hueco posible, porque no se puede haber perdido lo
+        # que nunca se tuvo. Los None son lo que se lo dice al conector.
+        ultimo = PostgresTradeWriter(ingestion_db).last_seen(
+            "binance", "spot", "BTC-USDT"
+        )
+
+        assert ultimo.trade_id is None
+        assert ultimo.event_time_ms is None
+
+    def test_devuelve_el_de_mayor_event_time(
+        self, ingestion_db: PsycopgDatabase, limpiar_trades: None
+    ) -> None:
+        writer = PostgresTradeWriter(ingestion_db)
+        writer.persist(_trade(trade_id="1", event_time=_EVENT_TIME))
+        writer.persist(_trade(trade_id="3", event_time=_EVENT_TIME + 200))
+        writer.persist(_trade(trade_id="2", event_time=_EVENT_TIME + 100))
+
+        ultimo = writer.last_seen("binance", "spot", "BTC-USDT")
+
+        assert ultimo.trade_id == "3"
+        assert ultimo.event_time_ms == _EVENT_TIME + 200
+
+    def test_desempata_por_trade_id_en_el_mismo_milisegundo(
+        self, ingestion_db: PsycopgDatabase, limpiar_trades: None
+    ) -> None:
+        # Varios trades comparten milisegundo: "el ultimo" tiene que ser UNO, y siempre
+        # el mismo. Sin el desempate, dos ejecuciones podrian rellenar desde puntos
+        # distintos y el hueco calculado no seria reproducible.
+        writer = PostgresTradeWriter(ingestion_db)
+        writer.persist(_trade(trade_id="10", event_time=_EVENT_TIME))
+        writer.persist(_trade(trade_id="11", event_time=_EVENT_TIME))
+
+        assert writer.last_seen("binance", "spot", "BTC-USDT").trade_id == "11"
+
+    def test_no_mira_los_de_otro_flujo(
+        self, ingestion_db: PsycopgDatabase, limpiar_trades: None
+    ) -> None:
+        # Un trade de ETH no puede fijar el punto de relleno de BTC: se rellenaria desde
+        # un instante que a BTC no le corresponde.
+        writer = PostgresTradeWriter(ingestion_db)
+        writer.persist(_trade(trade_id="1", event_time=_EVENT_TIME))
+        writer.persist(
+            _trade(trade_id="9", symbol="ETH-USDT", event_time=_EVENT_TIME + 5000)
+        )
+
+        assert writer.last_seen("binance", "spot", "BTC-USDT").trade_id == "1"
+
+
+class TestRecordGap:
+    """Registrar la AUSENCIA de trades (P07b, backfill honesto).
+
+    Sin esta fila, una barra de footprint a la que le faltan trades se publicaria como
+    completa y nadie podria saberlo despues: el endpoint publico ya no devuelve tan
+    atras. Por eso el hueco se escribe, y por eso la tabla es append-only.
+    """
+
+    def test_apunta_el_hueco_y_lo_dice(
+        self, ingestion_db: PsycopgDatabase, limpiar_huecos: None
+    ) -> None:
+        writer = PostgresTradeWriter(ingestion_db)
+
+        assert (
+            writer.record_gap(
+                "binance", "spot", "BTC-USDT", _EVENT_TIME, _EVENT_TIME + 900
+            )
+            is True
+        )
+        assert _contar(ingestion_db, "SELECT count(*) FROM market_trade_gap") == 1
+
+    def test_el_mismo_hueco_dos_veces_no_duplica(
+        self, ingestion_db: PsycopgDatabase, limpiar_huecos: None
+    ) -> None:
+        # IDEMPOTENCIA REAL, la decide el UNIQUE de la tabla con ON CONFLICT DO NOTHING,
+        # no un SELECT previo que otra replica podria invalidar entre la consulta y el
+        # INSERT. El False es lo que permite al motor contar huecos y no reconexiones.
+        writer = PostgresTradeWriter(ingestion_db)
+        writer.record_gap("binance", "spot", "BTC-USDT", _EVENT_TIME, _EVENT_TIME + 900)
+
+        segundo = writer.record_gap(
+            "binance", "spot", "BTC-USDT", _EVENT_TIME, _EVENT_TIME + 900
+        )
+
+        assert segundo is False
+        assert _contar(ingestion_db, "SELECT count(*) FROM market_trade_gap") == 1
+
+    def test_un_hueco_con_extremo_desconocido_tampoco_duplica(
+        self, ingestion_db: PsycopgDatabase, limpiar_huecos: None
+    ) -> None:
+        # NULLS NOT DISTINCT: sin el, dos huecos identicos con el extremo superior
+        # desconocido contarian como distintos y la tabla se llenaria de duplicados del
+        # MISMO hueco en cada reconexion.
+        writer = PostgresTradeWriter(ingestion_db)
+
+        assert (
+            writer.record_gap("binance", "spot", "BTC-USDT", _EVENT_TIME, None) is True
+        )
+        assert (
+            writer.record_gap("binance", "spot", "BTC-USDT", _EVENT_TIME, None) is False
+        )
+        assert _contar(ingestion_db, "SELECT count(*) FROM market_trade_gap") == 1
+
+    def test_huecos_distintos_son_filas_distintas(
+        self, ingestion_db: PsycopgDatabase, limpiar_huecos: None
+    ) -> None:
+        writer = PostgresTradeWriter(ingestion_db)
+        writer.record_gap("binance", "spot", "BTC-USDT", _EVENT_TIME, _EVENT_TIME + 900)
+        writer.record_gap(
+            "binance", "spot", "BTC-USDT", _EVENT_TIME + 5000, _EVENT_TIME + 6000
+        )
+        writer.record_gap("binance", "spot", "ETH-USDT", _EVENT_TIME, _EVENT_TIME + 900)
+
+        assert _contar(ingestion_db, "SELECT count(*) FROM market_trade_gap") == 3

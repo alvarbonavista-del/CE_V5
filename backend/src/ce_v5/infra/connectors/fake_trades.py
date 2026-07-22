@@ -21,7 +21,12 @@ from collections import deque
 from collections.abc import Sequence
 from collections.abc import Set as AbstractSet
 
-from source.families.market import MarketStreamKey, RawTrade
+from source.families.market import (
+    LastSeenTrade,
+    MarketStreamKey,
+    RawTrade,
+    TradeBackfillResult,
+)
 
 
 class FakeTradeSource:
@@ -32,14 +37,22 @@ class FakeTradeSource:
     sin perder nada entre llamadas. disconnect() simula la caida del feed.
     """
 
-    def __init__(self, history: Sequence[RawTrade] = ()) -> None:
-        self._history = list(history)
+    def __init__(self) -> None:
+        # Relleno por defecto: VACIO y CUBIERTO ("reconecto y no faltaba nada"). Un
+        # default no cubierto haria que cualquier test que no toque el guion registrase
+        # huecos fantasma.
+        self._backfill = TradeBackfillResult(
+            raw_trades=(),
+            covered=True,
+            gap_from_event_time_ms=None,
+            gap_to_event_time_ms=None,
+        )
         self._active: set[str] = set()
         # El guion pendiente de entregar. Una deque porque poll_trades() saca por la
         # izquierda y lo no entregado SIGUE AHI para el siguiente poll.
         self._pending: deque[RawTrade] = deque()
         # Claves que "reconectaron" segun el guion del test (simulate_reconnect). El
-        # motor las recoge en drain_reconnected y dispara su bootstrap REST.
+        # motor las recoge en drain_reconnected y dispara su backfill REST.
         self._reconnected: set[str] = set()
         # Observabilidad para los tests: que se abrio y que se cerro, en orden.
         self.opened: list[str] = []
@@ -51,15 +64,33 @@ class FakeTradeSource:
         """Encola trades para que los devuelva el proximo poll (o los siguientes)."""
         self._pending.extend(trades)
 
-    def load_history(self, *trades: RawTrade) -> None:
-        """Carga el historico que devolvera fetch_recent_trades (bootstrap REST)."""
-        self._history = list(trades)
+    def load_backfill(
+        self,
+        raw_trades: Sequence[RawTrade],
+        covered: bool,
+        gap_from_event_time_ms: int | None = None,
+        gap_to_event_time_ms: int | None = None,
+    ) -> None:
+        """Guion del relleno que devolvera backfill_after_reconnect.
+
+        EL FAKE NO CALCULA COBERTURA: LA RECITA. Decidir si un hueco quedo cubierto
+        depende de lo que garantice cada exchange (Binance por id monotono, otros por
+        event_time) y es responsabilidad de SU conector, con su propia funcion pura y
+        sus propios tests. Si el fake la calculara, el motor se probaria contra una
+        cobertura inventada aqui y el test verde no diria nada sobre la de verdad.
+        """
+        self._backfill = TradeBackfillResult(
+            raw_trades=list(raw_trades),
+            covered=covered,
+            gap_from_event_time_ms=gap_from_event_time_ms,
+            gap_to_event_time_ms=gap_to_event_time_ms,
+        )
 
     def disconnect(self) -> None:
         """Se cae el feed: todos los streams dejan de estar suscritos.
 
         El motor debe DARSE CUENTA (active() lo delata) y volver a abrir, con su
-        bootstrap REST para rellenar el hueco. Un feed que se cae en silencio y nadie
+        backfill REST para rellenar el hueco. Un feed que se cae en silencio y nadie
         reabre es un stream zombi: vivo en el codigo, muerto en la realidad.
         """
         self._active.clear()
@@ -67,7 +98,7 @@ class FakeTradeSource:
     def simulate_reconnect(self, keys: Sequence[str]) -> None:
         """Guion del test: mete esas claves canonicas en el set de reconectados, como si
         el socket se hubiera caido y vuelto para esos streams. El proximo
-        drain_reconnected las entrega y el MOTOR dispara su bootstrap REST.
+        drain_reconnected las entrega y el MOTOR dispara su backfill REST.
         """
         self._reconnected.update(keys)
 
@@ -102,15 +133,17 @@ class FakeTradeSource:
             lote.append(self._pending.popleft())
         return lote
 
-    def fetch_recent_trades(
-        self, key: MarketStreamKey, limit: int
-    ) -> Sequence[RawTrade]:
-        """El bootstrap REST tras una reconexion. Datos TAMPOCO validados: el REST de un
-        exchange no es mas confiable que su WebSocket.
+    def backfill_after_reconnect(
+        self, key: MarketStreamKey, last_seen: LastSeenTrade
+    ) -> TradeBackfillResult:
+        """El relleno REST tras una reconexion, TAL COMO LO ESCRIBIO EL TEST.
+
+        Ignora last_seen a proposito: el fake recita el guion, no razona sobre
+        contiguidad. Sin guion cargado devuelve un relleno vacio y CUBIERTO, que es el
+        caso "reconecto y no faltaba nada".
         """
-        clave = key.as_stream_key()
-        del clave  # el fake devuelve el historico cargado, sea cual sea la clave.
-        return self._history[-limit:] if limit > 0 else []
+        del key, last_seen  # el guion no depende de ellos: lo escribe el test.
+        return self._backfill
 
     def drain_reconnected(self) -> AbstractSet[str]:
         """Devuelve y limpia las claves que reconectaron segun el guion del test."""

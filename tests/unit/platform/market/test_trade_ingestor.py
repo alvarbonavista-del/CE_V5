@@ -22,10 +22,12 @@ from ce_v5.platform.market.trade_ingestor import (
 )
 from source.families.footprint import MarketTrade
 from source.families.market import (
+    LastSeenTrade,
     MarketDataKind,
     MarketStreamKey,
     MarketType,
     RawTrade,
+    TradeBackfillResult,
 )
 
 _EVENT_TIME = 1_784_073_600_042
@@ -71,6 +73,11 @@ class _WriterFalso:
     def __init__(self) -> None:
         self.guardados: list[MarketTrade] = []
         self._claves: set[tuple[str, str, str, str]] = set()
+        # Huecos apuntados, deduplicados por la MISMA identidad que el UNIQUE de
+        # market_trade_gap. Si aqui se dedujera por otra cosa, el test verde no diria
+        # nada sobre la tabla de verdad.
+        self.huecos: list[tuple[str, str, str, int | None, int | None]] = []
+        self._huecos: set[tuple[str, str, str, int | None, int | None]] = set()
 
     def persist(self, trade: MarketTrade) -> bool:
         clave = (
@@ -83,6 +90,42 @@ class _WriterFalso:
             return False
         self._claves.add(clave)
         self.guardados.append(trade)
+        return True
+
+    def last_seen(self, exchange: str, market_type: str, symbol: str) -> LastSeenTrade:
+        """El de mayor (event_time, trade_id) del flujo, como el ORDER BY del writer."""
+        propios = [
+            t
+            for t in self.guardados
+            if (t.exchange, t.market_type.value, t.symbol)
+            == (exchange, market_type, symbol)
+        ]
+        if not propios:
+            return LastSeenTrade(trade_id=None, event_time_ms=None)
+        ultimo = max(propios, key=lambda t: (t.event_time, t.trade_id))
+        return LastSeenTrade(
+            trade_id=ultimo.trade_id, event_time_ms=int(ultimo.event_time)
+        )
+
+    def record_gap(
+        self,
+        exchange: str,
+        market_type: str,
+        symbol: str,
+        gap_from_event_time_ms: int | None,
+        gap_to_event_time_ms: int | None,
+    ) -> bool:
+        clave = (
+            exchange,
+            market_type,
+            symbol,
+            gap_from_event_time_ms,
+            gap_to_event_time_ms,
+        )
+        if clave in self._huecos:
+            return False
+        self._huecos.add(clave)
+        self.huecos.append(clave)
         return True
 
     def claves(self) -> set[tuple[str, str, str, str]]:
@@ -98,23 +141,42 @@ class _WriterQueLanza:
         msg = "el writer no deberia haberse llamado"
         raise AssertionError(msg)
 
+    def last_seen(self, exchange: str, market_type: str, symbol: str) -> LastSeenTrade:
+        return LastSeenTrade(trade_id=None, event_time_ms=None)
+
+    def record_gap(
+        self,
+        exchange: str,
+        market_type: str,
+        symbol: str,
+        gap_from_event_time_ms: int | None,
+        gap_to_event_time_ms: int | None,
+    ) -> bool:
+        msg = "no deberia haberse apuntado ningun hueco"
+        raise AssertionError(msg)
+
 
 class _SourceReconectado:
-    """Doble minimo de TradeDataSourcePort para el bootstrap: entrega un set de
-    reconectados UNA vez; fetch_recent_trades devuelve un historico fijo, o LANZA si se
-    le pide (para probar fault isolation). Sin red, sin hilos.
+    """Doble minimo de TradeDataSourcePort para el backfill: entrega un set de
+    reconectados UNA vez; backfill_after_reconnect devuelve un resultado fijo, o LANZA
+    (para probar fault isolation). Sin red, sin hilos.
     """
 
     def __init__(
         self,
         reconectados: Iterable[str],
-        history: Sequence[RawTrade] = (),
+        resultado: TradeBackfillResult | None = None,
         *,
-        fetch_lanza: bool = False,
+        backfill_lanza: bool = False,
     ) -> None:
         self._reconectados = set(reconectados)
-        self._history = list(history)
-        self._fetch_lanza = fetch_lanza
+        self._resultado = resultado or TradeBackfillResult(
+            raw_trades=(),
+            covered=True,
+            gap_from_event_time_ms=None,
+            gap_to_event_time_ms=None,
+        )
+        self._backfill_lanza = backfill_lanza
 
     def open(self, key: MarketStreamKey) -> None:
         return None
@@ -128,13 +190,13 @@ class _SourceReconectado:
     def poll_trades(self, timeout_ms: int) -> Sequence[RawTrade]:
         return []
 
-    def fetch_recent_trades(
-        self, key: MarketStreamKey, limit: int
-    ) -> Sequence[RawTrade]:
-        if self._fetch_lanza:
+    def backfill_after_reconnect(
+        self, key: MarketStreamKey, last_seen: LastSeenTrade
+    ) -> TradeBackfillResult:
+        if self._backfill_lanza:
             msg = "REST caido"
             raise RuntimeError(msg)
-        return list(self._history)
+        return self._resultado
 
     def drain_reconnected(self) -> set[str]:
         copia = set(self._reconectados)
@@ -304,10 +366,15 @@ class TestBackpressure:
         assert source.pending_count() == 0
 
 
-class TestBootstrapTrasReconexion:
-    """El auto-bootstrap tras reconexion (ADR-014), orquestado por el motor. SIN RED: el
-    conector senala la reconexion (drain_reconnected) y el motor rellena el hueco via
-    fetch_recent_trades por el MISMO camino de normalizacion+dedup.
+class TestBackfillTrasReconexion:
+    """El backfill acotado tras reconexion (ADR-014), orquestado por el motor. SIN RED:
+    el conector senala la reconexion (drain_reconnected), el motor le pide que rellene
+    desde lo ultimo que la BASE recuerda (last_seen) y procesa lo que vuelva por el
+    MISMO camino de normalizacion + dedup.
+
+    Y lo nuevo del modelo honesto: si el conector dice que NO cubrio el hueco, el motor
+    lo APUNTA. Un hueco callado se convierte en una barra de footprint que se publica
+    como completa sin serlo.
     """
 
     def test_rellena_el_hueco_sin_perder_ni_duplicar(
@@ -319,36 +386,103 @@ class TestBootstrapTrasReconexion:
         motor.drain_once()
         assert len(writer.guardados) == 1
 
-        # 2) El bootstrap devolvera DOS trades: el MISMO (solape, el caso normal) y uno
-        #    NUEVO (el hueco real que hubo mientras el socket estuvo caido).
-        source.load_history(_trade(trade_id="1"), _trade(trade_id="2"))
+        # 2) El relleno devuelve DOS trades: el MISMO (solape, el caso normal) y uno
+        #    NUEVO (el hueco que hubo mientras el socket estuvo caido). CUBIERTO.
+        source.load_backfill([_trade(trade_id="1"), _trade(trade_id="2")], covered=True)
         source.simulate_reconnect([_BTC.as_stream_key()])
 
         metrics = motor.drain_once()
 
-        assert metrics.bootstrap_trades == 2  # se reprocesaron los dos del bootstrap.
+        assert metrics.bootstrap_trades == 2  # se reprocesaron los dos del relleno.
         assert metrics.duplicates_skipped == 1  # el solape NO se re-persiste.
         assert metrics.trades_persisted == 2  # el del paso 1 + el NUEVO del hueco.
         assert [t.trade_id for t in writer.guardados] == ["1", "2"]
+        # CUBIERTO: no se apunta ningun hueco.
+        assert metrics.uncovered_gaps == 0
+        assert writer.huecos == []
 
-    def test_un_bootstrap_que_lanza_no_tumba_el_ciclo(
+    def test_el_backfill_se_pide_desde_lo_que_la_BASE_recuerda(
+        self, source: FakeTradeSource, writer: _WriterFalso
+    ) -> None:
+        # last_seen NO sale de la memoria del motor: sale del store. Es lo que hace que
+        # un proceso recien reiniciado, que no recuerda nada, detecte igual su hueco.
+        visto: list[LastSeenTrade] = []
+        motor = _motor(source, writer)
+        source.emit(_trade(trade_id="7", event_time_ms=_EVENT_TIME + 5))
+        motor.drain_once()
+
+        original = source.backfill_after_reconnect
+
+        def _espiar(
+            key: MarketStreamKey, last_seen: LastSeenTrade
+        ) -> TradeBackfillResult:
+            visto.append(last_seen)
+            return original(key, last_seen)
+
+        source.backfill_after_reconnect = _espiar  # type: ignore[method-assign]
+        source.simulate_reconnect([_BTC.as_stream_key()])
+        motor.drain_once()
+
+        assert visto == [LastSeenTrade(trade_id="7", event_time_ms=_EVENT_TIME + 5)]
+
+    def test_un_hueco_no_cubierto_se_APUNTA_una_sola_vez(
+        self, source: FakeTradeSource, writer: _WriterFalso
+    ) -> None:
+        # EL CASO QUE JUSTIFICA TODA LA TANDA: el corte duro mas de lo que el REST del
+        # exchange puede devolver, asi que parte del hueco NO se recupera JAMAS. Se
+        # registra DONDE falta para que 3b marque incompletas las barras solapadas.
+        motor = _motor(source, writer)
+        source.load_backfill(
+            [_trade(trade_id="9")],
+            covered=False,
+            gap_from_event_time_ms=_EVENT_TIME,
+            gap_to_event_time_ms=_EVENT_TIME + 900,
+        )
+        source.simulate_reconnect([_BTC.as_stream_key()])
+        metrics = motor.drain_once()
+
+        assert metrics.uncovered_gaps == 1
+        assert writer.huecos == [
+            ("binance", "spot", "BTC-USDT", _EVENT_TIME, _EVENT_TIME + 900)
+        ]
+        # El stream queda marcado DEGRADADO: no es un ciclo fallido, pero tampoco es
+        # normalidad, y quien mire las metricas tiene que verlo.
+        assert _BTC.as_stream_key() in metrics.degraded_streams
+
+        # IDEMPOTENCIA: el MISMO hueco detectado otra vez no duplica la fila ni vuelve a
+        # contar. La metrica sigue a la BASE, no a la reconexion: si contase
+        # reconexiones, pareceria que se pierde dato nuevo cada vez.
+        source.load_backfill(
+            [_trade(trade_id="9")],
+            covered=False,
+            gap_from_event_time_ms=_EVENT_TIME,
+            gap_to_event_time_ms=_EVENT_TIME + 900,
+        )
+        source.simulate_reconnect([_BTC.as_stream_key()])
+        metrics = motor.drain_once()
+
+        assert metrics.uncovered_gaps == 1  # sigue siendo UNO.
+        assert len(writer.huecos) == 1
+
+    def test_un_backfill_que_lanza_no_tumba_el_ciclo(
         self, writer: _WriterFalso
     ) -> None:
-        # FAULT ISOLATION: un fetch_recent_trades que LANZA para un stream se cuenta,
-        # marca el stream degradado y NO revienta el ciclo (ni a los demas streams).
-        source = _SourceReconectado({_BTC.as_stream_key()}, fetch_lanza=True)
+        # FAULT ISOLATION: un backfill_after_reconnect que LANZA para un stream se
+        # cuenta, marca el stream degradado y NO revienta el ciclo (ni a los demas).
+        source = _SourceReconectado({_BTC.as_stream_key()}, backfill_lanza=True)
 
         metrics = _motor(source, writer).drain_once()  # NO revienta.
 
         assert metrics.bootstrap_errors == 1
         assert _BTC.as_stream_key() in metrics.degraded_streams
         assert metrics.bootstrap_trades == 0
+        assert metrics.uncovered_gaps == 0
 
     def test_una_clave_reconectada_corrupta_se_cuenta_sin_reventar(
         self, writer: _WriterFalso
     ) -> None:
         # Una clave reconectada que NO parsea: se cuenta como error y se salta. Nada de
-        # raise; fetch_recent_trades ni se llega a llamar.
+        # raise; backfill_after_reconnect ni se llega a llamar.
         source = _SourceReconectado({"no-es-una-clave-valida"})
 
         metrics = _motor(source, writer).drain_once()  # NO revienta.
@@ -407,10 +541,13 @@ class TestReproducibilidad:
         source.emit(_trade(trade_id="1"), _trade(trade_id="2"))
         motor.drain_once()
 
-        source.load_history(
-            _trade(trade_id="3"),  # el hueco, y llega el PRIMERO
-            _trade(trade_id="2"),
-            _trade(trade_id="1"),
+        source.load_backfill(
+            [
+                _trade(trade_id="3"),  # el hueco, y llega el PRIMERO
+                _trade(trade_id="2"),
+                _trade(trade_id="1"),
+            ],
+            covered=True,
         )
         source.simulate_reconnect([_BTC.as_stream_key()])
         metrics = motor.drain_once()

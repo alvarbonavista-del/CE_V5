@@ -95,7 +95,7 @@ def _build_datasource(
 
 # Los metodos que un feed debe servir para que se le pueda pedir trades. open/close/
 # active/drain_reconnected ya los exige el puerto de velas: aqui solo van los propios.
-_TRADE_PORT_METHODS = ("poll_trades", "fetch_recent_trades")
+_TRADE_PORT_METHODS = ("poll_trades", "backfill_after_reconnect")
 
 
 def _as_trade_source(source: MarketDataSourcePort) -> TradeDataSourcePort | None:

@@ -24,9 +24,23 @@ from collections.abc import Sequence
 from collections.abc import Set as AbstractSet
 from typing import Protocol
 
-from source.families.market import MarketStreamKey, RawTrade
+from source.families.market import (
+    LastSeenTrade,
+    MarketStreamKey,
+    RawTrade,
+    TradeBackfillResult,
+)
 
-__all__ = ["RawTrade", "TradeDataSourcePort"]
+# LastSeenTrade y TradeBackfillResult se DECLARAN en contracts y se reexportan aqui,
+# igual que RawTrade y por el mismo motivo: viajan por este puerto, pero los CONSTRUYE
+# infra (los adaptadores de exchange) y los CONSUME platform, y esas dos capas no pueden
+# verse. Quien consume el puerto los importa de aqui; quien los produce, de contracts.
+__all__ = [
+    "LastSeenTrade",
+    "RawTrade",
+    "TradeBackfillResult",
+    "TradeDataSourcePort",
+]
 
 
 class TradeDataSourcePort(Protocol):
@@ -59,13 +73,27 @@ class TradeDataSourcePort(Protocol):
         """
         ...
 
-    def fetch_recent_trades(
-        self, key: MarketStreamKey, limit: int
-    ) -> Sequence[RawTrade]:
-        """BOOTSTRAP REST tras una reconexion (ADR-014): rellena el hueco.
+    def backfill_after_reconnect(
+        self, key: MarketStreamKey, last_seen: LastSeenTrade
+    ) -> TradeBackfillResult:
+        """RELLENA EL HUECO de una reconexion, y DICE SI LO CUBRIO (ADR-014).
+
+        No recibe un limite, y ahi esta el cambio de fondo: antes el nucleo pedia "los
+        N ultimos trades" con una N de configuracion, lo que era una mentira comoda --
+        N no tiene ninguna relacion con lo que duro el corte. Ahora la cota la pone el
+        conector con el TECHO DE SU PROPIO ENDPOINT, que es el unico limite real, y a
+        cambio esta OBLIGADO a responder si con eso basto.
+
+        La cobertura la decide cada conector con el criterio que su exchange permite
+        (Binance por id monotono; Bybit por event_time), porque solo el sabe que
+        garantiza su API. Al nucleo le devuelve la forma COMUN (TradeBackfillResult):
+        los trades del relleno, si el hueco quedo cubierto, y sus limites en event_time
+        cuando no. Asi el motor no sabe -- ni tiene que saber -- de que exchange viene.
 
         Devuelve datos NO validados, igual que el WebSocket: el REST de un exchange no
         es mas confiable que su socket. Pasan por la MISMA frontera de confianza.
+
+        FAIL-SAFE: ante cualquier incertidumbre sobre la cobertura, covered=False.
         """
         ...
 

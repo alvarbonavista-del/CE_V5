@@ -178,6 +178,11 @@
       "title": "Exchange",
       "type": "string"
     },
+    "is_complete": {
+      "default": false,
+      "title": "Is Complete",
+      "type": "boolean"
+    },
     "market_type": {
       "$ref": "#/$defs/MarketType"
     },

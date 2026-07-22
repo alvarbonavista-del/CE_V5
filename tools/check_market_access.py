@@ -62,6 +62,7 @@ MARKET_TABLES: tuple[str, ...] = (
     "market_subscription_intent",
     "market_trade",
     "market_footprint",
+    "market_trade_gap",
 )
 
 # El historico es APPEND-ONLY: nadie, ni siquiera quien lo escribe, lo reescribe.
@@ -70,6 +71,9 @@ _APPEND_ONLY_TABLES: tuple[str, ...] = (
     "market_candle",
     "market_footprint",
     "market_trade",
+    # Un hueco no se "arregla" borrandolo: el dato perdido no vuelve y borrar la fila
+    # solo borraria la prueba de que falta.
+    "market_trade_gap",
 )
 _WRITE_PRIVILEGES: tuple[str, ...] = ("INSERT", "UPDATE", "DELETE", "TRUNCATE")
 _ALL_PRIVILEGES: tuple[str, ...] = (
@@ -260,6 +264,7 @@ def _privilege_violations(privileges: Mapping[tuple[str, str, str], bool]) -> li
         "market_instrument",
         "market_trade",
         "market_footprint",
+        "market_trade_gap",
     ):
         for privilege in _WRITE_PRIVILEGES:
             if privileges.get((APP_ROLE_NAME, table, privilege), False):

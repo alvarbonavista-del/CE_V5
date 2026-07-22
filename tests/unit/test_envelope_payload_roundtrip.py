@@ -147,6 +147,7 @@ def _footprint(maturity: MaturityState, **extra: object) -> dict[str, object]:
         "cells": cells,
         "bar_buy_volume": Decimal("5"),
         "bar_sell_volume": Decimal("3"),
+        "is_complete": True,
         "bar_delta": Decimal("2"),
         "trade_count": 8,
     }

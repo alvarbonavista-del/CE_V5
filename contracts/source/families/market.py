@@ -27,6 +27,7 @@ intervalo, el rango OHLC incoherente y la vela cuyo estado de madurez no
 concuerda con su tipo de evento.
 """
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from decimal import Decimal
 from enum import StrEnum
@@ -552,6 +553,56 @@ class RawTrade:
     # el mensaje del exchange (Binance 'T', Bybit 'T', OKX 'ts').
     event_time_ms: int
     source_sequence: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class LastSeenTrade:
+    """El ultimo trade que YA tenemos persistido de un flujo: el punto desde el que hay
+    que rellenar tras una reconexion.
+
+    Vive aqui por el MISMO motivo que RawTrade, no por comodidad: lo PRODUCE platform
+    (el motor se lo pide al store) y lo CONSUME infra (cada conector decide con el si su
+    relleno llego a tocar lo que ya teniamos), y esas dos capas NO PUEDEN VERSE entre si
+    (hermanas independientes). Ponerlo en el puerto de platform obligaria a los
+    adaptadores de exchange a importar platform, que es justo lo que el contrato de
+    capas prohibe.
+
+    Campos a None cuando el flujo no tiene ni una fila persistida: es la PRIMERA
+    conexion y no hay hueco que cubrir, porque no se puede haber perdido lo que nunca
+    se tuvo.
+    """
+
+    trade_id: str | None
+    event_time_ms: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class TradeBackfillResult:
+    """Lo que un conector devuelve tras rellenar el hueco de una reconexion (ADR-014).
+
+    BACKFILL ACOTADO + HUECO EXPLICITO. Cada exchange rellena por REST publico hasta el
+    techo de SU endpoint, que no es negociable ni configurable: es lo que su API da. Si
+    el hueco fue mas grande que ese techo, la parte antigua NO se recupera JAMAS, y
+    fingir lo contrario seria mentir sobre el historico. Por eso el resultado no es solo
+    "los trades del relleno": es tambien la RESPUESTA HONESTA a si el hueco quedo
+    cubierto.
+
+    Cada conector calcula la cobertura con el criterio que su exchange permite (Binance
+    por id monotono; otros por event_time), pero al nucleo le llega SIEMPRE esta forma
+    comun: por eso el motor no sabe -- ni tiene que saber -- de que exchange viene.
+
+    FAIL-SAFE: covered=False ante cualquier incertidumbre. Un hueco declarado de mas
+    marca barras como incompletas sin motivo, lo cual es feo; un hueco NO declarado
+    publica una barra de footprint a la que le faltan trades como si estuviera completa,
+    lo cual es una mentira sobre el mercado.
+
+    Cuando covered=True los dos limites van a None: no hay hueco que delimitar.
+    """
+
+    raw_trades: Sequence[RawTrade]
+    covered: bool
+    gap_from_event_time_ms: int | None
+    gap_to_event_time_ms: int | None
 
 
 @dataclass(frozen=True, slots=True)

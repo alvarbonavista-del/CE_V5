@@ -181,6 +181,21 @@ class FootprintPayload(MaturityAwarePayload):
     No se registra por si misma en EVENT_PAYLOAD_REGISTRY: cada event_type apunta a
     su subclase concreta, que FIJA su maturity_state. Asi un footprint cerrado marcado
     como correccion lo rechaza el CONTRATO, no un if perdido en el codigo.
+
+    is_complete DICE SI LA BARRA VIO TODOS SUS TRADES: True = se capturaron todos los
+    trades de la ventana; False = un hueco de reconexion NO cubierto se solapa con esta
+    barra, asi que le faltan trades y sus celdas no son la verdad completa del mercado.
+
+    Es ORTOGONAL a maturity_state: una barra puede estar CERRADA (su ventana temporal
+    termino) y ser INCOMPLETA a la vez (durante esa ventana el socket estuvo caido mas
+    de lo que el REST del exchange pudo rellenar). Por eso NO hay validador que cruce
+    los dos campos: cruzarlos inventaria una relacion que no existe.
+
+    EL DEFAULT ES False, Y ES DELIBERADO: fail-safe. Lo que no declara su completitud
+    cuenta como INCOMPLETO. Un default True convertiria un olvido del productor en una
+    barra que se publica como completa sin serlo, que es exactamente la mentira que este
+    campo existe para impedir. El agregador de 3b lo fija SIEMPRE de forma explicita; el
+    default solo cubre el olvido, y lo hace hacia el lado seguro.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -196,6 +211,8 @@ class FootprintPayload(MaturityAwarePayload):
     bar_sell_volume: Decimal
     bar_delta: Decimal
     trade_count: int = Field(ge=0)
+    # FAIL-SAFE: lo que no se declara NO cuenta como completo (ver docstring).
+    is_complete: bool = False
     correction_revision: int | None = Field(default=None, ge=1)
 
     @model_validator(mode="after")

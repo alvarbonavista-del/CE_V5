@@ -15,6 +15,7 @@ export type CloseTime = number
 export type CorrectionRevision = (number | null)
 export type CorrectsIdempotencyKey = (string | null)
 export type Exchange = string
+export type IsComplete = boolean
 /**
  * Tipo de mercado. Solo SPOT en v5.0 (derivados: fuera de alcance).
  */
@@ -59,6 +60,7 @@ close_time: CloseTime
 correction_revision?: CorrectionRevision
 corrects_idempotency_key?: CorrectsIdempotencyKey
 exchange: Exchange
+is_complete?: IsComplete
 market_type: MarketType
 maturity_state: MaturityState
 open_time: OpenTime
