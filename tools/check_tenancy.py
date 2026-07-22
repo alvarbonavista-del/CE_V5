@@ -71,6 +71,14 @@ TABLAS_SIN_TENANT_PERMITIDAS: dict[str, str] = {
     "market_instrument": "public_market",
     "market_trade": "public_market",
     "market_footprint": "public_market",
+    # La AUSENCIA de market data publica es tan publica como su presencia (P07b): un
+    # hueco de trades no cubierto por el backfill REST no pertenece a ningun tenant,
+    # porque el flujo del que falta tampoco pertenece a ninguno. Darle tenant_id
+    # duplicaria por tenant el registro del MISMO hueco del MISMO stream compartido,
+    # que es la explosion N x M que ADR-014 evita. Misma compensacion que sus hermanas:
+    # ce_v5_app solo SELECT, escribe solo ce_v5_ingestion, y lo verifica
+    # tools/check_market_access.py.
+    "market_trade_gap": "public_market",
 }
 
 # Roles de RUNTIME: los que se conectan con una credencial en un proceso vivo.
