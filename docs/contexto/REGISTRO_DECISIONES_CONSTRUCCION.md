@@ -189,6 +189,41 @@ que no vivan solo en el chat (anti-deriva, DOC_ENTREGABLES sec.9).
      que 5.18. Nace del cierre de P08 (check_rules_access construido pero no
      enganchado), reincidencia del patron de la Enmienda Historica 1 de P03 (verde
      ilusorio).
+5.23 AGRUPACION DE MICROPASOS COMO PRINCIPIO. Los micropasos de construccion se agrupan en
+tandas mayores SIEMPRE QUE SEA POSIBLE, para reducir su numero y acortar el tiempo del proceso.
+Eleva la 5.1 de "agrupacion permitida" a "agrupacion por defecto". EXCEPCIONES (NO se agrupan):
+(a) los pasos que el diseno obliga a que sean correlativos (uno necesita la salida del anterior);
+(b) los puntos de VALIDACION EN CALIENTE obligatoria del Roadmap/DoD, que son NO REBAJABLES (una
+regla de proceso no puede rebajar una validacion que el Roadmap marca obligatoria); (c) los
+puntos donde agrupar un defecto lo haria caro de deshacer. Motivo: los checkpoints de validacion
+en caliente son el mecanismo que ha cazado los defectos grandes del proyecto (payload vacio de
+P03, cache de P06, websockets de P06b, patron de simbolo de P07, B6.5 de P08, backend de T-05);
+agrupar por velocidad no debe llevarselos por delante.
+
+5.24 PRIORIDAD DE CLAUDE CODE SOBRE POWERSHELL. Se prioriza Claude Code sobre otros metodos, en
+particular sobre PowerShell, para acortar operaciones y tiempos de espera. PowerShell queda solo
+para lo que Claude Code no cubra: ejecutar checks/tests, instalar dependencias, commit, y VER LA
+SALIDA REAL (donde vive la validacion en caliente). Priorizar Claude Code es para escrituras y
+operaciones; NO reduce el uso de PowerShell para validar viendo el output. Extiende la 5.2.
+
+5.25 PROMPTS A CLAUDE CODE EN UN SOLO BLOQUE COPY-PASTE. Todo prompt dirigido a Claude Code se
+escribe en UN SOLO bloque de texto plano, separado y con funcion copy-paste, para que Alvaro
+trabaje mas deprisa. Confirma y consolida la 5.10.
+
+5.26 PROHIBIDO CREAR ARCHIVOS EN EL CHAT DEL PERIFERICO. El periferico NO crea archivos en su
+propio chat -- ni por el puente al disco ni como adjuntos -- salvo autorizacion EXPLICITA y
+ESPECIFICA de Alvaro para una accion concreta. La persistencia en disco la hace Claude Code.
+Regla nueva; nace de la escritura directa de ficheros en el arranque de P07b.
+
+5.27 MARCA [CLAUDE CODE] Y PROMPT PRECISO ANTI-FIX. Antes de dirigirse a Claude Code, el
+periferico escribe la etiqueta [CLAUDE CODE] delante del prompt (entre corchetes, en mayusculas
+y resaltada). El prompt lleva instrucciones precisas y los comandos exactos. El objetivo es la
+precision para EVITAR FIXES y reducir el numero de interacciones con Claude Code. Extiende la
+regla 3 de DOC_ENTREGABLES (destino etiquetado de cada instruccion) y la 5.10.
+
+5.28 MISMO PATRON EN ELEVACIONES E INFORMES. Las elevaciones a Central y los informes se
+redactan con el mismo patron de las reglas anteriores: bloque limpio, copy-paste, ASCII-safe y
+preciso.
 =====================================================================
 6. CIERRE DE PIEZA P01 - CONTRATOS BASE Y ENVELOPE
 =====================================================================
