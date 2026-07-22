@@ -19,7 +19,8 @@ _VENTANILLA = "market_public_demand"
 
 _OUTBOX_OK = (
     "(event_type = ANY (ARRAY['market.candle_updated'::text, "
-    "'market.candle_closed'::text, 'market.candle_corrected'::text]))"
+    "'market.candle_closed'::text, 'market.candle_corrected'::text, "
+    "'market.footprint_closed'::text, 'market.footprint_corrected'::text]))"
 )
 
 
@@ -133,12 +134,17 @@ class TestVentanillaCiega:
 class TestPrivilegios520:
     def test_la_api_no_puede_escribir_velas(self) -> None:
         # La mitad (a) de la prueba bidireccional: la API esta expuesta a internet.
-        for privilege in ("INSERT", "UPDATE", "DELETE"):
-            violations = _check(
-                privileges={("ce_v5_app", "market_candle", privilege): True}
-            )
-            assert any("regla 5.20" in v for v in violations), privilege
-            assert any("FABRICAR" in v or "APPEND-ONLY" in v for v in violations)
+        # Cubre TODO el historico de mercado: la vela y, desde P07b, el trade
+        # individual y el footprint. Un trade falso fabrica un footprint falso, y ese
+        # alimenta reglas -> senales -> en M5, ORDENES REALES, igual que una vela.
+        for table in ("market_candle", "market_trade", "market_footprint"):
+            for privilege in ("INSERT", "UPDATE", "DELETE"):
+                violations = _check(privileges={("ce_v5_app", table, privilege): True})
+                assert any("regla 5.20" in v for v in violations), (table, privilege)
+                assert any("FABRICAR" in v or "APPEND-ONLY" in v for v in violations), (
+                    table,
+                    privilege,
+                )
 
     def test_la_api_no_puede_escribir_el_catalogo(self) -> None:
         violations = _check(
@@ -147,13 +153,18 @@ class TestPrivilegios520:
         assert any("market_instrument" in v for v in violations)
 
     def test_historico_append_only_para_todos_incluido_el_ingestor(self) -> None:
-        # Nadie reescribe la historia del mercado, ni siquiera quien la escribe.
+        # Nadie reescribe la historia del mercado, ni siquiera quien la escribe. Vale
+        # para las tres tablas de historico: vela, trade individual y footprint.
         for role in ("ce_v5_app", "ce_v5_ingestion", "ce_v5_operator"):
-            for privilege in ("UPDATE", "DELETE", "TRUNCATE"):
-                violations = _check(
-                    privileges={(role, "market_candle", privilege): True}
-                )
-                assert any("APPEND-ONLY" in v for v in violations), (role, privilege)
+            for table in ("market_candle", "market_trade", "market_footprint"):
+                for privilege in ("UPDATE", "DELETE", "TRUNCATE"):
+                    violations = _check(privileges={(role, table, privilege): True})
+                    assert any("APPEND-ONLY" in v for v in violations), (
+                        role,
+                        table,
+                        privilege,
+                    )
+                    assert any(table in v for v in violations), (role, table, privilege)
 
     def test_el_ingestor_no_lee_la_demanda_fila_a_fila(self) -> None:
         # Su UNICO acceso a la demanda es la ventanilla agregada: si pudiera hacer
@@ -192,13 +203,15 @@ class TestOutboxAcotadaPorElMotor:
                 outbox_ingestion_insert=(
                     "(event_type = ANY (ARRAY['market.candle_updated'::text, "
                     "'market.candle_closed'::text, 'market.candle_corrected'::text, "
+                    "'market.footprint_closed'::text, "
+                    "'market.footprint_corrected'::text, "
                     f"'{prohibido}'::text]))"
                 )
             )
             violations = _check(outbox=outbox)
             assert any("no puede fabricar" in v for v in violations), prohibido
 
-    def test_policy_que_no_acota_a_los_tres_market_es_violacion(self) -> None:
+    def test_policy_que_no_acota_a_los_cinco_market_es_violacion(self) -> None:
         outbox = _outbox(outbox_ingestion_insert="true")
         violations = _check(outbox=outbox)
         assert any("no menciona" in v for v in violations)

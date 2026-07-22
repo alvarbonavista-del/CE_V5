@@ -69,6 +69,8 @@ TABLAS_SIN_TENANT_PERMITIDAS: dict[str, str] = {
     # tools/check_market_access.py.
     "market_candle": "public_market",
     "market_instrument": "public_market",
+    "market_trade": "public_market",
+    "market_footprint": "public_market",
 }
 
 # Roles de RUNTIME: los que se conectan con una credencial en un proceso vivo.

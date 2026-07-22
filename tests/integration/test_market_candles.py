@@ -345,7 +345,7 @@ class TestElEventoEncoladoEsPublicable:
         # nuestro codigo cree que lo es.
         #
         # El publisher corre con el ROL DE INGESTA: sus policies de outbox lo acotan a
-        # los tres market.* (regla 5.20), que es justo lo que tiene que drenar.
+        # los market.* permitidos (regla 5.20), que es justo lo que tiene que drenar.
         assert _URL is not None
         config = RedisBusConfig(url=_URL, namespace="test-" + uuid.uuid4().hex)
         client: redis.Redis = create_client(config)

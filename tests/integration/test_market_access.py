@@ -43,25 +43,62 @@ INSERT INTO market_candle (
           100, 110, 95, 105, 12.5, 'closed')
 """
 
+_INSERT_TRADE = """
+INSERT INTO market_trade (
+    exchange, market_type, symbol, trade_id, price, qty, aggressor_side, event_time
+) VALUES ('binance', 'spot', 'BTC-USDT', %s, 100, 1.5, 'buy', %s)
+"""
+
+# Una sola celda; los totales de barra cuadran con ella y bar_delta = buy - sell, que es
+# lo que exige market_footprint_totales_coherentes.
+_INSERT_FOOTPRINT = """
+INSERT INTO market_footprint (
+    idempotency_key, stream_key, exchange, market_type, symbol, timeframe,
+    open_time, close_time, cells, bar_buy_volume, bar_sell_volume, bar_delta,
+    trade_count, maturity_state
+) VALUES (%s, %s, 'binance', 'spot', 'BTC-USDT', '1m', %s, %s,
+          '[{"price": "100", "buy_volume": "2", "sell_volume": "1", "delta": "1"}]',
+          2, 1, 1, 3, 'closed')
+"""
+
 _INSERT_OUTBOX = """
 INSERT INTO outbox (event_id, idempotency_key, stream_key, event_type, envelope)
 VALUES (%s, %s, %s, %s, %s)
 """
 
+# Sentencia de reescritura por tabla del historico: el UPDATE toca una columna real de
+# cada una para que el rechazo sea por PRIVILEGIO y no por SQL invalido.
+_REESCRITURAS: dict[tuple[str, str], str] = {
+    ("market_trade", "UPDATE"): "UPDATE market_trade SET qty = 1 WHERE trade_id = 'x'",
+    ("market_trade", "DELETE"): "DELETE FROM market_trade WHERE trade_id = 'x'",
+    ("market_footprint", "UPDATE"): (
+        "UPDATE market_footprint SET trade_count = 1 WHERE idempotency_key = 'x'"
+    ),
+    ("market_footprint", "DELETE"): (
+        "DELETE FROM market_footprint WHERE idempotency_key = 'x'"
+    ),
+}
+_TABLAS_HISTORICO_P07B: tuple[str, ...] = ("market_trade", "market_footprint")
+
 
 @pytest.fixture
 def limpiar_market(migrator_db: PsycopgDatabase) -> Iterator[None]:
-    """Limpia velas y outbox entre tests (los intents caen por cascada al borrar
-    app_user/tenant en la fixture autouse de identidad).
+    """Limpia velas, trades, footprints y outbox entre tests (los intents caen por
+    cascada al borrar app_user/tenant en la fixture autouse de identidad).
 
     market_candle NO tiene FK a nadie: si no se limpiara aqui, las velas se
     acumularian entre ejecuciones y la PK (idempotency_key) chocaria. Es el mismo
-    defecto que dejo 837 tenants huerfanos en P06b; no se repite.
+    defecto que dejo 837 tenants huerfanos en P06b; no se repite. market_trade y
+    market_footprint (P07b) son iguales: sin FK y append-only, asi que se limpian por
+    el mismo motivo. El borrado va con el rol de MIGRACIONES a proposito: a los roles
+    de runtime el DELETE les esta revocado, que es justo lo que estos tests prueban.
     """
 
     def _wipe() -> None:
         with migrator_db.transaction() as session:
             session.execute("DELETE FROM market_candle")
+            session.execute("DELETE FROM market_trade")
+            session.execute("DELETE FROM market_footprint")
             session.execute("DELETE FROM outbox")
 
     _wipe()
@@ -242,6 +279,28 @@ class TestReglaLaApiNoFabricaHechos:
                 )
         assert "permission denied" in str(excinfo.value).lower()
 
+    def test_5_20_a_la_api_no_puede_insertar_un_trade(
+        self, app_db: PsycopgDatabase, limpiar_market: None
+    ) -> None:
+        # P07b: un trade fabricado es peor que una vela fabricada, porque el footprint
+        # se DERIVA de los trades: quien pueda inventar trades inventa el orderflow
+        # entero. La API solo LEE (regla 5.20).
+        with pytest.raises(Exception) as excinfo:
+            with app_db.transaction() as session:
+                session.execute(_INSERT_TRADE, (f"t-{uuid4().hex}", _OPEN_TIME))
+        assert "permission denied" in str(excinfo.value).lower()
+
+    def test_5_20_a_la_api_no_puede_insertar_un_footprint(
+        self, app_db: PsycopgDatabase, limpiar_market: None
+    ) -> None:
+        with pytest.raises(Exception) as excinfo:
+            with app_db.transaction() as session:
+                session.execute(
+                    _INSERT_FOOTPRINT,
+                    (f"idem-{uuid4().hex}", "market:x", _OPEN_TIME, _CLOSE_TIME),
+                )
+        assert "permission denied" in str(excinfo.value).lower()
+
 
 class TestReglaElIngestorNoTocaHechosAjenos:
     @pytest.mark.parametrize(
@@ -316,6 +375,80 @@ class TestHistoricoAppendOnly:
                 session.execute(sentencia)
         assert "permission denied" in str(excinfo.value).lower()
 
+    def test_el_ingestor_si_puede_insertar_un_trade(
+        self, ingestion_db: PsycopgDatabase, limpiar_market: None
+    ) -> None:
+        # El caso VERDE de P07b: el ingestor es el UNICO que escribe trades.
+        trade_id = f"t-{uuid4().hex}"
+        with ingestion_db.transaction() as session:
+            session.execute(_INSERT_TRADE, (trade_id, _OPEN_TIME))
+            row = session.fetchone(
+                "SELECT count(*) FROM market_trade WHERE trade_id = %s", (trade_id,)
+            )
+        assert row is not None and _entero(row[0]) == 1
+
+    def test_el_ingestor_si_puede_insertar_un_footprint(
+        self, ingestion_db: PsycopgDatabase, limpiar_market: None
+    ) -> None:
+        clave = f"idem-{uuid4().hex}"
+        with ingestion_db.transaction() as session:
+            session.execute(
+                _INSERT_FOOTPRINT, (clave, "market:x", _OPEN_TIME, _CLOSE_TIME)
+            )
+            row = session.fetchone(
+                "SELECT count(*) FROM market_footprint WHERE idempotency_key = %s",
+                (clave,),
+            )
+        assert row is not None and _entero(row[0]) == 1
+
+    @pytest.mark.parametrize("tabla", _TABLAS_HISTORICO_P07B)
+    @pytest.mark.parametrize("operacion", ["UPDATE", "DELETE"])
+    def test_el_ingestor_no_reescribe_trades_ni_footprints(
+        self,
+        ingestion_db: PsycopgDatabase,
+        tabla: str,
+        operacion: str,
+        limpiar_market: None,
+    ) -> None:
+        # APPEND-ONLY REAL sobre el historico nuevo, tambien para QUIEN LO ESCRIBE: el
+        # trade crudo es la base de la reproducibilidad bit a bit; si el ingestor
+        # pudiera retocarlo, el footprint dejaria de ser reproducible.
+        with pytest.raises(Exception) as excinfo:
+            with ingestion_db.transaction() as session:
+                session.execute(_REESCRITURAS[(tabla, operacion)])
+        assert "permission denied" in str(excinfo.value).lower()
+
+    @pytest.mark.parametrize("tabla", _TABLAS_HISTORICO_P07B)
+    @pytest.mark.parametrize("operacion", ["UPDATE", "DELETE"])
+    def test_la_api_no_reescribe_trades_ni_footprints(
+        self,
+        app_db: PsycopgDatabase,
+        tabla: str,
+        operacion: str,
+        limpiar_market: None,
+    ) -> None:
+        with pytest.raises(Exception) as excinfo:
+            with app_db.transaction() as session:
+                session.execute(_REESCRITURAS[(tabla, operacion)])
+        assert "permission denied" in str(excinfo.value).lower()
+
+    @pytest.mark.parametrize("tabla", _TABLAS_HISTORICO_P07B)
+    @pytest.mark.parametrize("operacion", ["UPDATE", "DELETE"])
+    def test_el_operador_no_reescribe_trades_ni_footprints(
+        self,
+        operator_db: PsycopgDatabase,
+        tabla: str,
+        operacion: str,
+        limpiar_market: None,
+    ) -> None:
+        # El tercer rol de runtime: el operador opera kill switches y politica; sobre
+        # market data no tiene NADA (REVOKE ALL), asi que ni siquiera llega a intentar
+        # la reescritura.
+        with pytest.raises(Exception) as excinfo:
+            with operator_db.transaction() as session:
+                session.execute(_REESCRITURAS[(tabla, operacion)])
+        assert "permission denied" in str(excinfo.value).lower()
+
 
 class TestOutboxDelIngestorAcotadaPorElMotor:
     def test_el_ingestor_puede_encolar_un_market_candle_closed(
@@ -335,6 +468,31 @@ class TestOutboxDelIngestorAcotadaPorElMotor:
             )
             row = session.fetchone(
                 "SELECT count(*) FROM outbox WHERE event_type = 'market.candle_closed'"
+            )
+        assert row is not None and _entero(row[0]) == 1
+
+    @pytest.mark.parametrize(
+        "event_type", ["market.footprint_closed", "market.footprint_corrected"]
+    )
+    def test_el_ingestor_puede_encolar_los_dos_market_footprint(
+        self, ingestion_db: PsycopgDatabase, event_type: str, limpiar_market: None
+    ) -> None:
+        # P07b: la 0017 RECREA las policies de 0012 con los CINCO market.*. Sin esto,
+        # el ingestor podria persistir el footprint y no poder publicarlo: el WITH
+        # CHECK de la policy lo rechazaria y la pieza estaria muerta a medias.
+        with ingestion_db.transaction() as session:
+            session.execute(
+                _INSERT_OUTBOX,
+                (
+                    str(uuid4()),
+                    f"idem-{uuid4().hex}",
+                    "market:footprint:binance:spot:BTC-USDT:1m",
+                    event_type,
+                    "{}",
+                ),
+            )
+            row = session.fetchone(
+                "SELECT count(*) FROM outbox WHERE event_type = %s", (event_type,)
             )
         assert row is not None and _entero(row[0]) == 1
 
