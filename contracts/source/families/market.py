@@ -47,20 +47,42 @@ class MarketCandleEventType(StrEnum):
 
 
 class MarketDataKind(StrEnum):
-    """Clase de dato de un flujo publico (data_family de ADR-014).
+    """Clase de dato de mercado (data_family de ADR-014).
 
-    Solo CANDLES en v5.0: es la unica clase con ingestor. Orderbook,
-    trades y ticker entraran cuando exista quien los produzca y quien los
-    consuma; declararlos hoy seria vocabulario muerto.
+    CANDLES es un flujo publico del exchange. TRADES es el flujo publico de
+    operaciones individuales que P07b suscribe. FOOTPRINT es la clase DERIVADA
+    (no un flujo del exchange): el footprint por barra que P07b agrega de los
+    trades. Orderbook (P07c) y ticker entraran cuando exista quien los produzca
+    y consuma; declararlos hoy seria vocabulario muerto. Todos los reservo
+    ADR-014 ("timeframe para candles, depth/channel para orderbook, tipo para
+    trades/ticker"): anadirlos es la extension ADITIVA prevista, no un cambio
+    estructural de MarketStreamKey.
     """
 
     CANDLES = "candles"
+    TRADES = "trades"
+    FOOTPRINT = "footprint"
 
 
 class MarketType(StrEnum):
     """Tipo de mercado. Solo SPOT en v5.0 (derivados: fuera de alcance)."""
 
     SPOT = "spot"
+
+
+class AggressorSide(StrEnum):
+    """Lado AGRESOR (taker) de un trade individual (I-04 Parte 1, EXP-M3-01).
+
+    En cripto el exchange PUBLICA quien fue el taker (Binance `m`, Bybit `S`,
+    OKX `side`), asi que el lado es un HECHO exacto y determinista, no una
+    estimacion: de ahi que el footprint salga reproducible bit a bit. El
+    adaptador de cada exchange traduce su flag a este enum, igual que traduce
+    'x' a is_closed; la regla de tick queda SOLO como fallback degradado
+    documentado si algun dia faltara el flag.
+    """
+
+    BUY = "buy"
+    SELL = "sell"
 
 
 class Timeframe(StrEnum):
@@ -127,8 +149,21 @@ class MarketStreamKey(BaseModel):
 
     @model_validator(mode="after")
     def _granularidad_aplicable(self) -> "MarketStreamKey":
-        if self.data_kind is MarketDataKind.CANDLES and self.timeframe is None:
-            msg = "data_kind=candles exige timeframe (ADR-014)."
+        # candles y footprint van bucketeados por barra: exigen timeframe. El
+        # flujo de trades es continuo (no se bucketea a nivel de stream): lo
+        # prohibe. Asi la clave de cada clase de dato es inequivoca (ADR-014).
+        needs_timeframe = self.data_kind in (
+            MarketDataKind.CANDLES,
+            MarketDataKind.FOOTPRINT,
+        )
+        if needs_timeframe and self.timeframe is None:
+            msg = f"data_kind={self.data_kind.value} exige timeframe (ADR-014)."
+            raise ValueError(msg)
+        if self.data_kind is MarketDataKind.TRADES and self.timeframe is not None:
+            msg = (
+                "data_kind=trades no admite timeframe: el flujo de trades no se "
+                "bucketea a nivel de stream (el footprint si, ADR-014)."
+            )
             raise ValueError(msg)
         return self
 
@@ -485,6 +520,36 @@ class RawCandle:
     # Es el instante que el EXCHANGE pone en su mensaje (Binance 'E'). Sin este campo,
     # una vela PROVISIONAL no tendria event_time legitimo y habria que inventarselo:
     # el sistema estaria fechando como suyo un hecho que no ocurrio cuando el dice.
+    event_time_ms: int
+    source_sequence: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RawTrade:
+    """Un trade individual TAL COMO LLEGA del exchange: NEUTRAL y NO VALIDADO.
+
+    Gemelo de RawCandle para la familia trades (P07b). Lo produce infra (los
+    adaptadores de exchange) y lo consume platform (normalize), la unica frontera
+    de confianza; por eso vive aqui y es dataclass, no un modelo Pydantic (validar
+    aqui daria la falsa impresion de que el dato ya es de fiar).
+
+    price y qty viajan como TEXTO, como los publica el exchange (un float binario
+    no representa 0.1 exacto; en M5 esto es dinero). aggressor_side llega como
+    'buy'|'sell' YA TRADUCIDO por el adaptador desde el flag del exchange (Binance
+    `m`, Bybit `S`, OKX `side`), igual que is_closed se traduce de 'x': el adaptador
+    traduce, NO decide, NO valida. trade_id es el identificador del exchange y es la
+    base del orden determinista entre trades del mismo milisegundo (P07b Tanda 3).
+    """
+
+    exchange: str
+    market_type: str
+    symbol: str  # CANONICO ya (BTC-USDT): el adaptador ya tradujo el nativo.
+    trade_id: str
+    price: str
+    qty: str
+    aggressor_side: str  # 'buy' | 'sell', ya traducido del flag del exchange.
+    # ADR-007: event_time LO FIJA EL ORIGEN DEL HECHO. Es el ts del propio trade en
+    # el mensaje del exchange (Binance 'T', Bybit 'T', OKX 'ts').
     event_time_ms: int
     source_sequence: int | None = None
 

@@ -37,6 +37,10 @@ from source.envelope import Envelope, EventPayload  # noqa: E402
 from source.families import Family  # noqa: E402
 from source.families.alert import AlertRaisedPayload  # noqa: E402
 from source.families.component import ComponentLifecyclePayload  # noqa: E402
+from source.families.footprint import (  # noqa: E402
+    FootprintClosedPayload,
+    FootprintCorrectedPayload,
+)
 from source.families.market import (  # noqa: E402
     CandleClosedPayload,
     CandleCorrectedPayload,
@@ -85,6 +89,10 @@ def build_schemas() -> dict[str, dict[str, object]]:
     candle_closed_schema["title"] = "CandleClosedPayload"
     candle_corrected_schema = CandleCorrectedPayload.model_json_schema()
     candle_corrected_schema["title"] = "CandleCorrectedPayload"
+    footprint_closed_schema = FootprintClosedPayload.model_json_schema()
+    footprint_closed_schema["title"] = "FootprintClosedPayload"
+    footprint_corrected_schema = FootprintCorrectedPayload.model_json_schema()
+    footprint_corrected_schema["title"] = "FootprintCorrectedPayload"
     register_request_schema = RegisterRequest.model_json_schema()
     register_request_schema["title"] = "RegisterRequest"
     login_request_schema = LoginRequest.model_json_schema()
@@ -133,6 +141,8 @@ def build_schemas() -> dict[str, dict[str, object]]:
         "market_candle_updated.schema.json": candle_updated_schema,
         "market_candle_closed.schema.json": candle_closed_schema,
         "market_candle_corrected.schema.json": candle_corrected_schema,
+        "market_footprint_closed.schema.json": footprint_closed_schema,
+        "market_footprint_corrected.schema.json": footprint_corrected_schema,
         "api_register_request.schema.json": register_request_schema,
         "api_login_request.schema.json": login_request_schema,
         "api_session.schema.json": session_schema,

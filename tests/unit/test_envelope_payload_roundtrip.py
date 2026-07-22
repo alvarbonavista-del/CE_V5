@@ -35,6 +35,12 @@ from source.families.component import (
     LifecycleState,
     ReadinessStatus,
 )
+from source.families.footprint import (
+    FootprintCell,
+    FootprintClosedPayload,
+    FootprintCorrectedPayload,
+    MarketFootprintEventType,
+)
 from source.families.market import (
     CandleClosedPayload,
     CandleCorrectedPayload,
@@ -115,6 +121,39 @@ def _candle(maturity: MaturityState, **extra: object) -> dict[str, object]:
     return base
 
 
+def _footprint(maturity: MaturityState, **extra: object) -> dict[str, object]:
+    cells = (
+        FootprintCell(
+            price=Decimal("100"),
+            buy_volume=Decimal("3"),
+            sell_volume=Decimal("1"),
+            delta=Decimal("2"),
+        ),
+        FootprintCell(
+            price=Decimal("101"),
+            buy_volume=Decimal("2"),
+            sell_volume=Decimal("2"),
+            delta=Decimal("0"),
+        ),
+    )
+    base: dict[str, object] = {
+        "maturity_state": maturity,
+        "exchange": "binance",
+        "market_type": MarketType.SPOT,
+        "symbol": "BTC-USDT",
+        "timeframe": Timeframe.H1,
+        "open_time": _OPEN,
+        "close_time": _CLOSE,
+        "cells": cells,
+        "bar_buy_volume": Decimal("5"),
+        "bar_sell_volume": Decimal("3"),
+        "bar_delta": Decimal("2"),
+        "trade_count": 8,
+    }
+    base.update(extra)
+    return base
+
+
 def _eval_result() -> EvaluationResult:
     return EvaluationResult(
         matched=True,
@@ -170,6 +209,17 @@ SAMPLE_PAYLOADS: dict[str, EventPayload] = {
             MaturityState.CORRECTION,
             correction_revision=1,
             corrects_idempotency_key="orig-1",
+        )
+    ),
+    # market.footprint_* (P07b): footprint por barra (celdas + delta).
+    MarketFootprintEventType.FOOTPRINT_CLOSED.value: FootprintClosedPayload(
+        **_footprint(MaturityState.CLOSED)
+    ),
+    MarketFootprintEventType.FOOTPRINT_CORRECTED.value: FootprintCorrectedPayload(
+        **_footprint(
+            MaturityState.CORRECTION,
+            correction_revision=1,
+            corrects_idempotency_key="orig-fp-1",
         )
     ),
     # rule.* (transiciones + operacional).

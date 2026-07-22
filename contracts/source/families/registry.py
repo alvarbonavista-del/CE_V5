@@ -28,6 +28,11 @@ from dataclasses import dataclass
 from source.envelope import EventPayload
 from source.families.alert import AlertEventType, AlertRaisedPayload
 from source.families.component import ComponentEventType, ComponentLifecyclePayload
+from source.families.footprint import (
+    FootprintClosedPayload,
+    FootprintCorrectedPayload,
+    MarketFootprintEventType,
+)
 from source.families.market import (
     CandleClosedPayload,
     CandleCorrectedPayload,
@@ -94,6 +99,11 @@ EVENT_PAYLOAD_REGISTRY: dict[str, tuple[type[EventPayload], int]] = {
     MarketCandleEventType.CANDLE_UPDATED.value: (CandleUpdatedPayload, 1),
     MarketCandleEventType.CANDLE_CLOSED.value: (CandleClosedPayload, 1),
     MarketCandleEventType.CANDLE_CORRECTED.value: (CandleCorrectedPayload, 1),
+    # market.footprint_* (P07b): footprint por barra derivado de trades individuales.
+    # Tipos NUEVOS dentro de la familia market.* existente (no familia nueva; la 5.12
+    # no se dispara). Payload y productor reales desde P07b, registrados.
+    MarketFootprintEventType.FOOTPRINT_CLOSED.value: (FootprintClosedPayload, 1),
+    MarketFootprintEventType.FOOTPRINT_CORRECTED.value: (FootprintCorrectedPayload, 1),
     # rule.* (P08): ciclo de evaluacion neutral; solo por transicion (CA-P08-01).
     RuleEventType.EVALUATION_COMPLETED.value: (RuleEvaluationCompletedPayload, 1),
     RuleEventType.FIRING.value: (RuleFiringPayload, 1),
