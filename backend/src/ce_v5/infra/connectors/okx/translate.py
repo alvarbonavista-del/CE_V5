@@ -22,9 +22,9 @@ DECISIONES DE NORMALIZACION PROPIAS DE OKX (OKX no da lo que Binance si da):
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 
-from source.families.market import RawCandle, Timeframe
+from source.families.market import RawCandle, RawTrade, Timeframe
 
 _SUPPORTED: frozenset[Timeframe] = frozenset(
     {
@@ -105,4 +105,68 @@ def raw_candle_from_okx(
         event_time_ms=open_time_ms,
         # OKX no trae id de ultimo trade en el canal de velas.
         source_sequence=None,
+    )
+
+
+def _requerido(msg: Mapping[str, object], clave: str) -> object:
+    """El valor de una clave OBLIGATORIA del mensaje de trade, o error de traduccion.
+
+    NUNCA se devuelve un RawTrade a medias: si a OKX le falta un campo que su doc
+    promete, es el lector quien convierte esta excepcion en una metrica observable.
+    """
+    if clave not in msg:
+        message = f"trade de OKX sin la clave {clave!r}: no se traduce a medias."
+        raise OkxTranslationError(message)
+    return msg[clave]
+
+
+def raw_trade_from_okx(
+    msg: Mapping[str, object], canonical_symbol: str, market_type: str
+) -> RawTrade:
+    """Un trade individual de OKX (canal 'trades-all') -> RawTrade (CRUDO, sin validar).
+
+    canonical_symbol lo resuelve el LLAMADOR desde el instId del 'arg': en OKX el instId
+    ya es canonico (BTC-USDT), a diferencia de Binance.
+
+    EL LADO AGRESOR NO SE ESTIMA: SE LEE. OKX publica 'side' = 'buy'|'sell', que es el
+    lado del TAKER (quien cruzo el spread). Se copia TAL CUAL, como texto; que sea un
+    valor legitimo del enum AggressorSide lo DECIDE la frontera de confianza, no este
+    traductor (igual que el flag 'm' de Binance o 'S' de Bybit). De ahi que el footprint
+    salga reproducible bit a bit.
+
+    source_sequence = tradeId: el tradeId de OKX es un contador ENTERO monotono y
+    contiguo por instrumento (verificado en el sondeo en vivo), asi que sirve de
+    secuencia de origen y permite calcular la cobertura del relleno por id (como
+    Binance), no por event_time.
+    """
+    if not isinstance(msg, Mapping):
+        message = f"trade de OKX no es un objeto: {type(msg)!r}."
+        raise OkxTranslationError(message)
+
+    trade_id = _requerido(msg, "tradeId")
+    ts = _requerido(msg, "ts")
+    try:
+        # El tradeId de OKX es un entero por contrato y 'ts' son ms; si llega algo que
+        # no lo es, es un mensaje malformado -> error de traduccion, NUNCA un RawTrade a
+        # medias ni una ValueError desnuda que se cuele por el except del lector.
+        source_sequence = int(str(trade_id))
+        event_time_ms = int(str(ts))
+    except ValueError as exc:
+        message = f"trade de OKX con tradeId/ts no numerico: {trade_id!r}/{ts!r}."
+        raise OkxTranslationError(message) from exc
+
+    return RawTrade(
+        exchange="okx",
+        market_type=market_type,
+        symbol=canonical_symbol,
+        trade_id=str(trade_id),
+        # TEXTO TAL CUAL: ni float, ni redondeo, ni limpieza. En M5 esto es dinero.
+        price=str(_requerido(msg, "px")),
+        qty=str(_requerido(msg, "sz")),
+        # 'side' es el lado del TAKER, ya en la forma 'buy'|'sell' del contrato.
+        aggressor_side=str(_requerido(msg, "side")),
+        # 'ts' es el instante del PROPIO trade en el exchange (ADR-007: el event_time lo
+        # fija el ORIGEN del hecho, jamas nuestro reloj).
+        event_time_ms=event_time_ms,
+        source_sequence=source_sequence,
     )

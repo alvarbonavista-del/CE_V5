@@ -27,6 +27,13 @@ _OKX_BAR_TO_TIMEFRAME: dict[str, str] = {
     bar: tf for tf, bar in _TIMEFRAME_TO_OKX_BAR.items()
 }
 
+# Canal WS de TRADES individuales de OKX. Es 'trades-all', NO 'trades': el sondeo en
+# vivo (condicion de Central) confirmo lo que Tardis.dev adelantaba -- 'trades' AGREGA
+# trades y 'trades-all' los entrega UNO A UNO --, y el footprint necesita los
+# individuales. A diferencia de las velas, el canal de trades NO lleva sufijo de bar: el
+# flujo de trades es continuo y no se bucketea a nivel de stream (ADR-014).
+_TRADES_CHANNEL = "trades-all"
+
 
 class SymbolTranslationError(ValueError):
     """El simbolo no tiene la forma canonica BASE-QUOTE."""
@@ -53,6 +60,25 @@ def to_native(canonical: str) -> str:
 def to_channel(timeframe: str) -> str:
     """Canal WS de velas de OKX para un timeframe canonico: '1h' -> 'candle1H'."""
     return f"candle{_bar(timeframe)}"
+
+
+def to_trade_channel() -> str:
+    """Canal WS de trades individuales de OKX: 'trades-all' (verificado en caliente).
+
+    SIN sufijo de intervalo, y no es una omision: 'trades' agregaria los trades y
+    'trades-all' los da uno a uno, que es lo que el footprint agrega. El bucketeo por
+    barra pertenece al footprint (dato DERIVADO), no a este stream (ADR-014).
+    """
+    return _TRADES_CHANNEL
+
+
+def is_trade_channel(channel: str) -> bool:
+    """True si el canal entrante es el de trades individuales.
+
+    El connector enruta con esto el mensaje que llega, igual que reconoce el prefijo
+    'candle' de las velas: velas y trades comparten conexion y se separan por su canal.
+    """
+    return channel == _TRADES_CHANNEL
 
 
 def to_bar(timeframe: str) -> str:
