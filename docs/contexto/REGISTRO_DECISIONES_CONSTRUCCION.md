@@ -1568,3 +1568,44 @@ SIGUIENTE -- 3b (agregacion footprint; topologia RATIFICADA):
 - CONSUME market_trade_gap para fijar is_complete en las barras solapadas con un hueco.
 - Derivacion demanda-footprint -> stream de trades: un interes en footprint suscribe el flujo
   de trades subyacente, bajo CE-14.
+=====================================================================
+25. T-04 -- FEASIBILITY DEL COMPARADOR TRADINGVIEW (CERRADA)
+=====================================================================
+NATURALEZA: tarea TRANSVERSAL de INVESTIGACION (feasibility), no pieza del roadmap.
+SIN codigo de producto, sin repo, sin commit de producto, sin CI. Entregable = diseno
+de verificacion por FIXTURE que alimenta el DoD de P08b. Informe completo en el knowledge:
+claude/INFORME_T04_FEASIBILITY_TRADINGVIEW_v5.md. Dictamen de Central 2026-07-23; no
+reabre ADR; sin CA/CSA.
+
+PREGUNTA CENTRAL Y RESPUESTA. Expone TradingView, de forma programatica y por via oficial,
+la SERIE del RSI (o las velas) de un indicador para compararla numericamente con la nuestra?
+NO. No hay API de consumo de valores ni de velas; la unica REST oficial (Broker Integration)
+va en sentido INVERSO (los brokers ALIMENTAN datos hacia TradingView); los Terminos prohiben
+el uso non-display (maquina a maquina); ni la tarifa Ultimate anade una API de datos. Coherente
+con T-05 (PineJS calcula en el CLIENTE; TradingView ALIMENTA, no ENTREGA valores).
+
+GO/NO-GO (RATIFICADO por Central).
+- Comparador EN VIVO por API oficial: NO FACTIBLE. RETIRADO.
+- Comparador por FIXTURE (CSV "Download chart data", velas + RSI de TradingView sobre las
+  MISMAS velas, en un solo fichero): FACTIBLE y es LA via para P08b. Verificado de primera mano
+  en el dialogo de la web app (texto "...including the symbol & indicators will be saved to a
+  CSV file"; selector de tiempo "ISO time"/"UNIX timestamp" en UTC; indicador "RSI 14 close").
+
+DECISIONES DEL DICTAMEN.
+- Q-T04-1 (RATIFICADA): DoD de P08b "verificacion contra TradingView" = "dentro de tolerancia
+  tras warm-up", NO igualdad bit a bit. NO reabre ADR-007 (su bit-a-bit es sobre NUESTRO motor,
+  no contra la caja negra de TradingView).
+- Q-T04-2 (RESUELTA): puerta de arranque = tras warm-up (~100-150 velas), delta absoluto maximo
+  <= 0,1 puntos de RSI; se AFINA al ULP real cuando se exporte el CSV (frontera de pago de Alvaro).
+- Q-T04-3 (FRONTERA de Alvaro): contratar plan de pago para exportar y lectura LEGAL de los ToS.
+  Central NO opina. DESACOPLE: el referente Wilder preferido es TradingView SI la asesoria lo
+  despeja; si NO, referente Wilder publicado / dataset no restringido (I-01 fijo la convencion).
+  P08b NO queda bloqueada por la resolucion legal de TradingView.
+- Q-T04-4 (RESUELTA): GOLDEN FIXTURE = un CSV por simbolo/timeframe, versionado como fixture de
+  test; sin refresco periodico; actualizaciones deliberadas y versionadas.
+
+NO VERIFICADO restante: nombres exactos de columna y decimales exactos de la columna RSI en el
+FICHERO descargado; se cierra al EXPORTAR, dentro de P08b (accion de pago, frontera de Alvaro).
+
+FRONTERA (registrada, sin opinar): la contratacion del plan y la legalidad del uso del dato de
+TradingView son de Alvaro (comercial/legal). T-04 solo documento lo que dicen doc y Terminos.

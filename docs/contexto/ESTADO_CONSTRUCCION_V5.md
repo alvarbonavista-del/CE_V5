@@ -6,7 +6,9 @@ o un hito (DOC_ENTREGABLES sec.8).
 
 Ultima actualizacion: 2026-07-23 (P07b FASE 3a CERRADA: conectores de trades
 Binance/OKX/Bybit + modelo honesto de backfill, todos verdes y validados en caliente;
-falta 3b -agregacion footprint- para el cierre formal de P07b. T-05 ENTREGADA y en main).
+falta 3b -agregacion footprint- para el cierre formal de P07b. T-05 ENTREGADA y en main;
+T-04 (feasibility comparador TradingView) CERRADA: verificacion del RSI por FIXTURE (no hay
+API en vivo)).
 
 ## Hito actual
 M3 (datos, reglas y notificacion backend) ABIERTO y EXPANDIDO a paridad
@@ -125,6 +127,14 @@ firmada 2026-07-17: entran P07b, P07c, P08b y P08c).
   amplio del working-tree; no se reescribe main, se registra -> origen de la regla 5.29);
   remate del borde 422 en 5acc9e0; visor en f7890e1. Merge wip/t-05-visor -> main con
   --no-ff. Actions verde 3/3 run #30010566621 (PR #2).
+- T-04 - Feasibility del comparador TradingView (transversal de investigacion): CERRADA.
+  GO/NO-GO: comparador EN VIVO por API oficial NO FACTIBLE (RETIRADO); comparador por FIXTURE
+  (CSV "Download chart data": velas + RSI de TradingView sobre las mismas velas) FACTIBLE y es
+  LA via para P08b. DoD de P08b "verificacion contra TradingView" = dentro de tolerancia tras
+  warm-up (puerta <= 0,1 pts de RSI), NO bit a bit (no reabre ADR-007). GOLDEN FIXTURE versionado
+  por simbolo/timeframe. DESACOPLE: si la frontera legal de Alvaro no despeja TradingView, se usa
+  un referente Wilder publicado (P08b no se bloquea). Sin codigo/commit de producto. Informe:
+  claude/INFORME_T04_FEASIBILITY_TRADINGVIEW_v5.md. Detalle en REGISTRO_DECISIONES seccion 25.
 
 ## Regla de trabajo (REGISTRO_DECISIONES sec.1)
 Construccion en micro-pasos: el periferico nunca entrega la pieza entera
