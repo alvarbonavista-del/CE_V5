@@ -53,8 +53,19 @@ def to_interval(timeframe: str) -> str:
 
 
 def to_topic(canonical: str, timeframe: str) -> str:
-    """Topic de suscripcion: 'BTC-USDT' + '1h' -> 'kline.60.BTCUSDT'."""
+    """Topic de suscripcion de VELAS: 'BTC-USDT' + '1h' -> 'kline.60.BTCUSDT'."""
     return f"kline.{to_interval(timeframe)}.{to_native(canonical)}"
+
+
+def to_trade_topic(canonical: str) -> str:
+    """Topic de suscripcion de TRADES: 'BTC-USDT' -> 'publicTrade.BTCUSDT'.
+
+    SIN intervalo, y no es una omision: el flujo de trades es continuo y NO se bucketea
+    a nivel de stream (ADR-014). El bucketeo por barra es del footprint, que es dato
+    DERIVADO. El native (BTCUSDT) es el mismo que en velas: Bybit pega el simbolo y la
+    vuelta a canonico se CONSULTA al catalogo (set_symbol_map), no se calcula.
+    """
+    return f"publicTrade.{to_native(canonical)}"
 
 
 def timeframe_from_interval(interval: str) -> str:
