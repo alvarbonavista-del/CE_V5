@@ -1609,3 +1609,76 @@ FICHERO descargado; se cierra al EXPORTAR, dentro de P08b (accion de pago, front
 
 FRONTERA (registrada, sin opinar): la contratacion del plan y la legalidad del uso del dato de
 TradingView son de Alvaro (comercial/legal). T-04 solo documento lo que dicen doc y Terminos.
+=====================================================================
+26. P07b -- CIERRE FORMAL: AGREGACION DEL FOOTPRINT (3b) Y ENTREGA DE LA PIEZA
+=====================================================================
+NATURALEZA: cierre FORMAL de P07b (trades + footprint), con doble revision Central+CSA.
+Cierra la fase 3b (agregacion del footprint) SOBRE la 3a ya cerrada (conectores de trades
++ modelo honesto de backfill, seccion 24 -- NO se duplica aqui). Sin ADR nuevo (5.12 no se
+activa: market.* ya existia). Reglas 5.29/5.30 ya persistidas.
+
+DECISIONES (3b).
+- CELDA = TICK NATIVO (precio exacto), LOSSLESS: una celda por nivel de precio del
+  exchange, sin agrupar por price_step ni capar el numero de celdas. Agrupar o capar
+  reintroduciria perdida de informacion. Observabilidad: metrica celdas-por-barra (sin
+  cap; se vigila el maximo), NO un limite.
+- INVARIANTE DE REPRODUCIBILIDAD BIT A BIT: dedup por identidad natural del trade
+  (exchange, market_type, symbol, trade_id) + agregacion CONMUTATIVA por celda (suma de
+  Decimal). Los mismos trades en cualquier orden producen el MISMO footprint byte a byte,
+  sin necesidad de un orden total entre trades del mismo milisegundo.
+- BUCKETING: floor(event_time / tf_ms) en UTC; ventana semiabierta
+  [open_time, open_time+tf_ms). Un trade en la frontera cae en UNA sola barra.
+- BACKFILL ACOTADO + is_complete FAIL-SAFE, con cobertura POR-PORT (cada exchange decide
+  con el criterio que su API permite; al nucleo llega la MISMA forma comun):
+    Binance: una ventana REST de 1000 por id monotono.
+    OKX: paginacion con &after hasta empalmar o hasta el TOPE de esfuerzo
+      (_BACKFILL_MAX_PAGES); agotado el tope sin empalmar -> covered=False -> hueco ->
+      barra INCOMPLETA. Cap silencioso de 300 respetado (se pide EXACTAMENTE 300).
+    Bybit: recent-trade de 60 SIN paginar -> un corte mayor de 60 trades deja hueco ->
+      barra INCOMPLETA (ver LIMITACION CONOCIDA).
+  is_complete=False si algun market_trade_gap solapa la ventana; True solo si ninguno la
+  toca. NUNCA se publica una barra truncada como completa.
+- PERSISTENCIA: market_footprint + outbox en LA MISMA transaccion (ADR-013), idempotente
+  por footprint_idempotency_key. candle_corrected -> footprint_corrected append-only, con
+  idempotency_key que NO colisiona con el closed (event_type + maturity_state + revision).
+- CONSUMO POR DEMANDA (3b-1): worker propio bajo ce_v5_ingestion, poll+ack SIN inbox
+  (idempotente por la clave), que agrega al recibir market.candle_closed (Opcion A).
+- TESTS DE COSTURA (cierre): tests/integration/test_footprint_okx_gap_seam.py sella en UNA
+  sola prueba cap OKX -> covered=False -> record_gap -> footprint is_complete=False (y la
+  fila de outbox lo refleja). Asercion explicita de outbox del corrected en
+  test_market_footprint.py. Ambos MUERDEN (verificados por mutacion: forzar covered=True /
+  saltar el encolado -> ROJO).
+
+REDEFINICION DE DoD -- RETENCION ESCENARIO B (VERBATIM, ratificada por Alvaro 2026-07-23):
+  ESTADO: sin mecanismo de retencion/trimming; tablas de mercado (market_trade,
+    market_footprint, market_trade_gap) APPEND-ONLY con DELETE/TRUNCATE REVOCADO a
+    runtime (5.20) -> cero borrado, dedup y correccion vigente intactos por construccion.
+  DUENO: tarea de retencion/ops POSTERIOR (post-P08c); NO entregable de P07b.
+  MOTIVO: (1) el mandato de P07b es "medicion empirica de volumen ANTES de dimensionar
+    retencion", representativa solo con footprint fluyendo (post-P08c); metricas ya
+    instrumentadas (celdas-por-barra, uncovered_gaps). (2) el camino de BORRADO + rol de
+    mantenimiento es diseno de acceso que no se precipita en el cierre.
+  CONDICION DE SALIDA: se construye/dimensiona el trimming cuando (a) haya medicion
+    empirica de volumen, (b) antes de escala de produccion, y (c) con revision de acceso
+    del rol de mantenimiento (5.20/5.19).
+  POR QUE NO ROMPE v5.0: append-only + DELETE revocado -> cero perdida; dedup y correccion
+    intactos; footprint no fluye en produccion hasta P08c (crecimiento acotado a
+    dev/test); fail-safe y reproducibilidad independientes de la retencion.
+
+LIMITACION CONOCIDA v5.0: Bybit incompleto frecuente (recent-trade 60 sin paginar;
+  fail-safe is_complete=False; NO falsifica completitud; P08c vera NOT_EVALUABLE cuando
+  necesite footprint completo; pieza duena de mejorar cobertura identificada si se decide).
+
+NOTA Binance: geo-bloqueo INTERMITENTE en dev; footprint validado en Bybit (agnostico del
+  exchange); sin impacto en codigo.
+
+HEREDA P08c:
+  - Spec 3b-2: footprint_stream_keys(E,S,tf) -> {trades(E,S), candles(E,S,tf)} intents,
+    edge-only, source_type=DATASOURCE, atomico. Auto-expand en el nucleo/ventanilla
+    RECHAZADO.
+  - Consumo del footprint: is_complete=False -> NOT_EVALUABLE (CA-P08-04 D2); la ausencia
+    de is_complete se trata como incompleto (spec heredada; no hay consumidor aun).
+
+REGLAS Y CHECKS: 5.29 (rutas explicitas) y 5.30 (bateria completa antes del push) ya
+  persistidas. check_market_access (5.22) enganchado y demostrado EN ACTIONS (job
+  backend-integration de ci.yml). Sin ADR nuevo; 5.12 no se activa.

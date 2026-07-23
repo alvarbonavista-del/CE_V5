@@ -3,14 +3,14 @@
 Archivo vivo (sin logica). Mantenido por Claude Code; Alvaro lo resube
 al knowledge al cerrar cada pieza o hito (DOC_ENTREGABLES sec.8).
 
-Ultima actualizacion: 2026-07-21 (P08 ENTREGADA: motor de reglas, firmada; M3 SIGUE ABIERTO).
+Ultima actualizacion: 2026-07-23 (P07b ENTREGADA: trades + footprint, cierre formal Central+CSA; M3 SIGUE ABIERTO: faltan P07c, P08b, P08c, P09a).
 
 | Hito | Definicion breve (DOC_ROADMAP sec.4) | Piezas | Estado |
 |------|--------------------------------------|--------|--------|
 | M0 | Repo creado + CI de guardarrailes en verde (base estructural) | P00 | CERRADO |
 | M1 | Un evento viaja de punta a punta con envelope, idempotencia y Clock sobre el bus externo, con outbox transaccional; reinicio sin perdida | P01, P02, P02b, P03 | CERRADO |
 | M2 | Un Componente se descubre por carpeta, aislado por tenant/RLS, con capacidades por el gate fail-closed; API/auth/realtime en pie; kill switch en caliente | P04, P05, P06, P06b | CERRADO |
-| M3 | Una Rule dispara sobre datos reales y proyecta signal.*/alert.*; el router backend entrega por un canal no-PWA/mock (sin overlay, sin ejecucion) | P07, P07b, P07c, P08, P08b, P08c, P09a | ABIERTO (2 de 7: P07 y P08 ENTREGADAS; faltan P07b, P07c, P08b, P08c y P09a; EXPANDIDO por EXP-M3-01) |
+| M3 | Una Rule dispara sobre datos reales y proyecta signal.*/alert.*; el router backend entrega por un canal no-PWA/mock (sin overlay, sin ejecucion) | P07, P07b, P07c, P08, P08b, P08c, P09a | ABIERTO (3 de 7: P07, P07b y P08 ENTREGADAS; faltan P07c, P08b, P08c y P09a; EXPANDIDO por EXP-M3-01) |
 | M4 | PWA instalable con dashboard, chart y overlays de signal.* en movil real; push PWA; geo-blocking corta ejecucion, no visualizacion | P12a, P12b, P13, P09b | PENDIENTE |
 | M5 | Ejecucion gateada: bloqueo UE/EEA/UK, orden manual BYOC, autotrade BYOC, reconciliacion | P10a, P10b, P11 | PENDIENTE |
 
@@ -160,6 +160,14 @@ se escribio y se conserva sin tocar; queda DEROGADA hacia delante (regla
   estrecho (regla 5.20, nueva) con check bloqueante MARKET y pruebas negativas
   bidireccionales. Barrido de seguridad 5.15 escrito, control por control.
   M3: 1 de 3 (faltan P08 motor de reglas y P09a router de notificaciones backend).
+- P07b - Trades + footprint (ADR-014): ENTREGADA 2026-07-23 (3 de 7 de M3). NO cierra M3:
+  tras ella quedan P07c, P08b, P08c y P09a. Cierre formal con doble revision Central+CSA.
+  Fase 3a (conectores de trades Binance/OKX/Bybit + modelo honesto de backfill) y 3b
+  (agregacion del footprint: celda=tick nativo lossless, dedup por identidad natural +
+  agregacion conmutativa -> reproducibilidad bit a bit, is_complete fail-safe con cobertura
+  por-Port, outbox atomico, worker propio bajo ce_v5_ingestion). Tests de costura de cierre
+  (hueco OKX -> footprint incompleto; outbox del corrected). Retencion: escenario B
+  (append-only, sin trimming; tarea post-P08c). Ver REGISTRO_DECISIONES secciones 24 y 26.
 - P08 - Motor de reglas (ADR-015/016/017): ENTREGADA 2026-07-21 (2 de 7 de M3). NO cierra
   M3: tras ella quedan P07b, P07c, P08b, P08c y P09a.
   Commit de pieza 59855bf; refinamiento documental de las puertas de revision 107e94f;
@@ -191,7 +199,7 @@ se escribio y se conserva sin tocar; queda DEROGADA hacia delante (regla
   no tenia NI UN test de integracion. Se engancho el check, se provisiono ce_v5_rules en
   backend-integration y se anadieron 37 tests de integracion (frontera 5.20 con negativos
   bidireccionales rechazados por el MOTOR, y el ciclo-nucleo atomico).
-  M3: 2 de 7; SIGUE ABIERTO (faltan P07b, P07c, P08b, P08c y P09a).
+  M3: 3 de 7; SIGUE ABIERTO (faltan P07c, P08b, P08c y P09a).
 
 ## Nota EXP-M3-01 (2026-07-17): M3 AMPLIADO A PARIDAD FUNCIONAL v4
 M3 queda AMPLIADO a paridad funcional v4. Firmado por Alvaro 2026-07-17, con doble

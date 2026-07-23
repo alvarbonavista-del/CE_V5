@@ -320,6 +320,9 @@ class TestCorreccionAppendOnly:
         )
 
         correccion = _corrected(1, clave_cerrado)
+        clave_corregida = correccion.idempotency_key(
+            MarketFootprintEventType.FOOTPRINT_CORRECTED
+        )
         assert (
             persistir_footprint(
                 correccion, MarketFootprintEventType.FOOTPRINT_CORRECTED, _EVENT_TIME
@@ -336,6 +339,48 @@ class TestCorreccionAppendOnly:
             )
             == 1
         )
+
+        # LA CLAVE DEL CORREGIDO NO COLISIONA CON LA DEL CERRADO. La formula discrimina
+        # por event_type + maturity_state + sufijo de revision (r1): si colisionaran, la
+        # outbox (idempotency_key UNIQUE) se tragaria la segunda EN SILENCIO.
+        assert clave_corregida != clave_cerrado
+
+        # OUTBOX ATOMICO (ADR-013), EXPLICITO PARA EL CORREGIDO: el persist del
+        # footprint corregido Y su encolado van en LA MISMA transaccion. La prueba
+        # observable es que existen las DOS filas con la MISMA idempotency_key del
+        # corregido; si no fuera atomico, faltaria una (footprint o evento).
+        assert (
+            _contar(
+                ingestion_db,
+                "SELECT count(*) FROM market_footprint WHERE idempotency_key = %s",
+                (clave_corregida,),
+            )
+            == 1
+        )
+        assert (
+            _contar(
+                ingestion_db,
+                "SELECT count(*) FROM outbox WHERE idempotency_key = %s "
+                "AND event_type = %s",
+                (clave_corregida, MarketFootprintEventType.FOOTPRINT_CORRECTED.value),
+            )
+            == 1
+        )
+        # APPEND-ONLY: el cerrado sigue teniendo SU fila de outbox, intacta. Dos hechos,
+        # dos filas, dos claves: el corregido no reescribe ni desplaza al cerrado.
+        assert _contar(ingestion_db, "SELECT count(*) FROM outbox") == 2
+
+        # El evento encolado del corregido dice su madurez: correction + revision 1.
+        with ingestion_db.transaction() as session:
+            fila = session.fetchone(
+                "SELECT envelope FROM outbox WHERE idempotency_key = %s",
+                (clave_corregida,),
+            )
+        assert fila is not None
+        envelope = fila[0] if isinstance(fila[0], dict) else json.loads(str(fila[0]))
+        assert envelope["payload"]["maturity_state"] == "correction"
+        assert envelope["payload"]["correction_revision"] == 1
+        assert envelope["payload"]["corrects_idempotency_key"] == clave_cerrado
 
 
 class TestElEventoEncoladoEsPublicable:
