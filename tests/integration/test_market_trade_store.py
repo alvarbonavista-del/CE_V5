@@ -23,7 +23,11 @@ from decimal import Decimal
 
 import pytest
 
-from ce_v5.infra.db.market_trades import PostgresTradeWriter
+from ce_v5.infra.db.market_trades import (
+    PostgresTradeWriter,
+    read_overlapping_gaps,
+    read_trades_in_window,
+)
 from ce_v5.infra.db.psycopg_adapter import PsycopgDatabase
 from source.families.footprint import MarketTrade
 from source.families.market import AggressorSide, MarketType
@@ -328,3 +332,139 @@ class TestRecordGap:
         writer.record_gap("binance", "spot", "ETH-USDT", _EVENT_TIME, _EVENT_TIME + 900)
 
         assert _contar(ingestion_db, "SELECT count(*) FROM market_trade_gap") == 3
+
+
+# La ventana de una barra M1 alineada, para los lectores de 3b-1. El bucketing es
+# floor(event_time/tf_ms): [_WIN_START, _WIN_END) con _WIN_END = _WIN_START + 60_000.
+_WIN_START = 1_784_073_600_000
+_WIN_END = _WIN_START + 60_000
+
+
+def _win_trade(trade_id: str, event_time: int, **overrides: object) -> MarketTrade:
+    return _trade(trade_id=trade_id, event_time=event_time, **overrides)
+
+
+class TestVentanaDeBarra:
+    """read_trades_in_window: los trades de UNA barra, [open_time, open_time+tf_ms).
+
+    SQL REAL: el bucketing semiabierto por la derecha lo hace la consulta, no un doble.
+    Si la frontera se equivocara (>= vs >), un trade caeria en dos barras o en ninguna,
+    y el footprint de la barra vecina sumaria volumen que no le toca.
+    """
+
+    def test_selecciona_solo_los_de_la_ventana_con_frontera_semiabierta(
+        self, ingestion_db: PsycopgDatabase, limpiar_trades: None
+    ) -> None:
+        writer = PostgresTradeWriter(ingestion_db)
+        # Justo en el inicio: DENTRO (frontera cerrada por la izquierda).
+        writer.persist(_win_trade("inicio", _WIN_START))
+        # En medio: DENTRO.
+        writer.persist(_win_trade("medio", _WIN_START + 30_000))
+        # Justo antes del inicio: FUERA (es de la barra anterior).
+        writer.persist(_win_trade("antes", _WIN_START - 1))
+        # Justo en el final: FUERA (frontera abierta por la derecha; es la siguiente).
+        writer.persist(_win_trade("fin", _WIN_END))
+
+        with ingestion_db.transaction() as session:
+            trades = read_trades_in_window(
+                session, "binance", "spot", "BTC-USDT", _WIN_START, _WIN_END
+            )
+
+        assert [t.trade_id for t in trades] == ["inicio", "medio"]
+
+    def test_los_valores_vuelven_como_decimal_y_enum_exactos(
+        self, ingestion_db: PsycopgDatabase, limpiar_trades: None
+    ) -> None:
+        # El lector reconstruye MarketTrade: Decimal SIN perder digitos y el lado como
+        # AggressorSide. Es lo que alimenta la suma del footprint trade a trade.
+        writer = PostgresTradeWriter(ingestion_db)
+        writer.persist(
+            _win_trade(
+                "1",
+                _WIN_START + 10,
+                price=Decimal("104.12345678"),
+                qty=Decimal("0.13500000"),
+                aggressor_side=AggressorSide.SELL,
+                source_sequence=None,
+            )
+        )
+
+        with ingestion_db.transaction() as session:
+            trades = read_trades_in_window(
+                session, "binance", "spot", "BTC-USDT", _WIN_START, _WIN_END
+            )
+
+        assert len(trades) == 1
+        t = trades[0]
+        assert t.price == Decimal("104.12345678")
+        assert t.qty == Decimal("0.13500000")
+        assert t.aggressor_side is AggressorSide.SELL
+        assert t.source_sequence is None
+
+    def test_no_mezcla_otro_flujo(
+        self, ingestion_db: PsycopgDatabase, limpiar_trades: None
+    ) -> None:
+        writer = PostgresTradeWriter(ingestion_db)
+        writer.persist(_win_trade("btc", _WIN_START + 5))
+        writer.persist(_win_trade("eth", _WIN_START + 5, symbol="ETH-USDT"))
+        writer.persist(_win_trade("okx", _WIN_START + 5, exchange="okx"))
+
+        with ingestion_db.transaction() as session:
+            trades = read_trades_in_window(
+                session, "binance", "spot", "BTC-USDT", _WIN_START, _WIN_END
+            )
+
+        assert [t.trade_id for t in trades] == ["btc"]
+
+
+class TestHuecosSolapados:
+    """read_overlapping_gaps: los huecos que tocan la ventana (fail-safe con NULL).
+
+    SQL REAL: el solape (gap_to > start AND gap_from < end) con extremos NULL tratados
+    como infinito. De aqui sale el is_complete de la barra.
+    """
+
+    def test_un_hueco_dentro_de_la_ventana_se_devuelve(
+        self, ingestion_db: PsycopgDatabase, limpiar_huecos: None
+    ) -> None:
+        writer = PostgresTradeWriter(ingestion_db)
+        writer.record_gap(
+            "binance", "spot", "BTC-USDT", _WIN_START + 100, _WIN_START + 200
+        )
+
+        with ingestion_db.transaction() as session:
+            gaps = read_overlapping_gaps(
+                session, "binance", "spot", "BTC-USDT", _WIN_START, _WIN_END
+            )
+
+        assert gaps == ((_WIN_START + 100, _WIN_START + 200),)
+
+    def test_un_hueco_fuera_de_la_ventana_no_se_devuelve(
+        self, ingestion_db: PsycopgDatabase, limpiar_huecos: None
+    ) -> None:
+        # Termina ANTES del inicio de la barra: no le falta nada a esta barra.
+        writer = PostgresTradeWriter(ingestion_db)
+        writer.record_gap(
+            "binance", "spot", "BTC-USDT", _WIN_START - 500, _WIN_START - 100
+        )
+
+        with ingestion_db.transaction() as session:
+            gaps = read_overlapping_gaps(
+                session, "binance", "spot", "BTC-USDT", _WIN_START, _WIN_END
+            )
+
+        assert gaps == ()
+
+    def test_un_hueco_de_extremo_superior_desconocido_solapa(
+        self, ingestion_db: PsycopgDatabase, limpiar_huecos: None
+    ) -> None:
+        # FAIL-SAFE: gap_to NULL (incierto) es infinito -> solapa por si acaso.
+        writer = PostgresTradeWriter(ingestion_db)
+        writer.record_gap("binance", "spot", "BTC-USDT", _WIN_START + 100, None)
+
+        with ingestion_db.transaction() as session:
+            gaps = read_overlapping_gaps(
+                session, "binance", "spot", "BTC-USDT", _WIN_START, _WIN_END
+            )
+
+        assert gaps == ((_WIN_START + 100, None),)

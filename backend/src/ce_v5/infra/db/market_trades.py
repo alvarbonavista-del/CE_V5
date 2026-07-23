@@ -16,9 +16,11 @@ una outbox seria ceremonia sin invariante que defender.
 
 from __future__ import annotations
 
-from ce_v5.infra.db.ports import Database
+from decimal import Decimal
+
+from ce_v5.infra.db.ports import Database, Session
 from source.families.footprint import MarketTrade
-from source.families.market import LastSeenTrade
+from source.families.market import AggressorSide, LastSeenTrade, MarketType
 
 # DEDUP HONESTO POR IDENTIDAD NATURAL. La PK (exchange, market_type, symbol, trade_id)
 # es la identidad que el propio exchange le da al hecho: dos mensajes con el mismo
@@ -67,6 +69,101 @@ INSERT INTO market_trade_gap (
 ON CONFLICT DO NOTHING
 RETURNING exchange
 """
+
+# LOS TRADES DE UNA VENTANA DE BARRA (P07b 3b-1). event_time en [win_start, win_end):
+# el mismo bucketing floor(event_time/tf_ms) que la barra (LOCKED por Central),
+# semiabierto por la derecha para que un trade en la frontera caiga en UNA sola barra.
+# ORDER estable (event_time, trade_id) para una lectura reproducible, aunque la
+# agregacion es conmutativa y no depende del orden.
+_TRADES_IN_WINDOW_SQL = """
+SELECT trade_id, price, qty, aggressor_side, event_time, source_sequence
+FROM market_trade
+WHERE exchange = %s AND market_type = %s AND symbol = %s
+  AND event_time >= %s AND event_time < %s
+ORDER BY event_time, trade_id
+"""
+
+# LOS HUECOS QUE SE SOLAPAN CON LA VENTANA. El intervalo de datos que FALTAN es
+# (gap_from, gap_to); solapa [win_start, win_end) si gap_to > start y gap_from < end.
+# Un extremo NULL (desconocido) NO descarta el solape: es infinito por su lado
+# (fail-safe), asi que un hueco de extremo incierto que pueda tocar la ventana entra.
+_OVERLAPPING_GAPS_SQL = """
+SELECT gap_from_event_time_ms, gap_to_event_time_ms
+FROM market_trade_gap
+WHERE exchange = %s AND market_type = %s AND symbol = %s
+  AND (gap_to_event_time_ms IS NULL OR gap_to_event_time_ms > %s)
+  AND (gap_from_event_time_ms IS NULL OR gap_from_event_time_ms < %s)
+"""
+
+
+def _int(valor: object) -> int:
+    if not isinstance(valor, int):
+        msg = f"Se esperaba un entero de la base y llego {type(valor)!r}."
+        raise TypeError(msg)
+    return valor
+
+
+def read_trades_in_window(
+    session: Session,
+    exchange: str,
+    market_type: str,
+    symbol: str,
+    window_start: int,
+    window_end: int,
+) -> tuple[MarketTrade, ...]:
+    """Los trades de market_trade cuyo event_time cae en [window_start, window_end).
+
+    Es la entrada de la agregacion del footprint (3b-1): los trades de UNA barra. Vienen
+    YA deduplicados por la PK (exchange, market_type, symbol, trade_id). Los precios y
+    tamanos viajan COMO Decimal (columnas numeric): convertirlos a float aqui perderia
+    digitos en silencio, y el footprint sumaria cantidades que no ocurrieron.
+    """
+    rows = session.fetchall(
+        _TRADES_IN_WINDOW_SQL,
+        (exchange, market_type, symbol, window_start, window_end),
+    )
+    tipo = MarketType(market_type)
+    return tuple(
+        MarketTrade(
+            exchange=exchange,
+            market_type=tipo,
+            symbol=symbol,
+            trade_id=str(row[0]),
+            price=Decimal(str(row[1])),
+            qty=Decimal(str(row[2])),
+            aggressor_side=AggressorSide(str(row[3])),
+            event_time=_int(row[4]),
+            source_sequence=None if row[5] is None else _int(row[5]),
+        )
+        for row in rows
+    )
+
+
+def read_overlapping_gaps(
+    session: Session,
+    exchange: str,
+    market_type: str,
+    symbol: str,
+    window_start: int,
+    window_end: int,
+) -> tuple[tuple[int | None, int | None], ...]:
+    """Los huecos de market_trade_gap que se solapan con [window_start, window_end).
+
+    Cada hueco es (gap_from_event_time_ms, gap_to_event_time_ms); cualquiera de los dos
+    puede ser NULL (extremo desconocido). Si la tupla NO esta vacia, la barra vio menos
+    trades de los que hubo y su footprint se marca is_complete=False (fail-safe, 3b-1).
+    """
+    rows = session.fetchall(
+        _OVERLAPPING_GAPS_SQL,
+        (exchange, market_type, symbol, window_start, window_end),
+    )
+    return tuple(
+        (
+            None if row[0] is None else _int(row[0]),
+            None if row[1] is None else _int(row[1]),
+        )
+        for row in rows
+    )
 
 
 class PostgresTradeWriter:
