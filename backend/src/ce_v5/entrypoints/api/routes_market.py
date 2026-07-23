@@ -31,6 +31,7 @@ from pydantic import BaseModel, ConfigDict
 
 from ce_v5.entrypoints.api.security import Context
 from ce_v5.infra.db.market_candles import read_ohlcv_window
+from source.families.market import SYMBOL_PATTERN, Timeframe
 
 router = APIRouter(prefix="/v1")
 
@@ -70,22 +71,39 @@ class MarketCandleRead(BaseModel):
 def market_candles(
     context: Context,
     exchange: Annotated[str, Query()],
-    symbol: Annotated[str, Query()],
-    timeframe: Annotated[str, Query()],
+    # SIMBOLO CANONICO, VALIDADO CONTRA EL PATRON DEL CONTRATO. Se reutiliza
+    # SYMBOL_PATTERN en vez de escribir un regex aqui: si el contrato lo cambia, este
+    # borde cambia con el. Dos regex separados divergirian y uno seria el mas flojo.
+    symbol: Annotated[str, Query(pattern=SYMBOL_PATTERN)],
+    # El vocabulario CERRADO del contrato, no una cadena libre: un intervalo que el
+    # sistema no sirve se rechaza en el borde, no se convierte en una consulta que no
+    # puede devolver nada.
+    timeframe: Annotated[Timeframe, Query()],
     limit: Annotated[int, Query(ge=1, le=MAX_LIMIT)] = DEFAULT_LIMIT,
     up_to: Annotated[int | None, Query(ge=0, le=_SIN_TOPE)] = None,
 ) -> list[MarketCandleRead]:
     """Las `limit` velas maduras mas recientes de un flujo, oldest->newest.
 
-    Un flujo sin historico no es un error: devuelve la lista VACIA con 200. La ausencia
-    de dato se dice diciendo que no hay dato, no fallando.
+    LO MAL FORMADO FALLA EN ALTO (ADR-006). Un symbol que no es canonico -- la forma
+    NATIVA del exchange, por ejemplo 'BTCUSDT' -- o un timeframe que no existe se
+    rechazan con 422. Antes salian 200 con lista vacia, y esa es la peor respuesta
+    posible: quien pregunta mal recibe "no hay dato" y no puede distinguir un flujo sin
+    historico de una peticion equivocada. Para un grafico eso es un lienzo en blanco
+    indistinguible de un mercado sin velas.
+
+    NO SE RESTRINGE exchange: el catalogo de exchanges crece (T-03 anadio OKX y Bybit) y
+    cerrarlo aqui obligaria a tocar este borde cada vez. Un exchange desconocido no es
+    una peticion mal formada, es una peticion sobre algo que aun no existe.
+
+    Un flujo sin historico SIGUE sin ser un error: devuelve la lista VACIA con 200. La
+    ausencia de dato se dice diciendo que no hay dato, no fallando.
     """
     with context.market_db.transaction() as session:
         velas = read_ohlcv_window(
             session,
             exchange=exchange,
             symbol=symbol,
-            timeframe=timeframe,
+            timeframe=timeframe.value,
             up_to_open_time=_SIN_TOPE if up_to is None else up_to,
             bars=limit,
         )

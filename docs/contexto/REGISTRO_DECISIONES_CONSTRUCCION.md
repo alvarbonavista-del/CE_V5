@@ -227,12 +227,15 @@ preciso.
 
 5.29 AISLAMIENTO DE COMMIT POR TANDA (construccion en paralelo). Cuando varias piezas o tareas
 construyen EN PARALELO sobre el mismo repositorio, cada commit incluye SOLO los ficheros de su
-propia tanda: git add con LISTA EXPLICITA DE RUTAS, nunca git add . ni git add -A (que pueden
-arrastrar trabajo concurrente sin commitear de otra pieza). La etiqueta del commit refleja
-EXACTAMENTE su contenido. Si un commit ya empujado resulto mixto, NO se reescribe la historia
-(5.14): se DOCUMENTA la realidad (que trabajos contiene) en el registro y se da a cada trabajo
-su trazabilidad. Nace del commit mixto abb7324 (P07b 3a-i + T-05) durante la construccion
-paralela de M3.
+propia tanda: git add con LISTA EXPLICITA DE RUTAS, nunca git add . ni git add -A ni git commit
+-a/-am (todos pueden arrastrar trabajo concurrente sin commitear de otra pieza). CADA SESION
+COMMITEA SOLO SUS FICHEROS. La etiqueta del commit refleja EXACTAMENTE su contenido. Si un commit
+ya empujado resulto mixto, NO se reescribe la historia (5.14): se DOCUMENTA la realidad (que
+trabajos contiene) en el registro y se da a cada trabajo su trazabilidad. Nace del commit mixto
+abb7324 (P07b 3a-i + T-05) durante la construccion paralela de M3; T-05 la aplico despues sin
+fallo: cada sesion commiteo SOLO sus rutas (borde 422 en 5acc9e0; visor en f7890e1), y las tandas
+OKX/Bybit de P07b lo mismo (295770a, 5dba7af). Regla HERMANA de la 5.30 (verde = bateria
+completa): juntas fijan que cada push lleva su contenido exacto y pasa el CI entero.
 
 5.30 VERDE = LA BATERIA COMPLETA DEL CI, NO UN SUBCONJUNTO. Antes de cada push, el periferico
 corre EN LOCAL la bateria COMPLETA que corre el CI -definida por .github/workflows/ci.yml, que
@@ -1449,9 +1452,37 @@ public_market), read_ohlcv_window + CandleOHLCV en infra/db/market_candles.py, w
 app.py/composition.py, tests. La 5.20 queda INTACTA: ce_v5_app solo tiene SELECT sobre
 market_candle (la API no fabrica velas). read_close_window (camino de lectura que usa P08) quedo
 factorizado en _WINDOW_SQL compartido, BYTE A BYTE identico y con test -> refactor cross-pieza
-aceptable por preservar comportamiento, registrado aqui. T-05 CONTINUA (el visor en si).
+aceptable por preservar comportamiento, registrado aqui. (El visor en si se remato despues; ver
+CIERRE.)
 NOTA DE TRAZABILIDAD DE abb7324 (feat(p07b): maquinaria de ingesta de trades, Tanda 3a-i;
 empujado a main, Actions verde 3/3): contiene DOS trabajos AUTORIZADOS -- P07b 3a-i (completo) +
 la porcion de T-05 de arriba. La etiqueta solo menciono P07b: infravaloracion documentada AQUI,
 sin reescribir la historia (5.14). CAUSA: un git add amplio en la tanda de commit de P07b
 arrastro trabajo concurrente de T-05 sin commitear; origen de la regla 5.29.
+CIERRE (T-05 ENTREGADA/CERRADA): construida en dos checkpoints sobre la rama wip/t-05-visor
+(PR #2), cada sesion commiteando SOLO sus ficheros (5.29).
+  - Checkpoint 1 (lectura de velas): porcion aterrizada en abb7324 (ver arriba) + REMATE DEL
+    BORDE en 5acc9e0 -- symbol validado contra SYMBOL_PATTERN canonico y timeframe como enum:
+    lo mal formado falla en 422 (ADR-006), antes salia 200 [] indistinguible de "sin datos";
+    exchange libre; par canonico sin datos -> 200 []. read_ohlcv_window (hermana de
+    read_close_window, dedup por revision vigente via _WINDOW_SQL comun) + endpoint publico
+    GET /v1/public/market/candles (read-only, public_market, sin tenant) + market_db en
+    ApiContext (rol ce_v5_app, solo SELECT por el GRANT de la 0012).
+  - Checkpoint 2 (el visor): commit f7890e1. Visor minimo en frontend/src/dev-viewer, aislado
+    (solo importa klinecharts + sus modulos; sin ui-core/app-core/device-*, depcruise verde).
+    Vite 8.0.14 SOLO dev-server (proxy /v1 -> API local, evita CORS; configurable por
+    CE_V5_DEV_VIEWER_API), KLineChart 10.0.0 via setDataLoader (getBars historico anclado por
+    open_time = event_time ADR-007; vivo por SONDEO en subscribeBar, fusion por timestamp).
+    Estados explicitos (cargando / sin datos / error / OK). Tipos DOM localizados con
+    /// <reference lib="dom" /> sin tocar el tsconfig raiz. Hueco de DataSources (datasources.ts,
+    forma metainfo: nombre, overlay-vs-panel, trazos, Via A pegada / Via B por stream) VACIO,
+    listo para enchufar RSI (P08b) y pivotphase/divergencias/footprint (P08c) sin rehacer el
+    visor; documenta el CRITICO 1 de I-01 (el calc de KLineChart devuelve array POR POSICION, no
+    por timestamp; la doc oficial miente; exige comprobacion empirica antes del primer indicador
+    real). datasources.ts es INERTE hoy (no se importa, no pinta nada): andamiaje, no codigo
+    muerto.
+  - Bateria completa local (5.30) VERDE en cada push; Actions VERDE 3/3 en el run #30010566621
+    (PR #2) sobre f7890e1.
+  - MERGE: wip/t-05-visor -> main con git merge --no-ff (preserva los hashes de la rama, como en
+    P08; NO se usa el boton "Merge" de GitHub si reescribe hashes). El backend de T-05 ya vivia
+    en main (abb7324); el merge aporta el remate 422 (5acc9e0) y el visor (f7890e1).

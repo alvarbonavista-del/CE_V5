@@ -118,6 +118,83 @@ def test_un_flujo_sin_historico_devuelve_la_lista_vacia_con_200(
     assert respuesta.json() == []
 
 
+# -- BORDE: lo mal formado falla en ALTO (ADR-006) ----------------------------
+#
+# Un flujo SIN HISTORICO responde 200 con lista vacia; una peticion MAL FORMADA responde
+# 422. Confundir los dos casos es el fallo silencioso: quien pregunta con la forma
+# nativa del exchange recibiria "no hay dato" y no podria distinguirlo de un mercado
+# sin velas.
+# En un grafico serian dos lienzos en blanco identicos por motivos opuestos.
+
+
+def test_el_simbolo_NATIVO_del_exchange_se_rechaza(client: TestClient) -> None:
+    # 'BTCUSDT' es como llama Binance al par; el contrato usa SIEMPRE la forma canonica
+    # BASE-QUOTE. Y la vuelta NO se puede calcular: 'BTCUSDT' podria ser BTC-USDT o
+    # BT-CUSDT. Aceptarlo en silencio seria invitar a consultar el historico de una
+    # moneda creyendo consultar el de otra.
+    respuesta = client.get(f"{_RUTA}?exchange=binance&symbol=BTCUSDT&timeframe=1m")
+
+    assert respuesta.status_code == 422
+
+
+@pytest.mark.parametrize(
+    "symbol", ["btc-usdt", "BTC_USDT", "-USDT", "BTC-", "BTC--USDT", ""]
+)
+def test_un_simbolo_no_canonico_se_rechaza(client: TestClient, symbol: str) -> None:
+    respuesta = client.get(f"{_RUTA}?exchange=binance&symbol={symbol}&timeframe=1m")
+
+    assert respuesta.status_code == 422
+
+
+@pytest.mark.parametrize("timeframe", ["2m", "1M", "", "1h30m", "basura"])
+def test_un_timeframe_fuera_del_vocabulario_se_rechaza(
+    client: TestClient, timeframe: str
+) -> None:
+    # El vocabulario de timeframes es CERRADO (ADR-005). '2m' es un intervalo REAL de
+    # otros exchanges que este sistema no sirve: rechazarlo en el borde evita una
+    # consulta que solo podria devolver vacio.
+    respuesta = client.get(
+        f"{_RUTA}?exchange=binance&symbol=BTC-USDT&timeframe={timeframe}"
+    )
+
+    assert respuesta.status_code == 422
+
+
+@pytest.mark.parametrize("timeframe", ["1m", "5m", "15m", "1h", "4h", "1d"])
+def test_los_seis_timeframes_del_contrato_se_aceptan(
+    client: TestClient, timeframe: str
+) -> None:
+    respuesta = client.get(
+        f"{_RUTA}?exchange=binance&symbol=BTC-USDT&timeframe={timeframe}"
+    )
+
+    assert respuesta.status_code == 200
+
+
+def test_un_simbolo_canonico_SIN_DATOS_sigue_siendo_200_vacio(
+    client: TestClient,
+) -> None:
+    # LA OTRA MITAD DE LA REGLA, la que evita pasarse de celo: un par canonico
+    # perfectamente valido del que aun no hay velas NO es un error. Si esto diera 422,
+    # un flujo recien suscrito pareceria una peticion equivocada.
+    respuesta = client.get(f"{_RUTA}?exchange=binance&symbol=SOL-USDT&timeframe=1m")
+
+    assert respuesta.status_code == 200
+    assert respuesta.json() == []
+
+
+def test_un_exchange_desconocido_NO_se_rechaza(client: TestClient) -> None:
+    # exchange queda como cadena libre a proposito: el catalogo crece (T-03 anadio OKX
+    # y Bybit). Un exchange que no conocemos no es una peticion mal formada, es una
+    # peticion sobre algo que todavia no existe -> 200 vacio.
+    respuesta = client.get(
+        f"{_RUTA}?exchange=exchange_que_no_existe&symbol=BTC-USDT&timeframe=1m"
+    )
+
+    assert respuesta.status_code == 200
+    assert respuesta.json() == []
+
+
 def test_sin_up_to_el_tope_es_el_centinela_y_no_un_reloj(
     client: TestClient, base: _BaseSinVelas
 ) -> None:
