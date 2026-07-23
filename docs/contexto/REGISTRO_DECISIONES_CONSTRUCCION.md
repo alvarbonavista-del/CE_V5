@@ -1486,3 +1486,85 @@ CIERRE (T-05 ENTREGADA/CERRADA): construida en dos checkpoints sobre la rama wip
   - MERGE: wip/t-05-visor -> main con git merge --no-ff (preserva los hashes de la rama, como en
     P08; NO se usa el boton "Merge" de GitHub si reescribe hashes). El backend de T-05 ya vivia
     en main (abb7324); el merge aporta el remate 422 (5acc9e0) y el visor (f7890e1).
+=====================================================================
+24. P07b -- FASE 3a CERRADA: CONECTORES DE TRADES + MODELO HONESTO DE BACKFILL
+=====================================================================
+NATURALEZA: sub-fase de P07b (trades individuales, previa a 3b footprint). Se registra a
+DISCO como cierre de PROCESO ("nada importante vive solo en el chat"); NO es el cierre
+FORMAL de P07b (ese, con doble revision Central+CSA, va TRAS 3b). Los TRES conectores de
+trades verdes (ci_local 24/24) y validados EN CALIENTE contra los exchanges reales.
+COMMITS EN main: 78920bf (Binance: multiplexado de trades sobre la conexion de velas),
+437a1dc + 308f812 (modelo honesto de backfill + allowlist de tenancy 7.8 para
+market_trade_gap), e53fa22 (doc de la regla 5.30), e08bf6d (tools/ci_local.py), 295770a
+(OKX), 5dba7af (Bybit).
+
+MODELO HONESTO DE BACKFILL (ratificado por Central). El nucleo NO finge que un hueco no
+existe: lo DECLARA.
+- is_complete: bool en FootprintPayload, DEFAULT False = FAIL-SAFE (una barra nace
+  incompleta hasta que se demuestre lo contrario). OPCIONAL (no required) A PROPOSITO, para
+  respetar el check de compatibilidad de evolucion 7.7. ORTOGONAL a maturity_state (una
+  barra puede estar CERRADA y a la vez INCOMPLETA).
+- Tabla market_trade_gap (migracion 0018): APPEND-ONLY, public_market (SIN tenant, SIN RLS;
+  su allowlist de tenancy es el check 7.8 -> de ahi el fix 308f812). Registra huecos por
+  (gap_from_event_time_ms, gap_to_event_time_ms) con UNIQUE(exchange, market_type, symbol,
+  gap_from, gap_to). La CONSUME 3b para poner is_complete=False en las barras que se solapen
+  con un hueco.
+- PORTS y motor: backfill_after_reconnect(key, last_seen) -> TradeBackfillResult es el UNICO
+  metodo; fetch_recent_trades y bootstrap_limit ELIMINADOS (un N de config no guarda
+  relacion con lo que duro el corte; la cota real la pone el techo del endpoint publico). La
+  DECISION de cobertura vive DETRAS del Port, en cada conector (CE-14: cambiar de exchange o
+  anadir uno es escribir un adaptador, no tocar el motor). FAIL-SAFE: covered=False ante
+  cualquier duda. El motor pide last_seen a la BD (no a la memoria: asi un REINICIO con un
+  hueco mayor que el techo REST tambien se detecta), hace el BACKFILL ANTES del poll (si
+  drenase primero, last_seen apuntaria al OTRO lado del agujero y el hueco se cerraria solo,
+  en silencio), y ante covered=False llama record_gap IDEMPOTENTE (+ metrica uncovered_gaps,
+  que cuenta huecos REALES, no reconexiones). VINCULANTE aguas abajo: una barra incompleta
+  -> NOT_EVALUABLE en P08 (CA-P08-04 D2): una regla no dispara sobre un footprint al que le
+  faltan trades.
+
+COBERTURA POR CONECTOR (verificada por SONDEO EN VIVO -- condicion de Central: la doc de los
+exchanges es una SPA no citable, asi que se comprueba contra el exchange real; los sondeos
+scratch se GRADUAN a tools/validate_*_trades_live.py, no se commitean como scratch):
+- Binance: GET /api/v3/trades SIN fromId (las 1000 recientes, NO pagina). Cobertura por id
+  MONOTONO; un hueco > 1000 -> incompleto. historicalTrades DESCARTADO: exige API key, que
+  violaria el cero-credenciales del feed publico.
+- OKX: canal 'trades-all' en /ws/v5/BUSINESS (no /public, ahi da error 60018). REST
+  history-trades PUBLICO pagina por id (&after hacia atras) -> TAPA EL HUECO ENTERO (bucle
+  acotado; tope de esfuerzo ~40 paginas / 12000 trades, luego fail-safe). CAP SILENCIOSO a
+  300 (pides 1000 -> 300 con code=0): se trata 300 como techo de pagina, jamas se asume mas.
+  Cobertura por id CONTIGUO.
+- Bybit: 'publicTrade' en /v5/public/spot (compartido con velas; ping {"op":"ping"} < 20 s
+  SIEMPRE). trade_id NUMERICO y contiguo (NO UUID) -> cobertura por id. recent-trade acotado
+  a 60 y SIN paginar -> incompleto FRECUENTE (es lo ESPERADO en Bybit, no un bug). WS
+  (i/p/v/S/T) y REST (execId/price/size/side/time) usan NOMBRES distintos pero el MISMO
+  espacio de id (empalman). set_symbol_map (native<->canonical, simbolo pegado, como Binance).
+- AGRESOR DETERMINISTA (se LEE del exchange, no se estima; de ahi footprint reproducible bit
+  a bit): Binance flag 'm' (INVERTIDO: buyer-maker -> agresor 'sell'), OKX 'side', Bybit 'S'.
+
+REGLAS DE PROCESO (ya registradas en la seccion 5, aqui por trazabilidad de esta fase): 5.29
+(commit de rutas EXPLICITAS, nunca git add -A/. ni commit -a; cada sesion commitea SOLO sus
+ficheros; nace del commit mixto abb7324) y 5.30 (verde = bateria COMPLETA de ci.yml;
+mecanismo tools/ci_local.py, 24 pasos, con guardia anti-deriva que compara con ci.yml en las
+DOS direcciones; nace del run #26). Ambas se aplicaron sin fallo en las tandas OKX/Bybit y
+en T-05.
+
+NOTAS ABIERTAS:
+- T-05 (visor + endpoint de lectura de velas): YA ENTREGADA y EN main (seccion 23); estuvo
+  "sin commitear en wip/t-05-visor a la espera de Alvaro" hasta el merge faf1d70. Ficha
+  propia, NO es P07b.
+- Candidatos futuros (no bloqueantes): hook pre-push que corra ci_local; unificacion "A" de
+  ci.yml (un solo comando como fuente de verdad de la bateria).
+
+SIGUIENTE -- 3b (agregacion footprint; topologia RATIFICADA):
+- DISPARO por market.candle_closed (Opcion A): el footprint de una barra se agrega cuando su
+  vela cierra, no por un reloj.
+- BUCKETING por floor(event_time / tf_ms) en UTC dentro del cache_key: cada trade cae en su
+  barra por su event_time de ORIGEN (ADR-007), no por cuando se proceso.
+- Agregacion CONMUTATIVA (dedup por identidad natural del trade + suma): los mismos trades en
+  cualquier orden producen el MISMO footprint -> reproducibilidad BIT A BIT sin necesidad de
+  un orden total entre trades del mismo milisegundo.
+- Outbox ATOMICO: footprint_closed / footprint_corrected en la MISMA transaccion que el
+  estado (patron P02b).
+- CONSUME market_trade_gap para fijar is_complete en las barras solapadas con un hueco.
+- Derivacion demanda-footprint -> stream de trades: un interes en footprint suscribe el flujo
+  de trades subyacente, bajo CE-14.

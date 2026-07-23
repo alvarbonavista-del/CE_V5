@@ -4,7 +4,9 @@ Archivo vivo de estado de proceso (sin logica). Lo mantiene Claude Code
 en disco; Alvaro lo resube al knowledge cada vez que se cierra una pieza
 o un hito (DOC_ENTREGABLES sec.8).
 
-Ultima actualizacion: 2026-07-21 (P08 ENTREGADA: motor de reglas, firmada; M3 sigue abierto).
+Ultima actualizacion: 2026-07-23 (P07b FASE 3a CERRADA: conectores de trades
+Binance/OKX/Bybit + modelo honesto de backfill, todos verdes y validados en caliente;
+falta 3b -agregacion footprint- para el cierre formal de P07b. T-05 ENTREGADA y en main).
 
 ## Hito actual
 M3 (datos, reglas y notificacion backend) ABIERTO y EXPANDIDO a paridad
@@ -12,7 +14,7 @@ funcional v4 (EXP-M3-01, firmada 2026-07-17; doble revision Central + CSA;
 no reabre ADR). Piezas de M3 y su estado:
   - P07  (ingesta de market data) .................... ENTREGADA
   - T-03 (conectores OKX y Bybit; transversal) ....... ENTREGADA
-  - P07b (trades + footprint) ........................ PENDIENTE
+  - P07b (trades + footprint) ........................ EN CURSO (fase 3a CERRADA; falta 3b)
   - P07c (orderbook L2 con estado) ................... PENDIENTE
   - P08  (motor de reglas) ........................... ENTREGADA
   - P08b (DataSources candle-derived) ................ PENDIENTE
@@ -82,9 +84,13 @@ P07 - Ingesta de market data (hibrida), ADR-014: ENTREGADA. ABRE el hito M3
   cola en el arbol.)
 
 ## Pieza en curso
-NINGUNA. P08 queda ENTREGADA y no hay pieza abierta. La siguiente del orden de
-M3 es P07b (trades + footprint); admiten paralelismo P07b, P07c y P08b.
-T-05 (visor de desarrollo, transversal): CERRADA (ver "Piezas cerradas / transversales").
+P07b (trades + footprint): EN CURSO. FASE 3a CERRADA (conectores de trades Binance/OKX/
+Bybit + modelo honesto de backfill; ci_local 24/24 y validacion en caliente verdes; ver
+REGISTRO_DECISIONES seccion 24). Commits en main: 78920bf (Binance), 437a1dc + 308f812
+(modelo honesto + allowlist 7.8), e53fa22 (doc 5.30), e08bf6d (ci_local), 295770a (OKX),
+5dba7af (Bybit). PENDIENTE 3b (agregacion footprint) para el cierre FORMAL de P07b (doble
+revision Central+CSA). Admiten paralelismo P07c y P08b.
+T-05 (visor de desarrollo, transversal): CERRADA (ver "Transversales cerradas").
 
 ## Piezas cerradas
 - P00 - Esqueleto de repositorio + CI base: ENTREGADA (hito M0 CERRADO).
