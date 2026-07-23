@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>CE_V5 dev-viewer (T-05, desechable)</title>
+    <style>
+      /* Sin pulido a proposito: es una herramienta, no el chart del producto. */
+      body {
+        margin: 0;
+        font-family: system-ui, sans-serif;
+        background: #0e0e12;
+        color: #e6e6ea;
+      }
+      #bar {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        padding: 8px 12px;
+        border-bottom: 1px solid #2a2a33;
+        flex-wrap: wrap;
+      }
+      #bar label {
+        font-size: 12px;
+        color: #9a9aa5;
+      }
+      #bar input,
+      #bar select,
+      #bar button {
+        font: inherit;
+        padding: 4px 6px;
+        background: #1a1a22;
+        color: #e6e6ea;
+        border: 1px solid #2a2a33;
+        border-radius: 4px;
+      }
+      #status {
+        margin-left: auto;
+        font-size: 13px;
+        padding: 4px 10px;
+        border-radius: 4px;
+        border: 1px solid #2a2a33;
+      }
+      #status[data-state="cargando"] {
+        color: #d8c26a;
+      }
+      #status[data-state="empty"] {
+        color: #9a9aa5;
+      }
+      #status[data-state="error"] {
+        color: #e07a7a;
+        border-color: #5a2a2a;
+      }
+      #status[data-state="normal"] {
+        color: #7ac47a;
+      }
+      #chart {
+        width: 100vw;
+        height: calc(100vh - 49px);
+      }
+    </style>
+  </head>
+  <body>
+    <div id="bar">
+      <label for="exchange">exchange</label>
+      <input id="exchange" value="binance" size="10" />
+      <label for="symbol">symbol</label>
+      <input id="symbol" value="BTC-USDT" size="12" />
+      <label for="timeframe">timeframe</label>
+      <select id="timeframe">
+        <option value="1m" selected>1m</option>
+        <option value="5m">5m</option>
+        <option value="15m">15m</option>
+        <option value="1h">1h</option>
+        <option value="4h">4h</option>
+        <option value="1d">1d</option>
+      </select>
+      <button id="load" type="button">Cargar</button>
+      <span id="status" data-state="cargando">Cargando</span>
+    </div>
+    <div id="chart"></div>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>
