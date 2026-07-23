@@ -40,14 +40,26 @@ from ce_v5.infra.connectors.bybit.symbols import (
     to_interval,
     to_native,
     to_topic,
+    to_trade_topic,
 )
 from ce_v5.infra.connectors.bybit.translate import (
     BybitTranslationError,
     raw_candle_from_bybit_rest,
     raw_candle_from_bybit_ws,
+    raw_trade_from_bybit_rest,
+    raw_trade_from_bybit_ws,
     supported_bybit_timeframes,
 )
-from source.families.market import Instrument, MarketStreamKey, RawCandle, Timeframe
+from source.families.market import (
+    Instrument,
+    LastSeenTrade,
+    MarketDataKind,
+    MarketStreamKey,
+    RawCandle,
+    RawTrade,
+    Timeframe,
+    TradeBackfillResult,
+)
 
 _WS_BASE = "wss://stream.bybit.com/v5/public/spot"
 _REST_BASE = "https://api.bybit.com"
@@ -56,6 +68,59 @@ _USER_AGENT = "Mozilla/5.0 (compatible; ce-v5-market-data/0.1)"
 _PING = json.dumps({"op": "ping"})
 # Bybit spot: hasta 10 args por peticion de suscripcion.
 _MAX_ARGS_PER_SUB = 10
+# Prefijo del topic de trades: velas y trades comparten conexion y se separan por aqui.
+_TRADES_TOPIC_PREFIX = "publicTrade."
+# Techo REAL de recent-trade SIN clave. NO es config: es lo que el endpoint da. El
+# sondeo en vivo vio que Bybit spot lo CAPA A 60 EN SILENCIO (pides 1000 -> 60 con
+# retCode=0). NO pagina: una sola llamada. Por eso su ventana de relleno es pequena y un
+# hueco de mas de ~60 trades queda descubierto (fail-safe FRECUENTE, no un bug).
+_REST_TRADES_MAX = 60
+
+
+def _menor_event_time(trades: Sequence[RawTrade]) -> int | None:
+    """El event_time mas antiguo del lote, o None si esta vacio."""
+    return min((trade.event_time_ms for trade in trades), default=None)
+
+
+def _coverage_bybit(
+    last_seen: LastSeenTrade, backfill: Sequence[RawTrade]
+) -> tuple[bool, int | None, int | None]:
+    """Decide si el relleno REST alcanzo lo que ya teniamos. PURA: sin red, sin reloj.
+
+    IGUAL EN FORMA a _coverage_binance/_coverage_okx: el tradeId de Bybit es un id
+    ENTERO monotono y contiguo por instrumento (verificado en el sondeo), y el id del WS
+    ('i') y el del REST ('execId') son el MISMO espacio, asi que se razona por
+    CONTIGUIDAD. Si el trade mas antiguo del relleno es el SIGUIENTE al ultimo que
+    teniamos (o anterior: hay solape), la serie es contigua. Si no, falta dato: hueco.
+
+    EN BYBIT ESTE FAIL-SAFE ES FRECUENTE, no excepcional: recent-trade solo da ~60
+    trades y no pagina, asi que un corte de mas de 60 trades deja hueco. Es lo esperado.
+
+    FAIL-SAFE en los tres caminos inciertos (ids no numericos, relleno vacio, o lo que
+    impida razonar): se declara hueco. Marcar barras incompletas de mas es feo; NO
+    declarar un hueco real publica una barra a la que le faltan trades como completa.
+    """
+    if last_seen.trade_id is None:
+        # PRIMERA CONEXION: no hay nada persistido, luego no hay hueco posible.
+        return True, None, None
+
+    try:
+        ultimo_id = int(last_seen.trade_id)
+        ids = [int(trade.trade_id) for trade in backfill]
+    except (TypeError, ValueError):
+        return False, last_seen.event_time_ms, _menor_event_time(backfill)
+
+    if not ids:
+        return False, last_seen.event_time_ms, None
+
+    indice_mas_antiguo = min(range(len(ids)), key=lambda i: ids[i])
+    if ids[indice_mas_antiguo] <= ultimo_id + 1:
+        return True, None, None
+    return (
+        False,
+        last_seen.event_time_ms,
+        backfill[indice_mas_antiguo].event_time_ms,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,16 +143,26 @@ class ConnectorMetrics:
     """Observabilidad: sin esto, una cola que descarta es un agujero invisible."""
 
     dropped_full_queue: int = 0
+    # Contador PROPIO de los trades: sumarlo al de velas ocultaria CUAL de los dos
+    # flujos pierde datos, y son de escalas muy distintas (miles de trades por minuto vs
+    # vela por minuto).
+    dropped_full_queue_trades: int = 0
     translation_errors: int = 0
     reconnections: int = 0
     degraded_streams: set[str] = field(default_factory=set)
 
 
 class BybitSpotConnector:
-    """Feed publico de Bybit v5 Spot. Cumple MarketDataSourcePort por FORMA.
+    """Feed publico de Bybit v5 Spot. Cumple MarketDataSourcePort y TradeDataSourcePort
+    por FORMA.
 
     Implementa SymbolMapSink (set_symbol_map): en Bybit el simbolo va PEGADO y la vuelta
-    nativo->canonico se consulta al catalogo, como en Binance.
+    nativo->canonico se consulta al catalogo, como en Binance. El MISMO mapa sirve a
+    velas y a trades.
+
+    VELAS Y TRADES VIAJAN POR LA MISMA CONEXION spot y se separan por el PREFIJO del
+    topic ('kline.' vs 'publicTrade.'). Lo SEPARADO es la COLA de cada clase:
+    un pico de trades no puede desalojar velas, ni al reves.
     """
 
     def __init__(
@@ -100,6 +175,12 @@ class BybitSpotConnector:
         self._deseados: dict[str, MarketStreamKey] = {}
         self._native_to_canonical: dict[str, str] = native_to_canonical or {}
         self._cola: queue.Queue[RawCandle] = queue.Queue(maxsize=self._config.max_queue)
+        # Cola SEPARADA para los trades, con el mismo tope y el mismo backpressure
+        # observable. Compartirla con las velas dejaria que una avalancha de trades
+        # expulsase las velas, que son el dato sobre el que se evaluan las reglas.
+        self._cola_trades: queue.Queue[RawTrade] = queue.Queue(
+            maxsize=self._config.max_queue
+        )
         self._lectores: dict[int, threading.Thread] = {}
         self._parar = threading.Event()
         self._ssl = ssl.create_default_context()
@@ -200,6 +281,68 @@ class BybitSpotConnector:
     def supported_timeframes(self) -> frozenset[Timeframe]:
         return supported_bybit_timeframes()
 
+    # -- TradeDataSourcePort -------------------------------------------------
+    #
+    # open/close/active/drain_reconnected los comparte con el puerto de velas: son las
+    # MISMAS suscripciones sobre la MISMA conexion, distinguidas por el data_kind. Aqui
+    # solo estan los dos metodos propios de trades.
+
+    def poll_trades(self, timeout_ms: int) -> Sequence[RawTrade]:
+        """DRENA la cola de trades. Espejo de poll(): PULL con tope, manda el motor y no
+        el exchange. En trades importa aun mas: el caudal es de otro orden de magnitud.
+        """
+        lote: list[RawTrade] = []
+        try:
+            lote.append(self._cola_trades.get(timeout=timeout_ms / 1000.0))
+        except queue.Empty:
+            return lote
+        while True:
+            try:
+                lote.append(self._cola_trades.get_nowait())
+            except queue.Empty:
+                break
+        return lote
+
+    def backfill_after_reconnect(
+        self, key: MarketStreamKey, last_seen: LastSeenTrade
+    ) -> TradeBackfillResult:
+        """RELLENA el hueco de una reconexion por REST publico y DICE si lo cubrio.
+
+        UNA SOLA LLAMADA a recent-trade: Bybit NO pagina y capa a _REST_TRADES_MAX (60)
+        EN SILENCIO. Se pide ese techo y no se asume nada mas alla de lo que la
+        respuesta trajo. La ventana es pequena a proposito del exchange, no nuestra: por
+        eso un corte de mas de ~60 trades queda descubierto (covered=False), lo cual
+        es el camino COMUN, no un fallo.
+
+        Datos NO validados, igual que en velas: el REST no es mas confiable que el
+        socket y los valida la MISMA frontera. El solape ya persistido lo absorbe el
+        dedup por identidad natural. La DECISION de cobertura vive en _coverage_bybit.
+        """
+        params = urllib.parse.urlencode(
+            {
+                "category": "spot",
+                "symbol": to_native(key.symbol),
+                "limit": _REST_TRADES_MAX,
+            }
+        )
+        filas = self._lista(self._get_json(f"/v5/market/recent-trade?{params}"))
+        trades: list[RawTrade] = []
+        if filas is not None:
+            for fila in filas:
+                try:
+                    trades.append(
+                        raw_trade_from_bybit_rest(fila, key.symbol, _MARKET_TYPE)
+                    )
+                except BybitTranslationError:
+                    self.metrics.translation_errors += 1
+        covered, gap_from, gap_to = _coverage_bybit(last_seen, trades)
+        return TradeBackfillResult(
+            raw_trades=trades,
+            covered=covered,
+            gap_from_event_time_ms=gap_from,
+            gap_to_event_time_ms=gap_to,
+        )
+
     def drain_reconnected(self) -> AbstractSet[str]:
         """Devuelve (y limpia) las claves canonicas que reconectaron. Bajo lock."""
         with self._reconnected_lock:
@@ -239,11 +382,34 @@ class BybitSpotConnector:
 
     # -- IO interno ----------------------------------------------------------
 
+    def _es_suscribible(self, key: MarketStreamKey) -> bool:
+        """Una clave que ESTE connector suscribe: velas (con timeframe) o trades.
+
+        FOOTPRINT queda fuera: tiene timeframe, pero es dato DERIVADO que agregamos
+        NOSOTROS, no un flujo que Bybit publique. Es el UNICO sitio que decide que es
+        suscribible; lo usan _replanificar, _leer y _registrar_reconexion sin divergir.
+        """
+        if key.data_kind is MarketDataKind.CANDLES:
+            return key.timeframe is not None
+        return key.data_kind is MarketDataKind.TRADES
+
+    def _topics_de(self, keys: tuple[MarketStreamKey, ...]) -> list[str]:
+        """Los topics de suscripcion de una conexion: velas (kline.) Y trades
+        (publicTrade.), que comparten conexion y se separan por el prefijo del topic.
+        """
+        topics: list[str] = []
+        for k in keys:
+            if k.data_kind is MarketDataKind.TRADES:
+                topics.append(to_trade_topic(k.symbol))
+            elif k.timeframe is not None:
+                topics.append(to_topic(k.symbol, k.timeframe.value))
+        return topics
+
     def _replanificar(self) -> None:
         claves = {
             key.as_stream_key()
             for key in self._deseados.values()
-            if key.timeframe is not None
+            if self._es_suscribible(key)
         }
         plan = self._planner.assign(claves)
         for indice, stream_keys in plan.items():
@@ -264,11 +430,7 @@ class BybitSpotConnector:
         """Lector de UNA conexion: suscribe al conectar y reconecta con backoff."""
         espera = self._config.backoff_initial_s
         ya_conecto = False
-        topics = [
-            to_topic(k.symbol, k.timeframe.value)
-            for k in keys
-            if k.timeframe is not None
-        ]
+        topics = self._topics_de(keys)
         while not self._parar.is_set():
             try:
                 with ws_client.connect(
@@ -330,6 +492,9 @@ class BybitSpotConnector:
         datos = sobre.get("data")
         if not isinstance(topic, str) or not isinstance(datos, list):
             return
+        if topic.startswith(_TRADES_TOPIC_PREFIX):
+            self._encolar_trades(topic, datos)
+            return
         if not topic.startswith("kline."):
             return
         partes = topic.split(".", 2)
@@ -357,14 +522,41 @@ class BybitSpotConnector:
                 self.metrics.dropped_full_queue += 1
                 self.metrics.degraded_streams.add(canonico)
 
+    def _encolar_trades(self, topic: str, datos: list[Any]) -> None:
+        """Un mensaje de 'publicTrade' -> RawTrade(s) en la cola de TRADES. Espejo del
+        camino de velas: mismo canonico CONSULTADO al mapa (jamas deducido), misma
+        conversion de la excepcion de traduccion en metrica, mismo backpressure contado.
+        """
+        native = topic[len(_TRADES_TOPIC_PREFIX) :]
+        canonico = self._native_to_canonical.get(native)
+        if canonico is None:
+            self.metrics.translation_errors += 1
+            return
+        for obj in datos:
+            try:
+                trade = raw_trade_from_bybit_ws(obj, canonico, _MARKET_TYPE)
+            except BybitTranslationError:
+                self.metrics.translation_errors += 1
+                continue
+            try:
+                self._cola_trades.put_nowait(trade)
+            except queue.Full:
+                # BACKPRESSURE OBSERVABLE, con su contador propio (ConnectorMetrics).
+                self.metrics.dropped_full_queue_trades += 1
+                self.metrics.degraded_streams.add(canonico)
+
     def _registrar_reconexion(self, keys: tuple[MarketStreamKey, ...]) -> None:
         """Cuenta una reconexion EXITOSA y marca sus claves para el bootstrap.
 
         Se cuenta al re-establecer (no en el except, que es el DROP y puede repetirse
         por backoff). Marca las claves canonicas directamente.
+
+        Marca TODAS las claves suscribibles -- velas Y trades --: una conexion
+        multiplexada que se cae deja hueco de las dos clases, y cada motor filtra de
+        drain_reconnected lo que le toca.
         """
         self.metrics.reconnections += 1
-        claves = {k.as_stream_key() for k in keys if k.timeframe is not None}
+        claves = {k.as_stream_key() for k in keys if self._es_suscribible(k)}
         if claves:
             with self._reconnected_lock:
                 self._reconnected.update(claves)
