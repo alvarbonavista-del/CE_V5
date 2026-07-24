@@ -63,8 +63,13 @@ from source.families.market import (
     TradeBackfillResult,
 )
 
-_WS_BASE = "wss://stream.binance.com:9443/stream"
-_REST_BASE = "https://api.binance.com"
+# DOMINIO DE DATOS (no geo-restringido por MiCA): la API PUBLICA de datos de Binance
+# vive en data-*.binance.vision y sirve los MISMOS streams y payloads que los hosts
+# geo-restringidos (stream.binance.com / api.binance.com), que restringen el SERVICIO,
+# no el dato. Verificado en vivo (Fase A, 5.32): WS combinado y /api/v3/depth por :443.
+# El path combinado (/stream?streams=...) y /api/v3/* son identicos; cambia el host.
+_WS_BASE = "wss://data-stream.binance.vision:443/stream"
+_REST_BASE = "https://data-api.binance.vision"
 _MARKET_TYPE = "spot"
 # Techo de /api/v3/trades SIN clave de API. NO es un parametro de configuracion: es lo
 # que el endpoint publico da. De aqui sale la cota REAL del relleno tras una reconexion.
