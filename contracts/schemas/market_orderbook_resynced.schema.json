@@ -1,0 +1,69 @@
+{
+  "$defs": {
+    "MarketType": {
+      "description": "Tipo de mercado. Solo SPOT en v5.0 (derivados: fuera de alcance).",
+      "enum": [
+        "spot"
+      ],
+      "title": "MarketType",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "market.orderbook_resynced: el libro perdio continuidad y se REINICIO (P07c).\n\nSu PROPIO hecho publicado, no una correccion (no hay candle_corrected para el\nlibro): un resync dice que entre from_sequence (lo ultimo bueno) y to_sequence\n(donde reanudo) hubo un hueco, y que el estado se reconstruyo desde una foto nueva.\nto_sequence es None cuando el extremo es DESCONOCIDO (el motor no supo acotar donde\nreanudo): fail-safe, un hueco abierto por ese lado.",
+  "properties": {
+    "event_time": {
+      "description": "Instante en UTC epoch milliseconds (int64). Formato canonico de tiempo en cable (ADR-007).",
+      "maximum": 9223372036854775807,
+      "minimum": 0,
+      "title": "Event Time",
+      "type": "integer"
+    },
+    "exchange": {
+      "pattern": "^[a-z][a-z0-9_]{1,31}$",
+      "title": "Exchange",
+      "type": "string"
+    },
+    "from_sequence": {
+      "minimum": 0,
+      "title": "From Sequence",
+      "type": "integer"
+    },
+    "market_type": {
+      "$ref": "#/$defs/MarketType"
+    },
+    "reason": {
+      "maxLength": 64,
+      "minLength": 1,
+      "title": "Reason",
+      "type": "string"
+    },
+    "symbol": {
+      "pattern": "^[A-Z0-9]{1,20}-[A-Z0-9]{1,20}$",
+      "title": "Symbol",
+      "type": "string"
+    },
+    "to_sequence": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "To Sequence"
+    }
+  },
+  "required": [
+    "exchange",
+    "market_type",
+    "symbol",
+    "from_sequence",
+    "reason",
+    "event_time"
+  ],
+  "title": "OrderbookResyncedPayload",
+  "type": "object"
+}

@@ -1,0 +1,178 @@
+{
+  "$defs": {
+    "MarketOrderbookSnapshotKind": {
+      "description": "Las dos variantes de un snapshot en UNA tabla (dictamen de Central).\n\nFRONTIER se publica (as-of close_time, uno por barra); SAMPLE se persiste sin\npublicar (muestra intra-ventana a cadencia). La misma forma de payload; el kind y el\nsitio (outbox o no) los distingue.",
+      "enum": [
+        "frontier",
+        "sample"
+      ],
+      "title": "MarketOrderbookSnapshotKind",
+      "type": "string"
+    },
+    "MarketType": {
+      "description": "Tipo de mercado. Solo SPOT en v5.0 (derivados: fuera de alcance).",
+      "enum": [
+        "spot"
+      ],
+      "title": "MarketType",
+      "type": "string"
+    },
+    "OrderbookLevel": {
+      "additionalProperties": false,
+      "description": "Un nivel del top-K persistido: precio y tamano agregado a ese precio.\n\nYa VALIDADO (ADR-006): precio y tamano finitos y positivos. Un nivel de tamano 0 no\nes un nivel del libro (en el motor un tamano 0 BORRA el nivel; lo que se persiste\nson niveles vivos). Decimal, nunca float: el libro es la base del precio de\nejecucion.",
+      "properties": {
+        "price": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+              "type": "string"
+            }
+          ],
+          "title": "Price"
+        },
+        "size": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+              "type": "string"
+            }
+          ],
+          "title": "Size"
+        }
+      },
+      "required": [
+        "price",
+        "size"
+      ],
+      "title": "OrderbookLevel",
+      "type": "object"
+    },
+    "Timeframe": {
+      "description": "Granularidad de vela. Conjunto CERRADO y ampliable (ADR-005).\n\nLos seis son DIVISORES EXACTOS del dia. Gracias a eso vale una\ninvariante universal: el inicio de una vela SIEMPRE cae en una\nfrontera exacta de su intervalo contada desde epoch. Un timeframe\nsemanal o mensual romperia esa invariante (su frontera no es un\ndivisor del dia) y exigiria una regla de alineacion distinta: entra\ncuando se necesite, no antes.",
+      "enum": [
+        "1m",
+        "5m",
+        "15m",
+        "1h",
+        "4h",
+        "1d"
+      ],
+      "title": "Timeframe",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Snapshot top-K del libro L2 (P07c). Cubre las dos variantes: frontier y sample.\n\nEl payload es UNO; el kind decide si se publica (frontier, por outbox) o solo se\npersiste (sample). Por eso NO se registra por si mismo dos veces: el registro\n(CA-06) mapea market.orderbook_frontier -> esta clase; el sample no es event_type.\n\nis_complete es ORTOGONAL al kind: una muestra o un frontier pueden estar completos o\nno segun hubiera un hueco/resync en su ventana (cond.3). DEFAULT False (fail-safe):\nlo que no declara su completitud cuenta como incompleto.",
+  "properties": {
+    "asks": {
+      "items": {
+        "$ref": "#/$defs/OrderbookLevel"
+      },
+      "title": "Asks",
+      "type": "array"
+    },
+    "bids": {
+      "items": {
+        "$ref": "#/$defs/OrderbookLevel"
+      },
+      "title": "Bids",
+      "type": "array"
+    },
+    "cadence_ms": {
+      "minimum": 1,
+      "title": "Cadence Ms",
+      "type": "integer"
+    },
+    "close_time": {
+      "description": "Instante en UTC epoch milliseconds (int64). Formato canonico de tiempo en cable (ADR-007).",
+      "maximum": 9223372036854775807,
+      "minimum": 0,
+      "title": "Close Time",
+      "type": "integer"
+    },
+    "depth_k": {
+      "minimum": 1,
+      "title": "Depth K",
+      "type": "integer"
+    },
+    "exchange": {
+      "pattern": "^[a-z][a-z0-9_]{1,31}$",
+      "title": "Exchange",
+      "type": "string"
+    },
+    "formula_version": {
+      "minimum": 1,
+      "title": "Formula Version",
+      "type": "integer"
+    },
+    "is_complete": {
+      "default": false,
+      "title": "Is Complete",
+      "type": "boolean"
+    },
+    "kind": {
+      "$ref": "#/$defs/MarketOrderbookSnapshotKind"
+    },
+    "market_type": {
+      "$ref": "#/$defs/MarketType"
+    },
+    "open_time": {
+      "description": "Instante en UTC epoch milliseconds (int64). Formato canonico de tiempo en cable (ADR-007).",
+      "maximum": 9223372036854775807,
+      "minimum": 0,
+      "title": "Open Time",
+      "type": "integer"
+    },
+    "sample_time": {
+      "anyOf": [
+        {
+          "description": "Instante en UTC epoch milliseconds (int64). Formato canonico de tiempo en cable (ADR-007).",
+          "maximum": 9223372036854775807,
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Sample Time"
+    },
+    "sequence": {
+      "minimum": 0,
+      "title": "Sequence",
+      "type": "integer"
+    },
+    "symbol": {
+      "pattern": "^[A-Z0-9]{1,20}-[A-Z0-9]{1,20}$",
+      "title": "Symbol",
+      "type": "string"
+    },
+    "timeframe": {
+      "$ref": "#/$defs/Timeframe"
+    }
+  },
+  "required": [
+    "exchange",
+    "market_type",
+    "symbol",
+    "depth_k",
+    "bids",
+    "asks",
+    "sequence",
+    "kind",
+    "timeframe",
+    "open_time",
+    "close_time",
+    "cadence_ms",
+    "formula_version"
+  ],
+  "title": "OrderbookSnapshotPayload",
+  "type": "object"
+}

@@ -18,6 +18,8 @@ def test_build_schemas_incluye_todos_los_contratos() -> None:
         "market_candle_corrected.schema.json",
         "market_footprint_closed.schema.json",
         "market_footprint_corrected.schema.json",
+        "market_orderbook_frontier.schema.json",
+        "market_orderbook_resynced.schema.json",
         "api_register_request.schema.json",
         "api_login_request.schema.json",
         "api_session.schema.json",

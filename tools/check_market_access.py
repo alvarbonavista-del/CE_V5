@@ -15,7 +15,7 @@ hecho verificado en cada build. FALLA si:
   su firma o su retorno, o si sus columnas de salida dejan de ser EXACTAMENTE
   (out_market_stream_key, out_intent_count), podria revelar QUIEN pide un stream, y solo
   puede revelar CUANTOS;
-- el ingestor puede encolar en la outbox algo que no sea uno de los cinco market.*: un
+- el ingestor puede encolar en la outbox algo que no sea uno de los siete market.*: un
   ingestor comprometido no puede fabricar un execution.* falso;
 - market_subscription_intent pierde su RLS: la excepcion de CA-P07-G se apoya en que la
   RLS esta activa.
@@ -63,6 +63,8 @@ MARKET_TABLES: tuple[str, ...] = (
     "market_trade",
     "market_footprint",
     "market_trade_gap",
+    "market_orderbook_snapshot",
+    "market_orderbook_discontinuity",
 )
 
 # El historico es APPEND-ONLY: nadie, ni siquiera quien lo escribe, lo reescribe.
@@ -74,6 +76,10 @@ _APPEND_ONLY_TABLES: tuple[str, ...] = (
     # Un hueco no se "arregla" borrandolo: el dato perdido no vuelve y borrar la fila
     # solo borraria la prueba de que falta.
     "market_trade_gap",
+    # El libro L2 (P07c): la foto top-K y el resync tampoco se reescriben. Un resync
+    # borrado seria un hueco del que nadie se entera.
+    "market_orderbook_snapshot",
+    "market_orderbook_discontinuity",
 )
 _WRITE_PRIVILEGES: tuple[str, ...] = ("INSERT", "UPDATE", "DELETE", "TRUNCATE")
 _ALL_PRIVILEGES: tuple[str, ...] = (
@@ -105,13 +111,16 @@ POLICY_AND_AUDIT_TABLES: tuple[str, ...] = (
     "sensitive_action_audit",
 )
 
-# Los TRES unicos event_type que el ingestor puede encolar.
+# Los SIETE unicos event_type que el ingestor puede encolar (candle x3 + footprint x2 +
+# orderbook x2). La variante 'sample' del snapshot NO esta: se persiste, no se publica.
 MARKET_EVENT_TYPES: tuple[str, ...] = (
     "market.candle_updated",
     "market.candle_closed",
     "market.candle_corrected",
     "market.footprint_closed",
     "market.footprint_corrected",
+    "market.orderbook_frontier",
+    "market.orderbook_resynced",
 )
 
 # Familias que JAMAS deben aparecer en una policy de outbox del ingestor.
@@ -265,6 +274,8 @@ def _privilege_violations(privileges: Mapping[tuple[str, str, str], bool]) -> li
         "market_trade",
         "market_footprint",
         "market_trade_gap",
+        "market_orderbook_snapshot",
+        "market_orderbook_discontinuity",
     ):
         for privilege in _WRITE_PRIVILEGES:
             if privileges.get((APP_ROLE_NAME, table, privilege), False):
@@ -340,14 +351,14 @@ def _outbox_violations(
             if event_type not in lowered:
                 out.append(
                     f"outbox: la policy '{name}' no menciona '{event_type}' (regla "
-                    "5.20): debe acotar EXACTAMENTE a los cinco market.*."
+                    "5.20): debe acotar EXACTAMENTE a los siete market.*."
                 )
         for prefix in _FORBIDDEN_EVENT_PREFIXES:
             if prefix in lowered:
                 out.append(
                     f"outbox: la policy '{name}' menciona '{prefix}' (regla 5.20): un "
                     "ingestor comprometido no puede fabricar un execution.* falso; se "
-                    "lo impide el MOTOR. Su outbox se acota a los cinco market.* y a "
+                    "lo impide el MOTOR. Su outbox se acota a los siete market.* y a "
                     "nada mas."
                 )
 
@@ -515,7 +526,7 @@ def main() -> int:
         f"OK check market (regla 5.20, CA-P07-D/G): {APP_ROLE_NAME} no puede escribir "
         f"market data; el historico es append-only para TODOS; {INGESTION_ROLE_NAME} "
         "no ve la demanda fila a fila (solo la ventanilla agregada), no toca politica "
-        "ni auditoria, y su outbox esta acotada por el motor a los cinco market.*."
+        "ni auditoria, y su outbox esta acotada por el motor a los siete market.*."
     )
     return 0
 
