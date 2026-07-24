@@ -88,3 +88,34 @@ translate.py y pool.py (tests hermeticos con datos sinteticos). connector.py (el
 NO se prueba en CI: se valida EN CALIENTE contra OKX real (streaming con provisionales y al
 menos una cerrada, reconexion forzada con auto-bootstrap y dedup, y catalogo sincronizado).
 La evidencia de esa validacion va en el informe de T-03.
+
+## Tanda VI (P07c): 2a conexion a /public para el LIBRO (books)
+
+ENDPOINTS ALLOWLIST (5.15) del conector OKX -- dos carriles WS, ambos publicos, ambos con
+TLS verificado, ninguno con credenciales:
+- wss://ws.okx.com:8443/ws/v5/business  -> velas (candle<bar>) + trades (trades-all).
+- wss://ws.okx.com:8443/ws/v5/public    -> LIBRO L2 (books).  [NUEVO en Tanda VI]
+- https://www.okx.com                    -> REST (catalogo, bootstrap de velas, history).
+
+POR QUE DOS CARRILES (hallazgo Tanda V, verificado en caliente): OKX movio 'candle' a
+/business pero dejo 'books' SOLO en /public. Suscribir 'books' en /business responde 60018
+("channel doesn't exist"): el propio exchange separa el libro. No se puede multiplexar el
+libro sobre la conexion de velas/trades; la 2a conexion la OBLIGA OKX, no es un capricho
+de diseno. Decision ratificada por Central (opcion 1): 2a conexion dedicada, MISMO proceso
+worker_ingestion y MISMO rol ce_v5_ingestion (sigue siendo b-i en proceso/rol; solo cambia
+el socket).
+
+CONTROLES QUE SE MANTIENEN EN EL 2o CARRIL (conexion de PLENO DERECHO, no fire-and-forget):
+- Cardinalidad (C2): ConnectionPlanner PROPIO para /public, mismo tope (<=200 subs/conn,
+  margen bajo el 240 de OKX). Cada carril computa su capacidad por separado; el total de
+  conexiones sigue bajo el techo propio conservador (OKX no publica tope concurrente/IP).
+- Rate limit (C3): mismo backoff exponencial con jitter y mismo ping/pong de aplicacion
+  (corte a 30 s) que /business.
+- Fault isolation (C9): /public (books) y /business (velas+trades) son SOCKETS SEPARADOS;
+  un fallo de uno no tumba al otro. force_reconnect_all cierra ambos; shutdown para ambos.
+- Integridad (C1): el libro se reconstruye por seqId/prevSeqId; keepalive (seqId==prevSeqId)
+  y mantenimiento (seqId<prevSeqId) NO son hueco (los aplica el motor). Una reconexion del
+  carril marca la clave (drain_reconnected) para que el motor RE-SIEMBRE con foto fresca.
+
+Se valida EN CALIENTE (5.32) con tools/validate_orderbook_live.py okx (por /public): la
+evidencia cruda va en el informe de la Tanda VI.

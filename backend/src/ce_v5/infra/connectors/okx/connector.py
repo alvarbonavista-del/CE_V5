@@ -28,7 +28,7 @@ import ssl
 import threading
 import urllib.parse
 import urllib.request
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass, field
 from typing import Any
@@ -70,7 +70,14 @@ from source.families.market import (
     TradeBackfillResult,
 )
 
+# DOS CARRILES WS EN OKX (verificado en caliente, Tanda V): velas y trades viven en
+# /business (ahi migro OKX candle), pero el LIBRO ('books') vive SOLO en /public
+# (/business responde 60018 "channel doesn't exist"). Por eso el connector abre una 2a
+# conexion DEDICADA a /public para el libro (Tanda VI, opcion 1 ratificada por Central):
+# mismo proceso worker_ingestion, mismo rol ce_v5_ingestion; sockets SEPARADOS, con su
+# propio ConnectionPlanner (<=200 subs/conn cada carril, margen bajo el 240 de OKX).
 _WS_BASE = "wss://ws.okx.com:8443/ws/v5/business"
+_WS_BASE_PUBLIC = "wss://ws.okx.com:8443/ws/v5/public"
 _REST_BASE = "https://www.okx.com"
 _MARKET_TYPE = "spot"
 _PING = "ping"
@@ -194,11 +201,27 @@ class OkxSpotConnector:
     trades. Abrir un socket aparte para los trades del mismo par gastaria el doble
     contra el limite de conexiones sin ganar nada. Lo que SI esta separado es la COLA de
     cada clase: un pico de trades no puede desalojar velas, ni al reves.
+
+    EL LIBRO ('books') VIAJA POR UNA 2a CONEXION a /public (Tanda VI). No es capricho:
+    OKX movio 'candle' a /business pero dejo 'books' SOLO en /public, y /business da
+    60018 a 'books' (verificado en caliente, Tanda V). No se puede multiplexar el libro
+    sobre
+    la conexion de velas/trades: el propio exchange lo separa. La 2a conexion es de
+    PLENO DERECHO (mismo lector, reconexion, re-semilla, integridad seqId/prevSeqId y
+    excepciones keepalive/mantenimiento) y tiene su PROPIO ConnectionPlanner. Sockets
+    SEPARADOS => fault isolation: un fallo del carril de libro no tumba velas/trades, ni
+    al reves. Sigue siendo b-i: MISMO proceso y MISMO rol; solo cambia el socket, que lo
+    obliga OKX.
     """
 
     def __init__(self, config: OkxConfig | None = None) -> None:
         self._config = config or OkxConfig()
+        # DOS PLANIFICADORES, uno por carril (cond.5): /business (velas/trades) y books
+        # (books). Cada uno reparte SUS suscripciones con su propio tope (<=200/conn,
+        # margen bajo el 240 de OKX). Que sean instancias distintas evita que la demanda
+        # de un carril compute contra la capacidad del otro.
         self._planner = ConnectionPlanner(self._config.limits)
+        self._planner_books = ConnectionPlanner(self._config.limits)
         self._deseados: dict[str, MarketStreamKey] = {}
         self._cola: queue.Queue[RawCandle] = queue.Queue(maxsize=self._config.max_queue)
         # Cola SEPARADA para los trades, con el mismo tope y el mismo backpressure
@@ -216,12 +239,16 @@ class OkxSpotConnector:
         self._seeds: dict[str, RawOrderbookSeed] = {}
         self._seeds_lock = threading.Lock()
         self._lectores: dict[int, threading.Thread] = {}
+        # Carril del LIBRO: sus propios lectores y conexiones (/public), con indice
+        # PROPIO (no colisiona con el de /business porque son dicts distintos).
+        self._lectores_books: dict[int, threading.Thread] = {}
         self._parar = threading.Event()
         self._ssl = ssl.create_default_context()  # verificacion ON. No se toca.
         self.metrics = ConnectorMetrics()
         self._reconnected: set[str] = set()
         self._reconnected_lock = threading.Lock()
         self._conexiones: dict[int, Any] = {}
+        self._conexiones_books: dict[int, Any] = {}
 
     # -- MarketDataSourcePort ------------------------------------------------
 
@@ -492,9 +519,15 @@ class OkxSpotConnector:
     # -- Operacion / validacion en caliente ----------------------------------
 
     def force_reconnect_all(self) -> int:
-        """Cierra las conexiones vivas para FORZAR reconexion. Devuelve cuantas."""
+        """Cierra TODAS las conexiones vivas (ambos carriles) para FORZAR reconexion.
+
+        Incluye /business (velas+trades) y /public (books): cada lector se reconecta y,
+        si tenia estado (velas/trades) o libro, se re-bootstrapea/re-siembra por su
+        propio camino (drain_reconnected). Devuelve cuantas cerro.
+        """
         cerradas = 0
-        for conexion in list(self._conexiones.values()):
+        conexiones = [*self._conexiones.values(), *self._conexiones_books.values()]
+        for conexion in conexiones:
             try:
                 conexion.close()
             except Exception:  # noqa: BLE001 - cerrar es best-effort; no debe lanzar.
@@ -521,38 +554,85 @@ class OkxSpotConnector:
             return key.timeframe is not None
         return key.data_kind in (MarketDataKind.TRADES, MarketDataKind.ORDERBOOK)
 
+    def _es_books(self, key: MarketStreamKey) -> bool:
+        """Carril /public: SOLO el libro (OKX no sirve 'books' en /business)."""
+        return key.data_kind is MarketDataKind.ORDERBOOK
+
+    def _es_business(self, key: MarketStreamKey) -> bool:
+        """Carril /business: lo suscribible que NO es libro (velas y trades)."""
+        return self._es_suscribible(key) and not self._es_books(key)
+
     def _replanificar(self) -> None:
-        claves = {
+        """Reparte la demanda en DOS carriles y arranca los lectores de cada uno.
+
+        /business (velas + trades) y /public (books) son SOCKETS SEPARADOS con planner
+        propio: OKX solo sirve 'books' en /public. Que el libro tenga carril NO cambia
+        el de velas/trades, que sigue exactamente igual (fault isolation, cond.3).
+        """
+        business = {
             key.as_stream_key()
             for key in self._deseados.values()
-            if self._es_suscribible(key)
+            if self._es_business(key)
         }
-        plan = self._planner.assign(claves)
+        books = {
+            key.as_stream_key()
+            for key in self._deseados.values()
+            if self._es_books(key)
+        }
+        self._arrancar_lectores(
+            self._planner.assign(business), _WS_BASE, self._lectores, self._conexiones
+        )
+        self._arrancar_lectores(
+            self._planner_books.assign(books),
+            _WS_BASE_PUBLIC,
+            self._lectores_books,
+            self._conexiones_books,
+        )
+
+    def _arrancar_lectores(
+        self,
+        plan: Mapping[int, list[str]],
+        endpoint: str,
+        lectores: dict[int, threading.Thread],
+        conexiones: dict[int, Any],
+    ) -> None:
+        """Arranca (o revive) un lector por conexion del plan, contra su endpoint."""
         for indice, stream_keys in plan.items():
-            if indice not in self._lectores or not self._lectores[indice].is_alive():
+            if indice not in lectores or not lectores[indice].is_alive():
                 keys = tuple(
                     self._deseados[sk] for sk in stream_keys if sk in self._deseados
                 )
                 hilo = threading.Thread(
                     target=self._leer,
-                    args=(indice, keys),
-                    name=f"okx-reader-{indice}",
+                    args=(indice, keys, endpoint, conexiones),
+                    name=f"okx-reader-{endpoint.rsplit('/', 1)[-1]}-{indice}",
                     daemon=True,
                 )
-                self._lectores[indice] = hilo
+                lectores[indice] = hilo
                 hilo.start()
 
-    def _leer(self, indice: int, keys: tuple[MarketStreamKey, ...]) -> None:
-        """Lector de UNA conexion: suscribe al conectar y reconecta con backoff."""
+    def _leer(
+        self,
+        indice: int,
+        keys: tuple[MarketStreamKey, ...],
+        endpoint: str,
+        conexiones: dict[int, Any],
+    ) -> None:
+        """Lector de UNA conexion (de su ENDPOINT): suscribe al conectar y reconecta con
+        backoff. El endpoint y el registro de conexiones vivas los da el llamador: el
+        MISMO lector sirve /business y /public. La re-suscripcion, la reconexion, la
+        re-semilla (via _registrar_reconexion + drain_reconnected) y el ping son iguales
+        en los dos carriles: la 2a conexion es de PLENO DERECHO, no fire-and-forget.
+        """
         espera = self._config.backoff_initial_s
         ya_conecto = False
         args = [self._sub_arg(k) for k in keys if self._es_suscribible(k)]
         while not self._parar.is_set():
             try:
                 with ws_client.connect(
-                    _WS_BASE, ssl=self._ssl, user_agent_header=_USER_AGENT
+                    endpoint, ssl=self._ssl, user_agent_header=_USER_AGENT
                 ) as conexion:
-                    self._conexiones[indice] = conexion
+                    conexiones[indice] = conexion
                     try:
                         espera = self._config.backoff_initial_s
                         self._suscribir(conexion, args)
@@ -561,9 +641,9 @@ class OkxSpotConnector:
                         ya_conecto = True
                         self._bucle_recv(conexion)
                     finally:
-                        self._conexiones.pop(indice, None)
+                        conexiones.pop(indice, None)
             except Exception:  # noqa: BLE001 - un lector NO puede matar el proceso.
-                self._conexiones.pop(indice, None)
+                conexiones.pop(indice, None)
                 jitter = self._jitter()
                 self._parar.wait(
                     timeout=min(espera + jitter, self._config.backoff_max_s)
