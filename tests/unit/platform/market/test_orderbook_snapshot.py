@@ -37,6 +37,7 @@ class _Clock:
 class _Writer:
     def __init__(self) -> None:
         self.published: list[tuple[str, str, OrderbookSnapshotPayload]] = []
+        self.published_event_time: list[int] = []
         self.samples: list[OrderbookSnapshotPayload] = []
         self._discs: list[tuple[str, str, str, int, int | None, int]] = []
 
@@ -57,6 +58,7 @@ class _Writer:
         assert isinstance(payload, OrderbookSnapshotPayload | OrderbookResyncedPayload)
         assert isinstance(payload, OrderbookSnapshotPayload)
         self.published.append((event_type, idempotency_key, payload))
+        self.published_event_time.append(event_time)
         return True
 
     def persist_sample(
@@ -113,13 +115,13 @@ def _incompleto(book: OrderbookBook) -> OrderbookBook:
     return book
 
 
-def _engine(writer: _Writer, **config: int) -> OrderbookSnapshotEngine:
+def _engine(writer: _Writer, **config: object) -> OrderbookSnapshotEngine:
     return OrderbookSnapshotEngine(
         writer,
         writer,
         _Clock(),
         component_source="worker_orderbook",
-        config=OrderbookSnapshotConfig(**config),
+        config=OrderbookSnapshotConfig(**config),  # type: ignore[arg-type]
     )
 
 
@@ -199,6 +201,32 @@ class TestFrontier:
         engine.take_frontier(book, timeframe=_TF, open_time=_OPEN, close_time=_CLOSE)
         assert writer.published[0][2].is_complete is True
 
+    def test_el_event_time_del_frontier_es_open_time_no_close(self) -> None:
+        # Cond.2: la frontera es la foto de ESA barra; su event_time (ADR-007) es el
+        # as_of = open_time, la misma ancla que su idempotency_key. NO close_time.
+        writer = _Writer()
+        engine = _engine(writer)
+        engine.take_frontier(
+            _book(_BIDS, _ASKS), timeframe=_TF, open_time=_OPEN, close_time=_CLOSE
+        )
+        assert writer.published_event_time[0] == _OPEN
+
+    def test_frontier_de_libro_sin_semilla_no_publica_fire_anyway(self) -> None:
+        # Cond.5: el trigger dispara en CADA barra (fire-anyway), pero un libro sin
+        # semilla no tiene top-K que fotografiar y un snapshot vacio viola 5.21: NO se
+        # publica y se cuenta. Disparar siempre, publicar solo lo real.
+        writer = _Writer()
+        engine = _engine(writer)
+        sin_semilla = OrderbookBook()  # nunca sembrado: bids/asks vacios.
+
+        publicado = engine.take_frontier(
+            sin_semilla, timeframe=_TF, open_time=_OPEN, close_time=_CLOSE
+        )
+        assert publicado is False
+        assert writer.published == []
+        assert engine.metrics.frontiers_skipped_unseeded == 1
+        assert engine.metrics.frontiers_published == 0
+
 
 class TestTopK:
     def test_el_top_k_recorta_y_ordena(self) -> None:
@@ -234,7 +262,7 @@ class TestIdempotencyReproducible:
     def _key(self, writer: _Writer) -> str:
         return writer.published[0][1]
 
-    def _frontier(self, **config: int) -> str:
+    def _frontier(self, **config: object) -> str:
         writer = _Writer()
         engine = _engine(writer, **config)
         engine.take_frontier(
@@ -253,6 +281,13 @@ class TestIdempotencyReproducible:
 
     def test_distinta_formula_version_distinta_clave(self) -> None:
         assert self._frontier(formula_version=1) != self._frontier(formula_version=2)
+
+    def test_distinto_clock_source_distinta_clave(self) -> None:
+        # Refino de procedencia (Central): una captura por reloj real y otra por reloj
+        # simulado del MISMO as_of son hechos distintos y no colisionan.
+        assert self._frontier(clock_source="system") != self._frontier(
+            clock_source="simulated"
+        )
 
     def test_distinta_ventana_distinta_clave(self) -> None:
         writer_a, writer_b = _Writer(), _Writer()

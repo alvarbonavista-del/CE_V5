@@ -214,9 +214,10 @@ class TestIdempotencyKeyLlevaLaConfig:
 
     def test_la_clave_del_frontier_lleva_la_config_verbatim(self) -> None:
         clave = self._key(_frontier())
+        # cssystem: la FUENTE DE CLOCK (procedencia, refino de Central) cierra la clave.
         assert clave == (
             "market.orderbook_frontier|market:orderbook:binance:spot:BTC-USDT|1m|"
-            f"{_OPEN}|k25|c1000|v1"
+            f"{_OPEN}|k25|c1000|v1|cssystem"
         )
 
 

@@ -68,7 +68,7 @@
     }
   },
   "additionalProperties": false,
-  "description": "Snapshot top-K del libro L2 (P07c). Cubre las dos variantes: frontier y sample.\n\nEl payload es UNO; el kind decide si se publica (frontier, por outbox) o solo se\npersiste (sample). Por eso NO se registra por si mismo dos veces: el registro\n(CA-06) mapea market.orderbook_frontier -> esta clase; el sample no es event_type.\n\nis_complete es ORTOGONAL al kind: una muestra o un frontier pueden estar completos o\nno segun hubiera un hueco/resync en su ventana (cond.3). DEFAULT False (fail-safe):\nlo que no declara su completitud cuenta como incompleto.",
+  "description": "Snapshot top-K del libro L2 (P07c). Cubre las dos variantes: frontier y sample.\n\nEl payload es UNO; el kind decide si se publica (frontier, por outbox) o solo se\npersiste (sample). Por eso NO se registra por si mismo dos veces: el registro\n(CA-06) mapea market.orderbook_frontier -> esta clase; el sample no es event_type.\n\nis_complete es ORTOGONAL al kind: una muestra o un frontier pueden estar completos o\nno segun hubiera un hueco/resync en su ventana (cond.3). DEFAULT False (fail-safe):\nlo que no declara su completitud cuenta como incompleto.\n\nCANON VIVO, NO REPLAY: para la familia orderbook el snapshot es la captura del libro\ntal como se guarda en su as_of; no se re-deriva de un flujo ni se reconstruye por la\nmaquinaria snapshot+replay de DEC-SNAPSHOT-REPLAY-01 (esa gobierna el VALOR/CVD,\nP08b/c, no esto). Su reproducibilidad es POR PROCEDENCIA: la idempotency_key\nregistra COMO se capturo (as_of, K, cadencia, tf, formula_version y clock_source), y\nrecapturar\ncon la misma procedencia reconstruye la misma clave.",
   "properties": {
     "asks": {
       "items": {
@@ -88,6 +88,13 @@
       "minimum": 1,
       "title": "Cadence Ms",
       "type": "integer"
+    },
+    "clock_source": {
+      "default": "system",
+      "maxLength": 32,
+      "minLength": 1,
+      "title": "Clock Source",
+      "type": "string"
     },
     "close_time": {
       "description": "Instante en UTC epoch milliseconds (int64). Formato canonico de tiempo en cable (ADR-007).",

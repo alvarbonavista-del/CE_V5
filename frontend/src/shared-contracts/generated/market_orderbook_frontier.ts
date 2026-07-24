@@ -5,6 +5,7 @@ export type Size = (number | string)
 export type Asks = OrderbookLevel[]
 export type Bids = OrderbookLevel[]
 export type CadenceMs = number
+export type ClockSource = string
 /**
  * Instante en UTC epoch milliseconds (int64). Formato canonico de tiempo en cable (ADR-007).
  */
@@ -54,11 +55,20 @@ export type Timeframe = ("1m" | "5m" | "15m" | "1h" | "4h" | "1d")
  * is_complete es ORTOGONAL al kind: una muestra o un frontier pueden estar completos o
  * no segun hubiera un hueco/resync en su ventana (cond.3). DEFAULT False (fail-safe):
  * lo que no declara su completitud cuenta como incompleto.
+ * 
+ * CANON VIVO, NO REPLAY: para la familia orderbook el snapshot es la captura del libro
+ * tal como se guarda en su as_of; no se re-deriva de un flujo ni se reconstruye por la
+ * maquinaria snapshot+replay de DEC-SNAPSHOT-REPLAY-01 (esa gobierna el VALOR/CVD,
+ * P08b/c, no esto). Su reproducibilidad es POR PROCEDENCIA: la idempotency_key
+ * registra COMO se capturo (as_of, K, cadencia, tf, formula_version y clock_source), y
+ * recapturar
+ * con la misma procedencia reconstruye la misma clave.
  */
 export interface OrderbookSnapshotPayload {
 asks: Asks
 bids: Bids
 cadence_ms: CadenceMs
+clock_source?: ClockSource
 close_time: CloseTime
 depth_k: DepthK
 exchange: Exchange

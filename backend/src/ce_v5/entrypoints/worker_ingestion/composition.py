@@ -76,6 +76,10 @@ class IngestionContext:
     catalog: _CatalogOnDb
     bus: EventBus
     database: PsycopgDatabase
+    # El MISMO reloj inyectado en los motores (SystemClock en produccion). El bucle lo
+    # usa para el trigger de FRONTERA por reloj de barra (opcion 3) y la cadencia de
+    # MUESTRA: disparo determinista y reproducible (un SimulatedClock lo reproduce).
+    clock: Clock
 
     def close(self) -> None:
         """Cierra las conexiones. Idempotente: se puede llamar en el apagado limpio."""
@@ -255,6 +259,7 @@ def build_context(
         catalog=catalog_adapter,
         bus=bus,
         database=database,
+        clock=clock,
     )
 
 

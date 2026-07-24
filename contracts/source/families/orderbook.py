@@ -83,15 +83,21 @@ def orderbook_snapshot_idempotency_key(
     depth_k: int,
     cadence_ms: int,
     formula_version: int,
+    clock_source: str,
 ) -> str:
     """idempotency/cache_key de un snapshot: UNICA POR CONSTRUCCION e incluye la CONFIG.
 
-    REPRODUCIBILIDAD (cond.1): la clave lleva K, cadencia, ventana y formula_version.
-    Dos snapshots del mismo instante con distinto K -- o distinta cadencia, o distinta
-    formula_version -- son HECHOS DISTINTOS y no colisionan; reprocesar con la MISMA
-    config reconstruye la MISMA clave y no duplica. El frontier se ancla en la ventana
-    (open_time, uno por barra); el sample anade su instante (sample_time) dentro de
-    ella. Los publicos NO llevan tenant (scope=public_market, ADR-011).
+    REPRODUCIBILIDAD POR PROCEDENCIA (cond.1), NO por replay: para la familia orderbook
+    el snapshot es CANON VIVO tal como se guarda -- una captura del libro en su as_of,
+    no un valor que se re-derive de un flujo. No hay aqui el snapshot+replay de
+    DEC-SNAPSHOT-REPLAY-01 (esa es del VALOR/CVD, P08b/c); la reproducibilidad la da la
+    clave, que registra COMO se capturo. Por eso lleva: as_of (open_time de la barra; el
+    sample anade su sample_time dentro de la ventana), tf, K (depth_k), cadencia,
+    formula_version y la FUENTE DE CLOCK (clock_source): dos capturas del mismo as_of
+    con distinto K -- o cadencia, tf, formula_version o reloj (system/simulated) --
+    son HECHOS DISTINTOS y no colisionan; recapturar con la MISMA procedencia
+    reconstruye la MISMA clave y no duplica. Los publicos NO llevan tenant
+    (scope=public_market, ADR-011).
     """
     if kind is MarketOrderbookSnapshotKind.FRONTIER:
         if sample_time is not None:
@@ -115,6 +121,7 @@ def orderbook_snapshot_idempotency_key(
         f"k{depth_k}",
         f"c{cadence_ms}",
         f"v{formula_version}",
+        f"cs{clock_source}",
     ]
     return "|".join(parts)
 
@@ -179,6 +186,14 @@ class OrderbookSnapshotPayload(EventPayload):
     is_complete es ORTOGONAL al kind: una muestra o un frontier pueden estar completos o
     no segun hubiera un hueco/resync en su ventana (cond.3). DEFAULT False (fail-safe):
     lo que no declara su completitud cuenta como incompleto.
+
+    CANON VIVO, NO REPLAY: para la familia orderbook el snapshot es la captura del libro
+    tal como se guarda en su as_of; no se re-deriva de un flujo ni se reconstruye por la
+    maquinaria snapshot+replay de DEC-SNAPSHOT-REPLAY-01 (esa gobierna el VALOR/CVD,
+    P08b/c, no esto). Su reproducibilidad es POR PROCEDENCIA: la idempotency_key
+    registra COMO se capturo (as_of, K, cadencia, tf, formula_version y clock_source), y
+    recapturar
+    con la misma procedencia reconstruye la misma clave.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -200,6 +215,11 @@ class OrderbookSnapshotPayload(EventPayload):
     is_complete: bool = False
     cadence_ms: int = Field(ge=1)
     formula_version: int = Field(ge=1)
+    # PROCEDENCIA del reloj que fecho la captura ('system' en produccion, 'simulated' en
+    # backtest/tests). Entra en la idempotency_key: una captura por reloj real y otra
+    # reloj simulado del mismo as_of son HECHOS DISTINTOS y no deben colisionar. Aditivo
+    # con default (7.7): un snapshot viejo sin el campo se lee como 'system'.
+    clock_source: str = Field(default="system", min_length=1, max_length=32)
 
     @model_validator(mode="after")
     def _snapshot_coherente(self) -> "OrderbookSnapshotPayload":
@@ -298,6 +318,7 @@ class OrderbookSnapshotPayload(EventPayload):
             depth_k=self.depth_k,
             cadence_ms=self.cadence_ms,
             formula_version=self.formula_version,
+            clock_source=self.clock_source,
         )
 
 

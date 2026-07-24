@@ -13,8 +13,10 @@ OrderbookIngestionEngine:
   footprint.
 
 TOP-K: los K mejores niveles por lado (bids los de precio mas ALTO, asks los mas BAJO).
-K, cadencia y ventana entran en la idempotency/cache_key (cond.1, ya en el contrato); un
-cambio semantico sube formula_version. El libro completo vive en memoria
+K, cadencia, ventana (as_of), formula_version y clock_source entran en la
+idempotency/cache_key (cond.1 + refino de procedencia de Central, ya en el contrato); un
+cambio semantico sube formula_version. El snapshot es CANON VIVO -- no hay replay --: la
+clave registra COMO se capturo, no una receta. El libro completo vive en memoria
 (OrderbookBook); aqui solo se recorta el top-K.
 
 NO importa infra: depende de dos PUERTOS (writer y reader), que infra satisface por
@@ -55,15 +57,24 @@ DEFAULT_CADENCE_MS = 1000
 # formula_version del recorte top-K. Sube ante CUALQUIER cambio semantico (que un mismo
 # libro produzca otro snapshot): reproducibilidad (cond.1).
 DEFAULT_FORMULA_VERSION = 1
+# Fuente del reloj que fecha la captura: 'system' en produccion (SystemClock),
+# 'simulated' en backtest/tests (SimulatedClock). Entra en la idempotency_key
+# (procedencia, refino de Central): dos capturas del mismo as_of por relojes distintos
+# no colisionan.
+DEFAULT_CLOCK_SOURCE = "system"
 
 
 @dataclass(frozen=True, slots=True)
 class OrderbookSnapshotConfig:
-    """La CONFIG que hace el snapshot reproducible (cond.1): entra en la cache_key."""
+    """La CONFIG que hace el snapshot reproducible POR PROCEDENCIA (cond.1): entra en la
+    cache_key. No hay replay -- el snapshot de orderbook es canon vivo tal como se
+    guarda; la clave registra COMO se capturo, no una receta para re-derivarlo.
+    """
 
     depth_k: int = DEFAULT_DEPTH_K
     cadence_ms: int = DEFAULT_CADENCE_MS
     formula_version: int = DEFAULT_FORMULA_VERSION
+    clock_source: str = DEFAULT_CLOCK_SOURCE
 
 
 DEFAULT_ORDERBOOK_SNAPSHOT_CONFIG = OrderbookSnapshotConfig()
@@ -79,6 +90,11 @@ class OrderbookSnapshotMetrics:
     frontiers_published: int = 0
     incomplete_frontiers: int = 0
     duplicates_skipped: int = 0
+    # Fronteras que el trigger dispara (fire-anyway, cond.5) sobre un libro SIN semilla
+    # (o vaciado): no hay top-K que fotografiar y un snapshot vacio viola 5.21, asi que
+    # NO se publica. Sin este contador, un arranque con el libro aun sin sembrar
+    # pareceria que "no dispara", cuando si: no tiene nada honesto que publicar.
+    frontiers_skipped_unseeded: int = 0
 
 
 def _top_k(
@@ -153,14 +169,25 @@ class OrderbookSnapshotEngine:
         open_time: int,
         close_time: int,
     ) -> bool:
-        """La FRONTERA as-of el cierre de la barra. is_complete FAIL-SAFE UNIFORME
-        (cond.3).
+        """La FRONTERA de la barra por RELOJ DE BARRA (opcion 3). is_complete FAIL-SAFE
+        UNIFORME (cond.3).
+
+        FIRE-ANYWAY HONESTO (cond.5): el trigger llama a esto en CADA barra de un
+        (symbol, tf) activo, aunque la vela sea plana. Pero un libro SIN semilla -- o
+        vaciado -- no tiene top-K que fotografiar, y un snapshot con ambos lados vacios
+        no es un libro (5.21): en vez de fabricar niveles, se cuenta y se declara NO
+        publicado (False). Disparar siempre, publicar solo lo real.
 
         is_complete = el libro esta completo AHORA **Y** ninguna discontinuidad (resync)
         solapa [open_time, close_time). Es el MISMO criterio que el footprint: un hueco
         dentro de la ventana marca la barra incompleta aunque el libro ya se recuperase.
-        Se PUBLICA por outbox (persist_and_enqueue). event_time = close_time (as-of).
+        Se PUBLICA por outbox (persist_and_enqueue). event_time = open_time (as_of de la
+        barra, ADR-007; la frontera es la foto de ESA barra, cond.2), la misma ancla que
+        su idempotency_key.
         """
+        if not book.seeded or (not book.bids() and not book.asks()):
+            self.metrics.frontiers_skipped_unseeded += 1
+            return False
         exchange, market_type, symbol = _identidad(book)
         solapes = self._reader.overlapping_discontinuities(
             exchange, market_type, symbol, open_time, close_time
@@ -176,14 +203,14 @@ class OrderbookSnapshotEngine:
             is_complete=is_complete,
         )
         event = MarketOrderbookEventType.ORDERBOOK_FRONTIER
-        envelope = self._envelope(payload, event, close_time)
+        envelope = self._envelope(payload, event, open_time)
         escrita = self._writer.persist_and_enqueue(
             envelope_json=envelope,
             payload=payload,
             event_type=event.value,
             stream_key=payload.stream_key(),
             idempotency_key=payload.idempotency_key(payload.kind),
-            event_time=close_time,
+            event_time=open_time,
         )
         if not escrita:
             self.metrics.duplicates_skipped += 1
@@ -221,6 +248,7 @@ class OrderbookSnapshotEngine:
             is_complete=is_complete,
             cadence_ms=self._config.cadence_ms,
             formula_version=self._config.formula_version,
+            clock_source=self._config.clock_source,
         )
 
     def _envelope(
