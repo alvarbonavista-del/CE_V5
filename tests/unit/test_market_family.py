@@ -151,6 +151,14 @@ class TestParseDeLaClave:
                 data_kind=MarketDataKind.CANDLES,
                 timeframe=Timeframe.D1,
             ),
+            # ORDERBOOK (P07c): clase de dato ADITIVA, SIN timeframe (su granularidad es
+            # depth/channel, no un intervalo). La clave hace ida y vuelta exacta.
+            MarketStreamKey(
+                exchange="bybit",
+                market_type=MarketType.SPOT,
+                symbol="BTC-USDT",
+                data_kind=MarketDataKind.ORDERBOOK,
+            ),
         ],
     )
     def test_ida_y_vuelta(self, clave: MarketStreamKey) -> None:
@@ -169,7 +177,11 @@ class TestParseDeLaClave:
             ("market:candles:BINANCE:spot:BTC-USDT:1m", "exchange en mayusculas"),
             ("market:candles:binance:spot:BTCUSDT:1m", "simbolo nativo, no canonico"),
             ("market:candles:binance:spot:BTC-USDT:2m", "timeframe inexistente"),
-            ("market:orderbook:binance:spot:BTC-USDT:1m", "data_kind desconocido"),
+            ("market:ticker:binance:spot:BTC-USDT", "data_kind desconocido"),
+            (
+                "market:orderbook:binance:spot:BTC-USDT:1m",
+                "orderbook no admite timeframe",
+            ),
             ("market:candles:binance:spot:BTC-USDT", "candles sin timeframe"),
         ],
     )
