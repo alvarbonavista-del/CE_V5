@@ -31,6 +31,7 @@ from ce_v5.entrypoints.worker_ingestion.connector_registry import build_default_
 from ce_v5.infra.bus_redis import RedisBusConfig, RedisEventBus, create_client
 from ce_v5.infra.db.config import DbConfig, IngestionDbConfig
 from ce_v5.infra.db.market_candles import PostgresCandleWriter
+from ce_v5.infra.db.market_orderbook import PostgresOrderbookWriter
 from ce_v5.infra.db.market_store import (
     PostgresInstrumentCatalog,
     PostgresPublicDemand,
@@ -39,6 +40,9 @@ from ce_v5.infra.db.market_trades import PostgresTradeWriter
 from ce_v5.infra.db.psycopg_adapter import PsycopgDatabase
 from ce_v5.platform.market.datasource import MarketDataSourcePort
 from ce_v5.platform.market.ingestor import IngestionEngine
+from ce_v5.platform.market.orderbook_ingestor import OrderbookIngestionEngine
+from ce_v5.platform.market.orderbook_snapshot import OrderbookSnapshotEngine
+from ce_v5.platform.market.orderbook_source import OrderbookDataSourcePort
 from ce_v5.platform.market.subscriptions import SubscriptionManager
 from ce_v5.platform.market.trade_ingestor import TradeIngestionEngine
 from ce_v5.platform.market.trade_source import TradeDataSourcePort
@@ -63,11 +67,19 @@ class IngestionContext:
     # None cuando el feed cableado NO sirve trades (ver _as_trade_source). El bucle lo
     # comprueba y lo DICE al arrancar: una degradacion declarada, no un motor mudo.
     trade_engine: TradeIngestionEngine | None
+    # None cuando el feed NO sirve libro (ver _as_orderbook_source), como trades: el
+    # arranque lo DICE. El motor de snapshot solo se construye si hay motor de libro.
+    orderbook_engine: OrderbookIngestionEngine | None
+    orderbook_snapshot: OrderbookSnapshotEngine | None
     subscription_manager: SubscriptionManager
     datasource: MarketDataSourcePort
     catalog: _CatalogOnDb
     bus: EventBus
     database: PsycopgDatabase
+    # El MISMO reloj inyectado en los motores (SystemClock en produccion). El bucle lo
+    # usa para el trigger de FRONTERA por reloj de barra (opcion 3) y la cadencia de
+    # MUESTRA: disparo determinista y reproducible (un SimulatedClock lo reproduce).
+    clock: Clock
 
     def close(self) -> None:
         """Cierra las conexiones. Idempotente: se puede llamar en el apagado limpio."""
@@ -96,6 +108,28 @@ def _build_datasource(
 # Los metodos que un feed debe servir para que se le pueda pedir trades. open/close/
 # active/drain_reconnected ya los exige el puerto de velas: aqui solo van los propios.
 _TRADE_PORT_METHODS = ("poll_trades", "backfill_after_reconnect")
+# Idem para el libro: seed (la foto) y poll_deltas son los propios; el resto
+# del puerto (open/close/active/drain_reconnected) ya lo exige el de velas.
+_ORDERBOOK_PORT_METHODS = ("seed", "poll_deltas")
+
+
+def _as_orderbook_source(
+    source: MarketDataSourcePort,
+) -> OrderbookDataSourcePort | None:
+    """EL MISMO feed visto por su cara de LIBRO, si de verdad lo sirve.
+
+    Mismo criterio que _as_trade_source y por el mismo motivo (Central b-i): el conector
+    real multiplexa velas, trades y libro sobre la MISMA conexion, asi que el motor del
+    libro recibe el objeto que ya existe -- NO un segundo feed ni un segundo socket. Un
+    feed que no sirve libro (el fake CONTROLADO de los tests, o un adaptador sin libro)
+    devuelve None y el worker corre sin ese motor, DICHO en el arranque; fingir un motor
+    sobre un feed mudo daria un stream con pinta de sano sin ingerir un solo delta.
+    """
+    if not all(
+        callable(getattr(source, nombre, None)) for nombre in _ORDERBOOK_PORT_METHODS
+    ):
+        return None
+    return cast(OrderbookDataSourcePort, source)
 
 
 def _as_trade_source(source: MarketDataSourcePort) -> TradeDataSourcePort | None:
@@ -176,6 +210,28 @@ def build_context(
         )
     )
 
+    # Motor del LIBRO L2 y motor de SNAPSHOT sobre el MISMO conector, la MISMA base y el
+    # MISMO rol ce_v5_ingestion (regla 5.20), como el de trades (Central b-i). El writer
+    # de infra cumple a la vez el puerto de escritura y el de lectura; ambos
+    # None si el feed no sirve libro: una degradacion DECLARADA, no un motor mudo.
+    orderbook_source = _as_orderbook_source(source)
+    orderbook_engine: OrderbookIngestionEngine | None = None
+    orderbook_snapshot: OrderbookSnapshotEngine | None = None
+    if orderbook_source is not None:
+        orderbook_writer = PostgresOrderbookWriter(database)
+        orderbook_engine = OrderbookIngestionEngine(
+            orderbook_source,
+            orderbook_writer,
+            clock,
+            component_source=_INGESTOR_ID,
+        )
+        orderbook_snapshot = OrderbookSnapshotEngine(
+            orderbook_writer,
+            orderbook_writer,
+            clock,
+            component_source=_INGESTOR_ID,
+        )
+
     definition, component = _discover_and_wire(subscription_manager, engine, source)
 
     # El feed PUBLICO no tiene sujeto: la instancia es GLOBAL (ADR-011). El connector
@@ -196,11 +252,14 @@ def build_context(
         component=component,
         engine=engine,
         trade_engine=trade_engine,
+        orderbook_engine=orderbook_engine,
+        orderbook_snapshot=orderbook_snapshot,
         subscription_manager=subscription_manager,
         datasource=source,
         catalog=catalog_adapter,
         bus=bus,
         database=database,
+        clock=clock,
     )
 
 

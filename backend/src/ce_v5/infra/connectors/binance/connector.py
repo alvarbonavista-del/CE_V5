@@ -38,12 +38,15 @@ import websockets.sync.client as ws_client
 from ce_v5.infra.connectors.binance.pool import BinanceLimits, ConnectionPlanner
 from ce_v5.infra.connectors.binance.symbols import (
     to_native,
+    to_orderbook_stream_name,
     to_stream_name,
     to_trade_stream_name,
 )
 from ce_v5.infra.connectors.binance.translate import (
     BinanceTranslationError,
     raw_candle_from_binance,
+    raw_orderbook_delta_from_binance,
+    raw_orderbook_seed_from_binance,
     raw_trade_from_binance,
     supported_binance_timeframes,
 )
@@ -53,17 +56,27 @@ from source.families.market import (
     MarketDataKind,
     MarketStreamKey,
     RawCandle,
+    RawOrderbookDelta,
+    RawOrderbookSeed,
     RawTrade,
     Timeframe,
     TradeBackfillResult,
 )
 
-_WS_BASE = "wss://stream.binance.com:9443/stream"
-_REST_BASE = "https://api.binance.com"
+# DOMINIO DE DATOS (no geo-restringido por MiCA): la API PUBLICA de datos de Binance
+# vive en data-*.binance.vision y sirve los MISMOS streams y payloads que los hosts
+# geo-restringidos (stream.binance.com / api.binance.com), que restringen el SERVICIO,
+# no el dato. Verificado en vivo (Fase A, 5.32): WS combinado y /api/v3/depth por :443.
+# El path combinado (/stream?streams=...) y /api/v3/* son identicos; cambia el host.
+_WS_BASE = "wss://data-stream.binance.vision:443/stream"
+_REST_BASE = "https://data-api.binance.vision"
 _MARKET_TYPE = "spot"
 # Techo de /api/v3/trades SIN clave de API. NO es un parametro de configuracion: es lo
 # que el endpoint publico da. De aqui sale la cota REAL del relleno tras una reconexion.
 _REST_TRADES_MAX = 1000
+# Profundidad de la foto REST del libro (/api/v3/depth). 100 basta para el top-K
+# del frontier (25-50) y es ligera; los deltas @depth mantienen el top actualizado.
+_DEPTH_LIMIT = 100
 
 
 def _menor_event_time(trades: Sequence[RawTrade]) -> int | None:
@@ -147,6 +160,9 @@ class ConnectorMetrics:
     # flujos esta perdiendo datos, y son de escalas muy distintas (un par liquido
     # publica miles de trades por minuto y una vela por minuto).
     dropped_full_queue_trades: int = 0
+    # Contador PROPIO del libro: los deltas @depth son el de mayor caudal (100 ms),
+    # de otra escala que velas y trades; mezclarlo ocultaria cual pierde datos.
+    dropped_full_queue_orderbook: int = 0
     translation_errors: int = 0
     reconnections: int = 0
     degraded_streams: set[str] = field(default_factory=set)
@@ -183,6 +199,12 @@ class BinanceSpotConnector:
         # (miles por minuto en un par liquido) expulsase las velas, que son el dato
         # sobre el que se evaluan las reglas.
         self._cola_trades: queue.Queue[RawTrade] = queue.Queue(
+            maxsize=self._config.max_queue
+        )
+        # Cola SEPARADA para el libro, con el mismo tope y backpressure observable. El
+        # caudal de deltas del libro (100 ms) es de otra escala: compartir cola dejaria
+        # que expulsase velas o trades.
+        self._cola_orderbook: queue.Queue[RawOrderbookDelta] = queue.Queue(
             maxsize=self._config.max_queue
         )
         self._lectores: dict[int, threading.Thread] = {}
@@ -378,6 +400,48 @@ class BinanceSpotConnector:
             self.metrics.translation_errors += 1
             return None
 
+    # -- OrderbookDataSourcePort ---------------------------------------------
+    #
+    # open/close/active/drain_reconnected los comparte con velas y trades: las MISMAS
+    # suscripciones sobre la MISMA conexion, distinguidas por el data_kind de la clave.
+    # Aqui solo estan los dos metodos propios del libro.
+
+    def poll_deltas(self, timeout_ms: int) -> Sequence[RawOrderbookDelta]:
+        """DRENA la cola del libro. Espejo de poll()/poll_trades(): PULL con tope, manda
+        el motor y no el exchange. En el libro importa aun mas: los deltas @depth llegan
+        cada 100 ms, el caudal mas alto de las tres clases.
+        """
+        lote: list[RawOrderbookDelta] = []
+        try:
+            primero = self._cola_orderbook.get(timeout=timeout_ms / 1000.0)
+        except queue.Empty:
+            return lote
+        lote.append(primero)
+        while True:
+            try:
+                lote.append(self._cola_orderbook.get_nowait())
+            except queue.Empty:
+                break
+        return lote
+
+    def seed(self, key: MarketStreamKey) -> RawOrderbookSeed:
+        """La FOTO de partida del libro por REST /api/v3/depth (ADR-014).
+
+        Binance siembra el libro por REST (lastUpdateId + bids/asks) y encadena los
+        deltas @depth del WS por U/u: el motor descarta los de u <= lastUpdateId y
+        detecta el hueco por la continuidad. Datos NO validados, igual que el WS: los
+        valida la MISMA frontera de confianza (el motor del libro). El IO vive aqui; la
+        traduccion es pura (raw_orderbook_seed_from_binance) y se prueba en frio.
+        """
+        params = urllib.parse.urlencode(
+            {"symbol": to_native(key.symbol), "limit": _DEPTH_LIMIT}
+        )
+        datos = self._get_json(f"/api/v3/depth?{params}")
+        if not isinstance(datos, dict):
+            msg = f"foto de libro de Binance con forma inesperada: {type(datos)!r}."
+            raise BinanceTranslationError(msg)
+        return raw_orderbook_seed_from_binance(datos, key.symbol, _MARKET_TYPE)
+
     # -- Cableado del catalogo (B6b) -----------------------------------------
 
     def set_symbol_map(self, instruments: Sequence[Instrument]) -> None:
@@ -416,6 +480,8 @@ class BinanceSpotConnector:
         """
         if key.data_kind is MarketDataKind.TRADES:
             return to_trade_stream_name(key.symbol)
+        if key.data_kind is MarketDataKind.ORDERBOOK:
+            return to_orderbook_stream_name(key.symbol)
         if key.data_kind is MarketDataKind.CANDLES and key.timeframe is not None:
             return to_stream_name(key.symbol, key.timeframe.value)
         return None
@@ -581,6 +647,9 @@ class BinanceSpotConnector:
         if evento == "trade":
             self._encolar_trade(datos)
             return
+        if evento == "depthUpdate":
+            self._encolar_orderbook(datos)
+            return
         if evento != "kline":
             return  # serverShutdown y demas eventos de control: no son velas.
 
@@ -624,6 +693,27 @@ class BinanceSpotConnector:
         except queue.Full:
             # BACKPRESSURE OBSERVABLE, con su contador propio (ver ConnectorMetrics).
             self.metrics.dropped_full_queue_trades += 1
+            self.metrics.degraded_streams.add(canonico)
+
+    def _encolar_orderbook(self, datos: dict[str, Any]) -> None:
+        """Un depthUpdate -> RawOrderbookDelta a su cola. Espejo del camino de
+        velas/trades: mismo canonico consultado (jamas deducido), misma conversion de la
+        excepcion de traduccion en metrica observable, mismo backpressure con descarte
+        contado. La foto de partida NO llega por aqui: la sirve seed() por REST.
+        """
+        canonico = self._canonical_de(datos)
+        if canonico is None:
+            self.metrics.translation_errors += 1
+            return
+        try:
+            delta = raw_orderbook_delta_from_binance(datos, canonico, _MARKET_TYPE)
+        except BinanceTranslationError:
+            self.metrics.translation_errors += 1
+            return
+        try:
+            self._cola_orderbook.put_nowait(delta)
+        except queue.Full:
+            self.metrics.dropped_full_queue_orderbook += 1
             self.metrics.degraded_streams.add(canonico)
 
     def _canonical_de(self, datos: dict[str, Any]) -> str | None:

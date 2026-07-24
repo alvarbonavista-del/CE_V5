@@ -39,6 +39,11 @@ from source.families.market import (
     CandleUpdatedPayload,
     MarketCandleEventType,
 )
+from source.families.orderbook import (
+    MarketOrderbookEventType,
+    OrderbookResyncedPayload,
+    OrderbookSnapshotPayload,
+)
 from source.families.policy import (
     KillSwitchPayload,
     PolicyEventType,
@@ -104,6 +109,12 @@ EVENT_PAYLOAD_REGISTRY: dict[str, tuple[type[EventPayload], int]] = {
     # no se dispara). Payload y productor reales desde P07b, registrados.
     MarketFootprintEventType.FOOTPRINT_CLOSED.value: (FootprintClosedPayload, 1),
     MarketFootprintEventType.FOOTPRINT_CORRECTED.value: (FootprintCorrectedPayload, 1),
+    # market.orderbook_* (P07c): snapshot top-K del libro L2 (kind='frontier', uno
+    # por barra, publicado) y su resync (el libro reinicio desde una foto nueva). La
+    # variante 'sample' del snapshot NO se registra: se persiste, no se publica.
+    # Payload y productor reales (la persistencia de orderbook); no diferidos.
+    MarketOrderbookEventType.ORDERBOOK_FRONTIER.value: (OrderbookSnapshotPayload, 1),
+    MarketOrderbookEventType.ORDERBOOK_RESYNCED.value: (OrderbookResyncedPayload, 1),
     # rule.* (P08): ciclo de evaluacion neutral; solo por transicion (CA-P08-01).
     RuleEventType.EVALUATION_COMPLETED.value: (RuleEvaluationCompletedPayload, 1),
     RuleEventType.FIRING.value: (RuleFiringPayload, 1),

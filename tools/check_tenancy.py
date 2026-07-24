@@ -79,6 +79,14 @@ TABLAS_SIN_TENANT_PERMITIDAS: dict[str, str] = {
     # ce_v5_app solo SELECT, escribe solo ce_v5_ingestion, y lo verifica
     # tools/check_market_access.py.
     "market_trade_gap": "public_market",
+    # EL LIBRO L2 PUBLICO (P07c, ADR-014): la foto top-K (frontier/sample) y las
+    # discontinuidades (resync) son dato publico compartido cross-tenant, igual que sus
+    # hermanas de mercado. Sin tenant_id A PROPOSITO: darselo duplicaria el MISMO libro
+    # del MISMO stream por cada tenant -- la explosion N x M que ADR-014 evita. Misma
+    # compensacion (regla 5.20): ce_v5_app solo SELECT, escribe solo ce_v5_ingestion, y
+    # lo verifica tools/check_market_access.py.
+    "market_orderbook_snapshot": "public_market",
+    "market_orderbook_discontinuity": "public_market",
 }
 
 # Roles de RUNTIME: los que se conectan con una credencial en un proceso vivo.

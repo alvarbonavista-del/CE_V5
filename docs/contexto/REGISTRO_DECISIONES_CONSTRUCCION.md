@@ -249,6 +249,36 @@ se invoca por UN SOLO comando espejo de ci.yml (para que "la bateria completa" n
 ensamblaje manual que pueda olvidar un check -el fallo que origina esta regla-); si ese comando
 no existe, se crea y se mantiene. Nace del run #26 (437a1dc verde en ruff+mypy+pytest pero rojo
 en check_tenancy: la tabla public_market market_trade_gap no estaba declarada).
+
+5.31 EJECUCION DE LA BATERIA DE CI POR CLAUDE CODE (refina 5.24). Claude Code PUEDE
+ejecutar la bateria de CI local (tools/ci_local.py), commit y push, siempre que: (1) PEGUE
+LA SALIDA CRUDA VERBATIM de la terminal -estado por check, recuento de skips (5.18) y
+cualquier fallo sin abreviar-, nunca un resumen ni un "paso afirmado"; (2) su entorno
+corra la bateria COMPLETA (Postgres+Redis arriba, los tres DSN operador/ingesta/reglas
+presentes) Y ci_local.py NO reporte ningun skip ni servicio/DSN ausente -si lo reporta o
+no puede levantarlos, NO empuja: CAE a [POWERSHELL] (Alvaro). El disparador del fallback
+es el REPORTE OBJETIVO de ci_local.py, no un juicio del modelo; (3) respete 5.29 (git add
+de rutas explicitas) y 5.30 (bateria completa espejo de ci.yml antes del push); (4)
+Actions (5.13/5.22) siga siendo el ARBITRO FINAL sobre el commit empujado: correr local NO
+lo sustituye. Esta regla ESTRECHA el "VER LA SALIDA REAL" de 5.24 a la VALIDACION EN
+CALIENTE: la bateria de CI es determinista y hermetica (el CI no abre sockets) y puede ir
+a Claude Code; la validacion en caliente del Roadmap/DoD (contra exchanges/DB reales)
+SIGUE regida por la 5.32. Motivo: 5.24 nacio para acortar operaciones; con Claude Code
+capaz de correr y pegar salida cruda, el relay manual de la bateria hermetica anade tiempo
+sin ganar garantia (la garantia la dan salida cruda + 5.18 + Actions, no quien teclea).
+Riesgo unico: verde ilusorio (T-01), mitigado por salida cruda verbatim, fallback objetivo
+y Actions como arbitro final. Nace de P07c.
+
+5.32 CONDUCCION DE LA VALIDACION EN CALIENTE POR TANDAS A CLAUDE CODE (extiende 5.31,
+precisa 5.23(b)). El periferico CONDUCE la validacion en caliente escribiendo tandas
+[CLAUDE CODE] que AGRUPAN TODAS LAS ACCIONES del escenario: levantar la conexion viva,
+provocar el evento (p.ej. el hueco de secuencia), capturar re-sync, metricas y trazas.
+Claude Code las ejecuta y PEGA LA EVIDENCIA CRUDA VERBATIM, nunca un resumen. Agrupar la
+EJECUCION no rebaja el checkpoint de 5.23(b): la validacion en caliente SIGUE ocurriendo y
+produciendo evidencia (5.18: cero validaciones en silencio). El escenario se disena para
+que su exito sea OBSERVABLE en la evidencia cruda. UNICO LIMITE: piezas que toquen dinero
+o claves (P10a/P10b) mantienen la ejecucion en caliente por [POWERSHELL] de Alvaro (menor
+privilegio en superficies con riesgo real). Nace de P07c.
 =====================================================================
 6. CIERRE DE PIEZA P01 - CONTRATOS BASE Y ENVELOPE
 =====================================================================

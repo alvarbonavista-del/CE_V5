@@ -39,6 +39,7 @@ from ce_v5.infra.connectors.bybit.symbols import (
     timeframe_from_interval,
     to_interval,
     to_native,
+    to_orderbook_topic,
     to_topic,
     to_trade_topic,
 )
@@ -46,6 +47,8 @@ from ce_v5.infra.connectors.bybit.translate import (
     BybitTranslationError,
     raw_candle_from_bybit_rest,
     raw_candle_from_bybit_ws,
+    raw_orderbook_delta_from_bybit,
+    raw_orderbook_seed_from_bybit,
     raw_trade_from_bybit_rest,
     raw_trade_from_bybit_ws,
     supported_bybit_timeframes,
@@ -55,7 +58,10 @@ from source.families.market import (
     LastSeenTrade,
     MarketDataKind,
     MarketStreamKey,
+    MarketType,
     RawCandle,
+    RawOrderbookDelta,
+    RawOrderbookSeed,
     RawTrade,
     Timeframe,
     TradeBackfillResult,
@@ -70,6 +76,8 @@ _PING = json.dumps({"op": "ping"})
 _MAX_ARGS_PER_SUB = 10
 # Prefijo del topic de trades: velas y trades comparten conexion y se separan por aqui.
 _TRADES_TOPIC_PREFIX = "publicTrade."
+# Prefijo del topic del libro: la tercera clase, separada por su prefijo como las demas.
+_ORDERBOOK_TOPIC_PREFIX = "orderbook."
 # Techo REAL de recent-trade SIN clave. NO es config: es lo que el endpoint da. El
 # sondeo en vivo vio que Bybit spot lo CAPA A 60 EN SILENCIO (pides 1000 -> 60 con
 # retCode=0). NO pagina: una sola llamada. Por eso su ventana de relleno es pequena y un
@@ -147,6 +155,9 @@ class ConnectorMetrics:
     # flujos pierde datos, y son de escalas muy distintas (miles de trades por minuto vs
     # vela por minuto).
     dropped_full_queue_trades: int = 0
+    # Contador PROPIO del libro (caudal de 100 ms, otra escala): mezclarlo taparia cual
+    # de las tres clases pierde datos.
+    dropped_full_queue_orderbook: int = 0
     translation_errors: int = 0
     reconnections: int = 0
     degraded_streams: set[str] = field(default_factory=set)
@@ -181,6 +192,15 @@ class BybitSpotConnector:
         self._cola_trades: queue.Queue[RawTrade] = queue.Queue(
             maxsize=self._config.max_queue
         )
+        # Cola SEPARADA del libro y almacen de la ULTIMA foto por stream: en Bybit la
+        # semilla llega por el WS (type=snapshot), no por REST. El lector la guarda y
+        # seed() la sirve. Un type=snapshot (reset u==1 / reconexion) actualiza
+        # la foto y marca reconexion para que el motor re-siembre.
+        self._cola_orderbook: queue.Queue[RawOrderbookDelta] = queue.Queue(
+            maxsize=self._config.max_queue
+        )
+        self._seeds: dict[str, RawOrderbookSeed] = {}
+        self._seeds_lock = threading.Lock()
         self._lectores: dict[int, threading.Thread] = {}
         self._parar = threading.Event()
         self._ssl = ssl.create_default_context()
@@ -350,6 +370,40 @@ class BybitSpotConnector:
             self._reconnected.clear()
         return copia
 
+    # -- OrderbookDataSourcePort ---------------------------------------------
+    #
+    # open/close/active/drain_reconnected los comparte con velas y trades.
+
+    def poll_deltas(self, timeout_ms: int) -> Sequence[RawOrderbookDelta]:
+        """DRENA la cola del libro. Espejo de poll()/poll_trades(): PULL con tope."""
+        lote: list[RawOrderbookDelta] = []
+        try:
+            lote.append(self._cola_orderbook.get(timeout=timeout_ms / 1000.0))
+        except queue.Empty:
+            return lote
+        while True:
+            try:
+                lote.append(self._cola_orderbook.get_nowait())
+            except queue.Empty:
+                break
+        return lote
+
+    def seed(self, key: MarketStreamKey) -> RawOrderbookSeed:
+        """La FOTO de partida: el ULTIMO type=snapshot que el WS entrego para el stream.
+
+        Como OKX y a diferencia de Binance (REST): Bybit manda la foto por el MISMO
+        topic (type=snapshot). Si aun no llego, se LANZA y el motor reintenta -- no
+        inventa un libro vacio. Un type=snapshot (reset u==1) actualiza la foto
+        y marca el stream reconectado para que el motor re-siembre.
+        """
+        clave = key.as_stream_key()
+        with self._seeds_lock:
+            raw = self._seeds.get(clave)
+        if raw is None:
+            msg = f"aun no llego la foto (type=snapshot) del libro de {clave!r}."
+            raise BybitTranslationError(msg)
+        return raw
+
     # -- Cableado del catalogo (B6b): capacidad SymbolMapSink ----------------
 
     def set_symbol_map(self, instruments: Sequence[Instrument]) -> None:
@@ -391,16 +445,19 @@ class BybitSpotConnector:
         """
         if key.data_kind is MarketDataKind.CANDLES:
             return key.timeframe is not None
-        return key.data_kind is MarketDataKind.TRADES
+        return key.data_kind in (MarketDataKind.TRADES, MarketDataKind.ORDERBOOK)
 
     def _topics_de(self, keys: tuple[MarketStreamKey, ...]) -> list[str]:
-        """Los topics de suscripcion de una conexion: velas (kline.) Y trades
-        (publicTrade.), que comparten conexion y se separan por el prefijo del topic.
+        """Los topics de suscripcion de una conexion: velas (kline.), trades
+        (publicTrade.) y libro (orderbook.), que comparten conexion y se separan por el
+        prefijo del topic.
         """
         topics: list[str] = []
         for k in keys:
             if k.data_kind is MarketDataKind.TRADES:
                 topics.append(to_trade_topic(k.symbol))
+            elif k.data_kind is MarketDataKind.ORDERBOOK:
+                topics.append(to_orderbook_topic(k.symbol))
             elif k.timeframe is not None:
                 topics.append(to_topic(k.symbol, k.timeframe.value))
         return topics
@@ -489,8 +546,15 @@ class BybitSpotConnector:
                 self.metrics.translation_errors += 1
             return
         topic = sobre.get("topic")
+        if not isinstance(topic, str):
+            return
+        # El libro va PRIMERO: su 'data' es un OBJETO, no una lista (a diferencia de
+        # velas y trades), asi que se enruta antes del check de lista de abajo.
+        if topic.startswith(_ORDERBOOK_TOPIC_PREFIX):
+            self._encolar_orderbook(sobre)
+            return
         datos = sobre.get("data")
-        if not isinstance(topic, str) or not isinstance(datos, list):
+        if not isinstance(datos, list):
             return
         if topic.startswith(_TRADES_TOPIC_PREFIX):
             self._encolar_trades(topic, datos)
@@ -544,6 +608,65 @@ class BybitSpotConnector:
                 # BACKPRESSURE OBSERVABLE, con su contador propio (ConnectorMetrics).
                 self.metrics.dropped_full_queue_trades += 1
                 self.metrics.degraded_streams.add(canonico)
+
+    def _encolar_orderbook(self, sobre: dict[str, Any]) -> None:
+        """Un mensaje de 'orderbook.*' -> foto (type=snapshot) o delta (type=delta).
+
+        La foto se GUARDA para seed(); el delta va a la cola. En Bybit 'data' es OBJETO
+        (no lista). Un type=snapshot posterior es un reset: _guardar_semilla marca la
+        reconexion para que el motor re-siembre.
+        """
+        topic = str(sobre.get("topic", ""))
+        partes = topic.split(".")
+        if len(partes) != 3:  # orderbook.{depth}.{symbol}
+            self.metrics.translation_errors += 1
+            return
+        canonico = self._native_to_canonical.get(partes[2])
+        if canonico is None:
+            self.metrics.translation_errors += 1
+            return
+        data = sobre.get("data")
+        if not isinstance(data, dict):
+            self.metrics.translation_errors += 1
+            return
+        tipo = str(sobre.get("type", ""))
+        if tipo == "snapshot":
+            try:
+                semilla = raw_orderbook_seed_from_bybit(data, canonico, _MARKET_TYPE)
+            except BybitTranslationError:
+                self.metrics.translation_errors += 1
+                return
+            self._guardar_semilla(canonico, semilla)
+            return
+        if tipo != "delta":
+            return
+        try:
+            delta = raw_orderbook_delta_from_bybit(data, canonico, _MARKET_TYPE)
+        except BybitTranslationError:
+            self.metrics.translation_errors += 1
+            return
+        try:
+            self._cola_orderbook.put_nowait(delta)
+        except queue.Full:
+            self.metrics.dropped_full_queue_orderbook += 1
+            self.metrics.degraded_streams.add(canonico)
+
+    def _guardar_semilla(self, canonico: str, semilla: RawOrderbookSeed) -> None:
+        """Guarda la ULTIMA foto del stream. Si ya habia una (reset/re-snapshot), marca
+        el stream como reconectado para que el motor la re-siembre.
+        """
+        clave = MarketStreamKey(
+            exchange="bybit",
+            market_type=MarketType.SPOT,
+            symbol=canonico,
+            data_kind=MarketDataKind.ORDERBOOK,
+        ).as_stream_key()
+        with self._seeds_lock:
+            es_reset = clave in self._seeds
+            self._seeds[clave] = semilla
+        if es_reset:
+            with self._reconnected_lock:
+                self._reconnected.add(clave)
 
     def _registrar_reconexion(self, keys: tuple[MarketStreamKey, ...]) -> None:
         """Cuenta una reconexion EXITOSA y marca sus claves para el bootstrap.

@@ -24,7 +24,14 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 
-from source.families.market import RawCandle, RawTrade, Timeframe
+from source.families.market import (
+    RawCandle,
+    RawOrderbookDelta,
+    RawOrderbookLevel,
+    RawOrderbookSeed,
+    RawTrade,
+    Timeframe,
+)
 
 _SUPPORTED: frozenset[Timeframe] = frozenset(
     {
@@ -169,4 +176,100 @@ def raw_trade_from_okx(
         # fija el ORIGEN del hecho, jamas nuestro reloj).
         event_time_ms=event_time_ms,
         source_sequence=source_sequence,
+    )
+
+
+def _book_field(book: Mapping[str, object], clave: str) -> object:
+    """Una clave OBLIGATORIA del libro de OKX, o error de traduccion.
+
+    NUNCA se construye un libro a medias: si a OKX le falta un campo que su doc promete,
+    es el lector quien convierte esta excepcion en una metrica observable.
+    """
+    if clave not in book:
+        message = f"libro de OKX sin la clave {clave!r}: no se traduce a medias."
+        raise OkxTranslationError(message)
+    return book[clave]
+
+
+def _entero(valor: object, campo: str) -> int:
+    """Un campo de secuencia de OKX (seqId/prevSeqId) a entero, o error."""
+    try:
+        return int(str(valor))
+    except (TypeError, ValueError) as exc:
+        message = f"campo {campo!r} del libro de OKX no es un entero: {valor!r}."
+        raise OkxTranslationError(message) from exc
+
+
+def _niveles(arr: object, lado: str) -> tuple[RawOrderbookLevel, ...]:
+    """Niveles de OKX [precio, tamano, liquidados, ordenes] -> (precio, tamano) EN
+    TEXTO.
+
+    OKX manda CUATRO campos por nivel; solo el precio y el tamano son del libro (los
+    otros dos -- liquidaciones y numero de ordenes -- se ignoran). Se copian TAL CUAL
+    como texto (nunca float); un tamano 0 se conserva (el motor lo interpreta como
+    borrar el nivel). Un nivel con menos de dos campos es un mensaje malformado: se
+    rechaza.
+    """
+    if not isinstance(arr, (list, tuple)):
+        message = f"{lado} del libro de OKX no es un array: {type(arr)!r}."
+        raise OkxTranslationError(message)
+    niveles: list[RawOrderbookLevel] = []
+    for nivel in arr:
+        if not isinstance(nivel, (list, tuple)) or len(nivel) < 2:
+            message = (
+                f"nivel de {lado} malformado en el libro de OKX: {nivel!r} "
+                "(se espera [precio, tamano, ...])."
+            )
+            raise OkxTranslationError(message)
+        niveles.append((str(nivel[0]), str(nivel[1])))
+    return tuple(niveles)
+
+
+def raw_orderbook_seed_from_okx(
+    book: Mapping[str, object], canonical_symbol: str, market_type: str
+) -> RawOrderbookSeed:
+    """El data[0] de un mensaje action=snapshot del canal 'books' -> RawOrderbookSeed.
+
+    Forma del libro: {"asks":[[p,sz,..],..],"bids":[..],"ts":..,"checksum":..,
+    "seqId":<int>,"prevSeqId":-1}. En el snapshot prevSeqId es -1 y se IGNORA; la
+    SECUENCIA BASE es seqId, contra la que el motor encadena (el prevSeqId del primer
+    delta debe ser este seqId). El checksum se IGNORA (decision de Central).
+    canonical_symbol lo resuelve el LLAMADOR desde el instId del 'arg' (en OKX ya es
+    canonico).
+    """
+    if not isinstance(book, Mapping):
+        message = f"libro de OKX no es un objeto: {type(book)!r}."
+        raise OkxTranslationError(message)
+    return RawOrderbookSeed(
+        exchange="okx",
+        market_type=market_type,
+        symbol=canonical_symbol,
+        bids=_niveles(_book_field(book, "bids"), "bids"),
+        asks=_niveles(_book_field(book, "asks"), "asks"),
+        base_sequence=_entero(_book_field(book, "seqId"), "seqId"),
+    )
+
+
+def raw_orderbook_delta_from_okx(
+    book: Mapping[str, object], canonical_symbol: str, market_type: str
+) -> RawOrderbookDelta:
+    """El data[0] de un mensaje action=update del canal 'books' -> RawOrderbookDelta.
+
+    seqId y prevSeqId viajan SIN INTERPRETAR: el motor encadena por prevSeqId == seqId
+    del anterior, y trata como excepciones (que NO son hueco) el keepalive
+    (seqId==prevSeqId) y el mantenimiento (seqId<prevSeqId). El traductor solo los mapea
+    fielmente. Un tamano 0 = borrar el nivel (lo aplica el motor). El checksum se
+    IGNORA.
+    """
+    if not isinstance(book, Mapping):
+        message = f"libro de OKX no es un objeto: {type(book)!r}."
+        raise OkxTranslationError(message)
+    return RawOrderbookDelta(
+        exchange="okx",
+        market_type=market_type,
+        symbol=canonical_symbol,
+        bids=_niveles(_book_field(book, "bids"), "bids"),
+        asks=_niveles(_book_field(book, "asks"), "asks"),
+        seq_id=_entero(_book_field(book, "seqId"), "seqId"),
+        prev_seq_id=_entero(_book_field(book, "prevSeqId"), "prevSeqId"),
     )

@@ -34,6 +34,12 @@ _OKX_BAR_TO_TIMEFRAME: dict[str, str] = {
 # flujo de trades es continuo y no se bucketea a nivel de stream (ADR-014).
 _TRADES_CHANNEL = "trades-all"
 
+# Canal WS del LIBRO L2 de OKX. Es 'books' (400 niveles, push cada 100 ms), en /public
+# (fuente fijada por Central/I-02-V). El primer mensaje es action=snapshot (semilla) y
+# los siguientes action=update (deltas), por el MISMO canal. SIN sufijo de bar: el libro
+# no se bucketea por intervalo (ADR-014); su granularidad es la profundidad del canal.
+_BOOKS_CHANNEL = "books"
+
 
 class SymbolTranslationError(ValueError):
     """El simbolo no tiene la forma canonica BASE-QUOTE."""
@@ -70,6 +76,26 @@ def to_trade_channel() -> str:
     barra pertenece al footprint (dato DERIVADO), no a este stream (ADR-014).
     """
     return _TRADES_CHANNEL
+
+
+def to_orderbook_channel() -> str:
+    """Canal WS del libro L2 de OKX: 'books' (fuente fijada por Central/I-02-V).
+
+    SIN sufijo de intervalo: el libro no se bucketea por barra (ADR-014), su
+    granularidad es la profundidad del canal (400 niveles). El snapshot vs delta lo
+    distingue el campo 'action' del mensaje (snapshot | update), no el canal.
+    """
+    return _BOOKS_CHANNEL
+
+
+def is_orderbook_channel(channel: str) -> bool:
+    """True si el canal entrante es el del libro L2.
+
+    El connector enruta con esto el mensaje que llega, igual que reconoce 'candle' de
+    las velas y 'trades-all' de los trades: las tres clases comparten conexion y se
+    separan por su canal.
+    """
+    return channel == _BOOKS_CHANNEL
 
 
 def is_trade_channel(channel: str) -> bool:

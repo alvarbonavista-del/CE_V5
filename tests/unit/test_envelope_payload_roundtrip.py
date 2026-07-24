@@ -49,6 +49,13 @@ from source.families.market import (
     MarketType,
     Timeframe,
 )
+from source.families.orderbook import (
+    MarketOrderbookEventType,
+    MarketOrderbookSnapshotKind,
+    OrderbookLevel,
+    OrderbookResyncedPayload,
+    OrderbookSnapshotPayload,
+)
 from source.families.policy import (
     InvalidationReason,
     KillSwitchPayload,
@@ -222,6 +229,31 @@ SAMPLE_PAYLOADS: dict[str, EventPayload] = {
             correction_revision=1,
             corrects_idempotency_key="orig-fp-1",
         )
+    ),
+    # market.orderbook_* (P07c): snapshot top-K del libro (frontier) y su resync.
+    MarketOrderbookEventType.ORDERBOOK_FRONTIER.value: OrderbookSnapshotPayload(
+        exchange="binance",
+        market_type=MarketType.SPOT,
+        symbol="BTC-USDT",
+        depth_k=25,
+        bids=(OrderbookLevel(price=Decimal("100.5"), size=Decimal("2")),),
+        asks=(OrderbookLevel(price=Decimal("100.6"), size=Decimal("1.5")),),
+        sequence=987654,
+        kind=MarketOrderbookSnapshotKind.FRONTIER,
+        timeframe=Timeframe.H1,
+        open_time=_OPEN,
+        close_time=_CLOSE,
+        cadence_ms=1000,
+        formula_version=1,
+    ),
+    MarketOrderbookEventType.ORDERBOOK_RESYNCED.value: OrderbookResyncedPayload(
+        exchange="binance",
+        market_type=MarketType.SPOT,
+        symbol="BTC-USDT",
+        from_sequence=500,
+        to_sequence=540,
+        reason="gap",
+        event_time=_OPEN,
     ),
     # rule.* (transiciones + operacional).
     RuleEventType.EVALUATION_COMPLETED.value: RuleEvaluationCompletedPayload(

@@ -39,16 +39,20 @@ from ce_v5.infra.connectors.okx.pool import ConnectionPlanner, OkxLimits
 from ce_v5.infra.connectors.okx.symbols import (
     SymbolTranslationError,
     TimeframeTranslationError,
+    is_orderbook_channel,
     is_trade_channel,
     timeframe_from_channel,
     to_bar,
     to_channel,
     to_native,
+    to_orderbook_channel,
     to_trade_channel,
 )
 from ce_v5.infra.connectors.okx.translate import (
     OkxTranslationError,
     raw_candle_from_okx,
+    raw_orderbook_delta_from_okx,
+    raw_orderbook_seed_from_okx,
     raw_trade_from_okx,
     supported_okx_timeframes,
 )
@@ -57,7 +61,10 @@ from source.families.market import (
     LastSeenTrade,
     MarketDataKind,
     MarketStreamKey,
+    MarketType,
     RawCandle,
+    RawOrderbookDelta,
+    RawOrderbookSeed,
     RawTrade,
     Timeframe,
     TradeBackfillResult,
@@ -167,6 +174,9 @@ class ConnectorMetrics:
     # flujos pierde datos, y son de escalas muy distintas (un par liquido publica miles
     # de trades por minuto y una vela por minuto).
     dropped_full_queue_trades: int = 0
+    # Contador PROPIO del libro (caudal de 100 ms, otra escala): mezclarlo taparia cual
+    # de las tres clases pierde datos.
+    dropped_full_queue_orderbook: int = 0
     translation_errors: int = 0
     reconnections: int = 0
     degraded_streams: set[str] = field(default_factory=set)
@@ -197,6 +207,14 @@ class OkxSpotConnector:
         self._cola_trades: queue.Queue[RawTrade] = queue.Queue(
             maxsize=self._config.max_queue
         )
+        # Cola SEPARADA del libro y almacen de la ULTIMA foto por stream. En OKX la
+        # semilla llega por el WS (primer action=snapshot), no por REST: el lector
+        # la guarda aqui y seed() la sirve. Bajo lock: el lector escribe, el motor lee.
+        self._cola_orderbook: queue.Queue[RawOrderbookDelta] = queue.Queue(
+            maxsize=self._config.max_queue
+        )
+        self._seeds: dict[str, RawOrderbookSeed] = {}
+        self._seeds_lock = threading.Lock()
         self._lectores: dict[int, threading.Thread] = {}
         self._parar = threading.Event()
         self._ssl = ssl.create_default_context()  # verificacion ON. No se toca.
@@ -429,6 +447,41 @@ class OkxSpotConnector:
                 self.metrics.translation_errors += 1
         return trades
 
+    # -- OrderbookDataSourcePort ---------------------------------------------
+    #
+    # open/close/active/drain_reconnected los comparte con velas y trades.
+
+    def poll_deltas(self, timeout_ms: int) -> Sequence[RawOrderbookDelta]:
+        """DRENA la cola del libro. Espejo de poll()/poll_trades(): PULL con tope."""
+        lote: list[RawOrderbookDelta] = []
+        try:
+            lote.append(self._cola_orderbook.get(timeout=timeout_ms / 1000.0))
+        except queue.Empty:
+            return lote
+        while True:
+            try:
+                lote.append(self._cola_orderbook.get_nowait())
+            except queue.Empty:
+                break
+        return lote
+
+    def seed(self, key: MarketStreamKey) -> RawOrderbookSeed:
+        """La FOTO de partida: la ULTIMA action=snapshot que el WS dio del stream.
+
+        A DIFERENCIA de Binance (REST), OKX manda la foto por el MISMO canal 'books'
+        como primer mensaje (action=snapshot); el lector la guardo. Si aun no llego
+        (recien suscrito), se LANZA y el motor reintenta -- no inventa un
+        libro vacio. Un re-snapshot posterior (reconexion) actualiza la foto y
+        marca el stream como reconectado para que el motor re-siembre.
+        """
+        clave = key.as_stream_key()
+        with self._seeds_lock:
+            raw = self._seeds.get(clave)
+        if raw is None:
+            msg = f"aun no llego la foto (action=snapshot) del libro de {clave!r}."
+            raise OkxTranslationError(msg)
+        return raw
+
     def drain_reconnected(self) -> AbstractSet[str]:
         """Devuelve (y limpia) las claves canonicas que reconectaron. Bajo lock."""
         with self._reconnected_lock:
@@ -466,7 +519,7 @@ class OkxSpotConnector:
         """
         if key.data_kind is MarketDataKind.CANDLES:
             return key.timeframe is not None
-        return key.data_kind is MarketDataKind.TRADES
+        return key.data_kind in (MarketDataKind.TRADES, MarketDataKind.ORDERBOOK)
 
     def _replanificar(self) -> None:
         claves = {
@@ -545,6 +598,8 @@ class OkxSpotConnector:
         """
         if key.data_kind is MarketDataKind.TRADES:
             return {"channel": to_trade_channel(), "instId": to_native(key.symbol)}
+        if key.data_kind is MarketDataKind.ORDERBOOK:
+            return {"channel": to_orderbook_channel(), "instId": to_native(key.symbol)}
         assert key.timeframe is not None
         return {
             "channel": to_channel(key.timeframe.value),
@@ -581,6 +636,9 @@ class OkxSpotConnector:
         channel = str(arg.get("channel", ""))
         if is_trade_channel(channel):
             self._encolar_trades(arg, datos)
+            return
+        if is_orderbook_channel(channel):
+            self._encolar_orderbook(arg, sobre, datos)
             return
         if not channel.startswith("candle"):
             return
@@ -625,6 +683,61 @@ class OkxSpotConnector:
                 # BACKPRESSURE OBSERVABLE, con su contador propio (ConnectorMetrics).
                 self.metrics.dropped_full_queue_trades += 1
                 self.metrics.degraded_streams.add(canonico)
+
+    def _encolar_orderbook(
+        self, arg: dict[str, Any], sobre: dict[str, Any], datos: list[Any]
+    ) -> None:
+        """Un mensaje de 'books' -> foto (action=snapshot) o delta (action=update).
+
+        La foto se GUARDA para seed(); el delta va a la cola. El 'action' los
+        distingue, no el canal. data[0] es el libro (OKX envia UN libro por mensaje).
+        """
+        try:
+            canonico = to_native(str(arg.get("instId", "")))
+        except SymbolTranslationError:
+            self.metrics.translation_errors += 1
+            return
+        if not datos:
+            return
+        book = datos[0]
+        action = str(sobre.get("action", ""))
+        if action == "snapshot":
+            try:
+                semilla = raw_orderbook_seed_from_okx(book, canonico, _MARKET_TYPE)
+            except OkxTranslationError:
+                self.metrics.translation_errors += 1
+                return
+            self._guardar_semilla(canonico, semilla)
+            return
+        if action != "update":
+            return
+        try:
+            delta = raw_orderbook_delta_from_okx(book, canonico, _MARKET_TYPE)
+        except OkxTranslationError:
+            self.metrics.translation_errors += 1
+            return
+        try:
+            self._cola_orderbook.put_nowait(delta)
+        except queue.Full:
+            self.metrics.dropped_full_queue_orderbook += 1
+            self.metrics.degraded_streams.add(canonico)
+
+    def _guardar_semilla(self, canonico: str, semilla: RawOrderbookSeed) -> None:
+        """Guarda la ULTIMA foto de un stream. Si ya habia una (re-snapshot), marca el
+        stream como reconectado para que el motor la re-siembre.
+        """
+        clave = MarketStreamKey(
+            exchange="okx",
+            market_type=MarketType.SPOT,
+            symbol=canonico,
+            data_kind=MarketDataKind.ORDERBOOK,
+        ).as_stream_key()
+        with self._seeds_lock:
+            es_reset = clave in self._seeds
+            self._seeds[clave] = semilla
+        if es_reset:
+            with self._reconnected_lock:
+                self._reconnected.add(clave)
 
     def _registrar_reconexion(self, keys: tuple[MarketStreamKey, ...]) -> None:
         """Cuenta una reconexion EXITOSA y marca sus claves para el bootstrap.
