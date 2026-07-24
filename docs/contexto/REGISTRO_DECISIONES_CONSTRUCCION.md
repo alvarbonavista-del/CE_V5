@@ -1712,3 +1712,82 @@ HEREDA P08c:
 REGLAS Y CHECKS: 5.29 (rutas explicitas) y 5.30 (bateria completa antes del push) ya
   persistidas. check_market_access (5.22) enganchado y demostrado EN ACTIONS (job
   backend-integration de ci.yml). Sin ADR nuevo; 5.12 no se activa.
+=====================================================================
+27. P07c -- NOTAS DE CIERRE (registro previo a doble revision Central+CSA + firma Alvaro)
+=====================================================================
+NATURALEZA: notas de cierre de P07c (libro L2 con estado), PENDIENTES de la doble revision
+(Central+CSA) y la firma de Alvaro. Se registran AQUI (append-only, 5.14) los diferidos,
+clarificaciones y el fix de host, para que el cierre no arranque sin ellos. NO afirman
+firma: el flujo (Actions verde -> Central -> CSA -> firma Alvaro) sigue pendiente.
+
+REGLAS DE PROCESO USADAS (5.31/5.32): toda la validacion en caliente de P07c se condujo
+bajo 5.31 (bateria de CI por Claude Code con salida cruda) y 5.32 (validacion en caliente
+por tandas). AMBAS estan REGISTRADAS en la seccion 5 (nacen de P07c). Su FIRMA por Alvaro
+es acto humano PENDIENTE, no verificable por el periferico; se deja constancia de que se
+USARON, no de que esten firmadas.
+
+DIFERIDO v5.1 (5.11 / cond.4 del cierre (a)) -- LIBRO PROFUNDO + DELTA-LOG CRUDO:
+  ESTADO: se persiste SOLO el top-K por lado (DEFAULT_DEPTH_K=25) en
+    market_orderbook_snapshot; el LIBRO PROFUNDO (mas alla del top-K) y el DELTA-LOG crudo
+    (la secuencia de deltas @depth/books) NO se persisten. El libro completo vive en
+    memoria (OrderbookBook). Documentado en los COMMENT de las tablas en 0020.
+  DUENO: pieza de v5.1 (persistencia profunda del libro / delta-log). NO entregable de P07c.
+  MOTIVO (5.11): el market data aun no fluye a produccion; persistir profundidad+delta-log
+    sin consumidor seria coste de almacenamiento sin invariante. El top-K cubre el frontier
+    (K=25-50, dictamen Central) y las muestras; la reproducibilidad no depende de la
+    profundidad guardada.
+  DISPARADOR DE REVISION: si el market data empezara a SERVIRSE a produccion ANTES de v5.1,
+    se REABRE esta decision y se evalua persistir profundidad y delta-log (mismo gatillo en
+    market_orderbook_snapshot y market_orderbook_discontinuity). Fechado, con gatillo: NO es
+    deuda silenciosa.
+
+CACHE_KEY / REPRODUCIBILIDAD (ADR-008/ADR-003) -- CONFIRMADO:
+  K (depth_k), cadencia (cadence_ms), tf (timeframe), open_time (as_of), formula_version y
+  clock_source estan EN la cache_key del snapshot (orderbook_snapshot_idempotency_key en
+  contracts/source/families/orderbook.py: parts = [prefix, stream_key, tf, ventana(open_time
+  [@sample_time]), k{K}, c{cadencia}, v{formula_version}, cs{clock_source}]), NO solo como
+  columnas de 0020. Recapturar con la MISMA procedencia reconstruye la MISMA clave; cambiar
+  cualquiera de esos parametros produce OTRO hecho y no colisiona.
+
+CLARIFICACION ADR-008 -- DataSource OBSERVACIONAL vs DERIVADO (anotacion, no ADR nuevo):
+  El snapshot de orderbook es un DataSource OBSERVACIONAL: una CAPTURA del libro vivo en su
+  as_of, tal como se guarda. NO es DERIVADO (no se re-deriva de un flujo aguas abajo, como
+  el CVD/footprint). REFINO DE LA REPRODUCIBILIDAD: para orderbook es POR PROCEDENCIA (la
+  cache_key registra COMO se capturo), NO por replay. Por eso el snapshot de orderbook YA NO
+  es espejo del snapshot+replay del CVD (DEC-SNAPSHOT-REPLAY-01, que gobierna el VALOR/CVD,
+  P08b/c): esa maquinaria no aplica aqui. Reflejado en los docstrings de
+  OrderbookSnapshotPayload y orderbook_snapshot.py.
+
+N1 -- JSON SCHEMA MAS PERMISIVO QUE EL VALIDADOR DE BORDE (anotacion):
+  La relajacion condicional de 5.21 (niveles vacios admitidos SOLO si is_complete=False,
+  opcion B) vive en el VALIDADOR Pydantic de OrderbookSnapshotPayload (borde, ADR-006). El
+  JSON Schema generado NO expresa esa condicion (no tiene minItems condicional): queda MAS
+  PERMISIVO que el validador. ES SEGURO MIENTRAS el UNICO productor sea el backend (que pasa
+  por el validador Pydantic antes de persistir/publicar). RE-ELEVAR si algun dia hay un
+  productor NO-backend que escriba estos payloads saltandose el validador (p.ej. un
+  ingestor en otro lenguaje): habria que llevar la condicion tambien al JSON Schema.
+
+FIX (b) -- BINANCE AL DOMINIO DE DATOS data-*.binance.vision:
+  El conector Binance usa wss://data-stream.binance.vision (WS) y https://data-api.binance
+  .vision (REST /api/v3/depth), NO los hosts geo-restringidos (stream.binance.com /
+  api.binance.com). MOTIVO: la API PUBLICA de DATOS de Binance no esta geo-restringida por
+  MiCA (lo esta el SERVICIO, no el dato); los dominios .vision sirven los MISMOS streams y
+  payloads. Verificado en caliente (Fase A). Anadido al allowlist del barrido 5.15
+  (BARRIDO_SEGURIDAD_P07c.md, Parte B; y comentario en connector.py). REGRESION: P07/P07b
+  siguen VERDES tras el cambio de host -- ci_local 24/24 (ruff, mypy, todos los tests
+  unit+integracion de velas/trades) verde con cero skips; el path combinado (/stream) y
+  /api/v3/* son identicos, solo cambia el host, asi que no hay cambio de logica que
+  regresione P07/P07b. FRONTERA ABIERTA (de Alvaro, no bloquea dev): la lectura legal de
+  usar los dominios .vision bajo MiCA queda PENDIENTE de asesoria antes de cualquier
+  posture de PRODUCCION.
+
+BYBIT -- CANAL DE PROFUNDIDAD: quedo orderbook.200 (push cada 100 ms; _DEFAULT_ORDERBOOK_
+  DEPTH=200 en bybit/symbols.py), COHERENTE con el K por defecto del snapshot (25, rango
+  25-50): 200 niveles cubren de sobra el top-25. orderbook.50 (push 20 ms) se descarto por
+  mas caudal sin ganar para el top-K; parametrizable si la medicion del paso 8 lo pidiera.
+
+EVIDENCIA CRUDA EN EL RASTRO (5.32/5.18): la salida VERBATIM de la validacion en caliente
+  (Binance/OKX/Bybit: siembra, resync, recuperacion, metricas de CPU; siembra Binance 8/8
+  tras el pre-buffer; keepalive/mantenimiento OKX sin resync; sonda 60018 /business vs
+  /public) esta en docs/EVIDENCIA_CALIENTE_P07c.md -- no solo resumida en los informes de
+  tanda.
