@@ -93,9 +93,12 @@ class _Continuity(Enum):
     GAP = auto()  # la cadena se rompio: hueco -> incompleto + resync.
 
 
-# La firma comun de las tres reglas de continuidad: dado un delta y la ultima secuencia
-# aplicada, devuelve el veredicto y la nueva secuencia. El motor las usa sin saber cual.
-_Classifier = Callable[[RawOrderbookDelta, int, str], "tuple[_Continuity, int]"]
+# La firma comun de las tres reglas de continuidad: dado un delta, la ultima secuencia
+# aplicada y si es el PRIMER delta tras la foto, devuelve el veredicto y la nueva
+# secuencia. El motor las usa sin saber cual. first_after_seed solo lo mira Binance (su
+# primer delta ABARCA la foto, U<=base+1<=u); OKX/Bybit encadenan exacto por WS y lo
+# ignoran.
+_Classifier = Callable[[RawOrderbookDelta, int, str, bool], "tuple[_Continuity, int]"]
 
 
 def _stream_id(exchange: str, market_type: str, symbol: str) -> str:
@@ -184,26 +187,36 @@ def _book_from_levels(
 
 
 def _classify_binance(
-    delta: RawOrderbookDelta, last_seq: int, expected: str
+    delta: RawOrderbookDelta, last_seq: int, expected: str, first_after_seed: bool
 ) -> tuple[_Continuity, int]:
-    """Binance: U == u_previo + 1 encadena; descartar u <= la ultima secuencia aplicada.
+    """Binance: el PRIMER delta ABARCA la foto; luego U == u_previo + 1 encadena.
 
-    El primer evento tras la foto encadena contra el lastUpdateId del snapshot (que es
-    la ultima secuencia aplicada en ese momento). Un evento cuyo final_update_id (u) ya
-    quedo cubierto es un reenvio (duplicado); uno cuyo first_update_id (U) no es el
-    siguiente exacto es un salto: hueco.
+    Procedimiento oficial (I-02): tras la foto REST con lastUpdateId, se descartan los
+    eventos con u <= lastUpdateId (reenvios ya cubiertos por la foto). El PRIMER evento
+    a aplicar es el que ABARCA la foto: U <= lastUpdateId+1 <= u -- su U puede ser MENOR
+    que lastUpdateId+1 (empezo antes de la foto y la cruza), asi que exigir U == last+1
+    exacto lo rechazaria como hueco cuando es justo el puente. Desde el primero aplicado
+    la continuidad es estricta: U == u_previo + 1. Un evento cuyo U no encadena (ni
+    abarca, en el primero) es un salto: hueco (fail-safe).
     """
     u_ini = _require_seq(delta.first_update_id, "first_update_id (U)", expected)
     u_fin = _require_seq(delta.final_update_id, "final_update_id (u)", expected)
     if u_fin <= last_seq:
         return _Continuity.DUPLICATE, last_seq
-    if u_ini == last_seq + 1:
+    # Aqui u_fin > last_seq (u >= lastUpdateId+1): el extremo superior del abarque ya se
+    # cumple. El PRIMER delta tras la foto solo necesita que su U no sea POSTERIOR a
+    # lastUpdateId+1 (U <= base+1, ABARCA); a partir de ahi, encadenado estricto.
+    if first_after_seed:
+        encadena = u_ini <= last_seq + 1
+    else:
+        encadena = u_ini == last_seq + 1
+    if encadena:
         return _Continuity.APPLY, u_fin
     return _Continuity.GAP, last_seq
 
 
 def _classify_okx(
-    delta: RawOrderbookDelta, last_seq: int, expected: str
+    delta: RawOrderbookDelta, last_seq: int, expected: str, first_after_seed: bool
 ) -> tuple[_Continuity, int]:
     """OKX: prevSeqId del mensaje == seqId del anterior encadena.
 
@@ -212,7 +225,11 @@ def _classify_okx(
     (seqId < prevSeqId: OKX reinicio su contador). Ninguna marca el libro incompleto ni
     pide resync. Solo un mensaje que AVANZA (seqId > prevSeqId) cuyo prevSeqId NO
     encadena con lo ultimo aplicado es un hueco de verdad.
+
+    first_after_seed se IGNORA: la foto de OKX llega por el MISMO WS y su seqId es el
+    ancla exacta (prevSeqId del primero == seqId de la foto). No hay abarque (Binance).
     """
+    del first_after_seed
     seq = _require_seq(delta.seq_id, "seq_id", expected)
     prev = _require_seq(delta.prev_seq_id, "prev_seq_id", expected)
     if seq <= prev:
@@ -224,7 +241,7 @@ def _classify_okx(
 
 
 def _classify_bybit(
-    delta: RawOrderbookDelta, last_seq: int, expected: str
+    delta: RawOrderbookDelta, last_seq: int, expected: str, first_after_seed: bool
 ) -> tuple[_Continuity, int]:
     """Bybit: continuidad de u; un u == 1 (o is_snapshot) es un RESET.
 
@@ -232,7 +249,11 @@ def _classify_bybit(
     ese mensaje NO encadena, RECONSTRUYE. Fuera de eso, u tiene que ser el siguiente
     exacto; un u ya visto es un reenvio y un salto es un hueco. El campo seq (secuencia
     cruzada) se conserva sin usar: la continuidad del libro va por u.
+
+    first_after_seed se IGNORA: la foto de Bybit llega por el MISMO WS (su u es el
+    ancla) y el primer delta encadena exacto (u == base+1). No hay abarque (Binance).
     """
+    del first_after_seed
     u = _require_seq(delta.update_id, "update_id (u)", expected)
     if delta.is_snapshot or u == 1:
         return _Continuity.RESET, u
@@ -283,6 +304,10 @@ class OrderbookBook:
         # Antes de la primera foto el libro NO es de fiar: necesita un seed. La senal
         # arranca ENCENDIDA y la apaga la foto.
         self._resync_required = True
+        # El PROXIMO delta es el PRIMERO tras una foto. Solo Binance lo mira: su primer
+        # delta ABARCA la foto (U<=base+1<=u) en vez de encadenar exacto. Lo apaga el
+        # primer delta aplicado; lo enciende cada seed().
+        self._first_after_seed = False
 
     # -- Estado observable --------------------------------------------------
 
@@ -385,6 +410,9 @@ class OrderbookBook:
         self._seeded = True
         self._complete = True
         self._resync_required = False
+        # El proximo delta es el PRIMERO tras esta foto: en Binance ABARCA la foto
+        # (U<=base+1<=u) en vez de encadenar exacto (regla oficial I-02).
+        self._first_after_seed = True
 
     def apply(self, raw: RawOrderbookDelta) -> None:
         """Aplica un delta EN ORDEN, o senala un hueco. El corazon del motor.
@@ -406,10 +434,13 @@ class OrderbookBook:
         self._verificar_pertenencia(raw.exchange, raw.market_type, raw.symbol, expected)
 
         classify = self._classifier_for(raw.exchange)
-        outcome, new_seq = classify(raw, self._last_seq, expected)
+        outcome, new_seq = classify(
+            raw, self._last_seq, expected, self._first_after_seed
+        )
 
         if outcome is _Continuity.RESET:
             self._reset_from(raw, new_seq, expected)
+            self._first_after_seed = False
             return
         if self._resync_required:
             # Ya hay un hueco abierto: solo una foto (RESET arriba, o un seed())
@@ -419,6 +450,9 @@ class OrderbookBook:
             return
         if outcome is _Continuity.APPLY:
             self._merge_delta(raw, new_seq, expected)
+            # Ya enganchamos el primer delta (el abarque en Binance): a partir de aqui,
+            # continuidad estricta. DUPLICATE/NOOP no lo apagan (se espera el puente).
+            self._first_after_seed = False
         elif outcome is _Continuity.GAP:
             self._complete = False
             self._resync_required = True

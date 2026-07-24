@@ -217,6 +217,107 @@ class TestDuplicado:
         assert book.is_complete
         assert not book.resync_required
 
+
+class TestPuenteBinance:
+    """El PRIMER delta de Binance ABARCA la foto (regla oficial I-02): U<=base+1<=u, con
+    U posiblemente MENOR que base+1. El fix del hallazgo de la Tanda V.
+    """
+
+    def test_el_primer_delta_que_abarca_la_foto_se_aplica(self) -> None:
+        # base=100; delta U=98, u=103: U (98) <= base+1 (101) <= u (103) -> ABARCA.
+        # Antes se rechazaba como hueco (exigia U==101); ahora engancha el puente.
+        book = OrderbookBook()
+        book.seed(_seed())  # base_sequence=100
+        assert book.is_complete
+
+        book.apply(
+            _delta(first_update_id=98, final_update_id=103, bids=[("100.5", "7.0")])
+        )
+
+        assert book.is_complete
+        assert not book.resync_required
+        assert book.sequence == 103  # last avanza al u del puente.
+        assert book.bids()[Decimal("100.5")] == Decimal("7.0")
+
+    def test_tras_el_puente_la_continuidad_es_estricta(self) -> None:
+        # Enganchado el puente (last=103), el SIGUIENTE ya no abarca: exige U==104.
+        book = OrderbookBook()
+        book.seed(_seed())
+        book.apply(_delta(first_update_id=98, final_update_id=103))  # puente, last=103
+
+        # U=104 == last+1: encadena.
+        book.apply(
+            _delta(first_update_id=104, final_update_id=105, bids=[("99.0", "9")])
+        )
+        assert book.is_complete
+        assert book.sequence == 105
+        assert book.bids()[Decimal("99.0")] == Decimal("9")
+
+        # Un salto tras el puente SI es hueco (ya no hay abarque): U=200 no encadena.
+        book.apply(_delta(first_update_id=200, final_update_id=201))
+        assert not book.is_complete
+        assert book.resync_required
+
+    def test_un_delta_con_u_menor_o_igual_a_base_se_descarta(self) -> None:
+        # u <= base es un reenvio ya cubierto por la foto: DUPLICADO, no toca el libro y
+        # el puente sigue pendiente. Luego el delta que abarca engancha.
+        book = OrderbookBook()
+        book.seed(_seed())  # base=100
+        book.apply(
+            _delta(first_update_id=90, final_update_id=100, bids=[("100.0", "9.0")])
+        )
+        # Descartado: el bid 100.0 sigue como en la foto (no se aplico el 9.0).
+        assert book.bids()[Decimal("100.0")] == Decimal("1.0")
+        assert book.is_complete
+
+        # Ahora SI llega el que abarca (U=99 <= 101 <= u=104): engancha.
+        book.apply(
+            _delta(first_update_id=99, final_update_id=104, bids=[("100.0", "3.0")])
+        )
+        assert book.is_complete
+        assert book.sequence == 104
+        assert book.bids()[Decimal("100.0")] == Decimal("3.0")
+
+    def test_si_ningun_delta_abarca_es_hueco_real(self) -> None:
+        # base=100; delta U=106 (> base+1=101): NO abarca -> hueco real. FAIL-SAFE.
+        book = OrderbookBook()
+        book.seed(_seed())
+        book.apply(_delta(first_update_id=106, final_update_id=110))
+        assert not book.is_complete
+        assert book.resync_required
+
+    def test_okx_no_usa_abarque_el_primer_delta_encadena_exacto(self) -> None:
+        # OKX: foto (seqId=base); el primer delta encadena por prevSeqId==base EXACTO.
+        # Un prevSeqId que "abarcase" (menor que base) es hueco: OKX no tiene span.
+        book = OrderbookBook()
+        book.seed(_seed(exchange="okx", base_sequence=100))
+        book.apply(
+            _delta(exchange="okx", seq_id=101, prev_seq_id=100, bids=[("100.0", "2")])
+        )
+        assert book.is_complete
+        assert book.sequence == 101
+
+        book2 = OrderbookBook()
+        book2.seed(_seed(exchange="okx", base_sequence=100))
+        # prevSeqId=98 < base: no encadena y OKX no abarca -> hueco.
+        book2.apply(_delta(exchange="okx", seq_id=105, prev_seq_id=98))
+        assert not book2.is_complete
+        assert book2.resync_required
+
+    def test_bybit_no_usa_abarque_el_primer_delta_encadena_exacto(self) -> None:
+        # Bybit: primer delta u == base+1 EXACTO. Un u que abarcase no existe en Bybit.
+        book = OrderbookBook()
+        book.seed(_seed(exchange="bybit", base_sequence=100))
+        book.apply(_delta(exchange="bybit", update_id=101, bids=[("100.0", "2")]))
+        assert book.is_complete
+        assert book.sequence == 101
+
+        book2 = OrderbookBook()
+        book2.seed(_seed(exchange="bybit", base_sequence=100))
+        book2.apply(_delta(exchange="bybit", update_id=105))  # salto: hueco
+        assert not book2.is_complete
+        assert book2.resync_required
+
     def test_un_nivel_a_tamano_cero_borra_el_nivel(self) -> None:
         # tamano 0 en un delta no es un nivel a precio cero: es la orden de BORRAR ese
         # nivel, tal como publican los exchanges el vaciado de un nivel del libro.
