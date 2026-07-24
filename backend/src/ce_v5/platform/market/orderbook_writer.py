@@ -63,3 +63,50 @@ class OrderbookWriterPort(Protocol):
         formula_version): reprocesar la misma muestra no la duplica.
         """
         ...
+
+    def record_discontinuity(
+        self,
+        exchange: str,
+        market_type: str,
+        symbol: str,
+        from_sequence: int,
+        to_sequence: int | None,
+        event_time: int,
+        reason: str,
+    ) -> bool:
+        """Apunta una discontinuidad SIN publicarla (espejo de record_gap). True si
+        entro.
+
+        Registra la AUSENCIA de continuidad de una RECONEXION -- que se resuelve
+        re-sembrando, no encadenando, asi que el motor no ve el hueco por un delta --
+        para que el frontier de las barras solapadas se marque incompleto (fail-safe,
+        cond.3). El resync PUBLICADO (hueco detectado por el motor) va por
+        persist_and_enqueue, que persiste la discontinuidad Y la encola atomico.
+        Idempotente por el UNIQUE.
+        """
+        ...
+
+
+class OrderbookReaderPort(Protocol):
+    """Lectura de discontinuidades del libro. La cumple infra (market_orderbook).
+
+    Espejo de la parte de lectura del reader del footprint (overlapping_gaps): el motor
+    de snapshot la usa para el is_complete del frontier -- si una discontinuidad solapa
+    la barra, la foto de cierre no es de fiar (cond.3).
+    """
+
+    def overlapping_discontinuities(
+        self,
+        exchange: str,
+        market_type: str,
+        symbol: str,
+        window_start: int,
+        window_end: int,
+    ) -> tuple[tuple[int, int | None, int], ...]:
+        """Las discontinuidades cuyo event_time cae en [window_start, window_end).
+
+        Vacia = ningun resync en la ventana (el frontier puede ser completo si el libro
+        lo estaba). No vacia = hubo un resync dentro de la barra -> is_complete=False.
+        Cada fila es (from_sequence, to_sequence, event_time).
+        """
+        ...

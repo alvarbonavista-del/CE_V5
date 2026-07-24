@@ -298,6 +298,29 @@ class OrderbookBook:
         """Si ya se arranco con al menos una foto."""
         return self._seeded
 
+    @property
+    def sequence(self) -> int:
+        """La ultima secuencia aplicada, en el vocabulario del exchange (Binance u, OKX
+        seqId, Bybit u). Es la secuencia AS-OF del estado actual del libro, que el motor
+        de snapshot copia al payload. 0 antes de la primera foto.
+        """
+        return self._last_seq
+
+    @property
+    def exchange(self) -> str | None:
+        """El exchange del flujo, adoptado de la primera foto (None si aun no hay)."""
+        return self._exchange
+
+    @property
+    def market_type(self) -> str | None:
+        """El tipo de mercado del flujo (None si aun no hay foto)."""
+        return self._market_type
+
+    @property
+    def symbol(self) -> str | None:
+        """El simbolo canonico del flujo (None si aun no hay foto)."""
+        return self._symbol
+
     def stream_id(self) -> str | None:
         """La clave textual del flujo, o None si aun no se ha arrancado."""
         if self._exchange is None or self._market_type is None or self._symbol is None:

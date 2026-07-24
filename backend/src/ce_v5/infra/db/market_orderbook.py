@@ -66,6 +66,26 @@ VALUES (%s, %s, %s, %s, %s::jsonb)
 ON CONFLICT (idempotency_key) DO NOTHING
 """
 
+# Las discontinuidades que SOLAPAN una ventana de barra, por event_time (ADR-007), como
+# read_overlapping_gaps de los trades. Si la tupla NO esta vacia, hubo un resync dentro
+# de [window_start, window_end) y el frontier de esa barra se marca is_complete=False
+# (fail-safe uniforme, cond.3). Semiabierto por la derecha: un resync en la frontera cae
+# en UNA sola barra.
+_OVERLAPPING_DISCONTINUITIES_SQL = """
+SELECT from_sequence, to_sequence, event_time
+FROM market_orderbook_discontinuity
+WHERE exchange = %s AND market_type = %s AND symbol = %s
+  AND event_time >= %s AND event_time < %s
+ORDER BY event_time
+"""
+
+
+def _int(valor: object) -> int:
+    if not isinstance(valor, int):
+        msg = f"Se esperaba un entero de la base y llego {type(valor)!r}."
+        raise TypeError(msg)
+    return valor
+
 
 def _levels_json(payload: OrderbookSnapshotPayload) -> tuple[str, str]:
     """Los bids y asks como JSON, con Decimal EN TEXTO (precision intacta)."""
@@ -191,3 +211,70 @@ class PostgresOrderbookWriter:
                 ),
             )
         return bool(escrita)
+
+    def record_discontinuity(
+        self,
+        exchange: str,
+        market_type: str,
+        symbol: str,
+        from_sequence: int,
+        to_sequence: int | None,
+        event_time: int,
+        reason: str,
+    ) -> bool:
+        """Apunta una discontinuidad del libro SIN publicarla. True si la fila entro.
+
+        Espejo de PostgresTradeWriter.record_gap: registra la AUSENCIA de continuidad
+        para que el frontier de las barras solapadas se marque incompleto (cond.3), sin
+        encolar nada. Para el resync PUBLICADO (su propio hecho) el motor usa
+        persist_and_enqueue, que persiste la discontinuidad Y la encola en LA MISMA
+        transaccion (ADR-013): esto es solo el registro fail-safe de una reconexion, que
+        se re-siembra en vez de encadenarse, y el motor no ve el hueco por un delta.
+
+        IDEMPOTENTE por el UNIQUE NULLS NOT DISTINCT (0020): la misma discontinuidad
+        apuntada dos veces no se duplica. El booleano distingue una NUEVA de una ya
+        conocida, lo que permite contar perdida de dato real y no reconexiones.
+        """
+        with self._database.transaction() as session:
+            escrita = session.fetchall(
+                _INSERT_DISCONTINUITY_SQL,
+                (
+                    exchange,
+                    market_type,
+                    symbol,
+                    from_sequence,
+                    to_sequence,
+                    event_time,
+                    reason,
+                ),
+            )
+        return bool(escrita)
+
+    def overlapping_discontinuities(
+        self,
+        exchange: str,
+        market_type: str,
+        symbol: str,
+        window_start: int,
+        window_end: int,
+    ) -> tuple[tuple[int, int | None, int], ...]:
+        """Las discontinuidades cuyo event_time cae en [window_start, window_end).
+
+        Espejo de read_overlapping_gaps: si la tupla NO esta vacia, hubo un resync
+        dentro de la ventana y el frontier de esa barra se marca is_complete=False. Cada
+        fila es (from_sequence, to_sequence, event_time); to_sequence puede ser NULL
+        (extremo desconocido).
+        """
+        with self._database.transaction() as session:
+            rows = session.fetchall(
+                _OVERLAPPING_DISCONTINUITIES_SQL,
+                (exchange, market_type, symbol, window_start, window_end),
+            )
+        return tuple(
+            (
+                _int(row[0]),
+                None if row[1] is None else _int(row[1]),
+                _int(row[2]),
+            )
+            for row in rows
+        )
