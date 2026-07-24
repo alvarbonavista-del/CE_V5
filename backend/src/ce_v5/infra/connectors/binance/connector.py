@@ -26,6 +26,7 @@ import json
 import queue
 import ssl
 import threading
+import time
 import urllib.parse
 import urllib.request
 from collections.abc import Sequence
@@ -149,6 +150,11 @@ class BinanceConfig:
     backoff_initial_s: float = 1.0
     backoff_max_s: float = 60.0
     backoff_jitter_s: float = 0.5
+    # PROCEDIMIENTO OFICIAL Binance (I-02) para el LIBRO: bufferizar el WS ANTES de la
+    # foto REST. seed() espera hasta este tope a que llegue >=1 delta del libro; si el
+    # stream esta muerto, procede con la foto igualmente (el fail-safe/resync actua). NO
+    # bloquea indefinidamente. Los tests en frio lo ponen a 0 o a un valor pequeno.
+    orderbook_seed_buffer_timeout_s: float = 5.0
 
 
 @dataclass(slots=True)
@@ -432,7 +438,15 @@ class BinanceSpotConnector:
         detecta el hueco por la continuidad. Datos NO validados, igual que el WS: los
         valida la MISMA frontera de confianza (el motor del libro). El IO vive aqui; la
         traduccion es pura (raw_orderbook_seed_from_binance) y se prueba en frio.
+
+        BUFFERIZA EL WS ANTES DE LA FOTO (procedimiento oficial I-02): pedir la foto con
+        buffer VACIO pierde la ventana foto<->buffer: los deltas entre lastUpdateId y el
+        primer delta entregado no se bufferizan, el primero trae U>lastUpdateId+1 y el
+        motor lo ve como hueco (diagnosticado: ~50% de siembras frescas arrancaban en
+        resync). Esperar a que llegue >=1 delta garantiza que el buffer ABARCA la foto:
+        el primer delta con u>lastUpdateId cumple U<=lastUpdateId+1 (el puente).
         """
+        self._esperar_buffer_libro()
         params = urllib.parse.urlencode(
             {"symbol": to_native(key.symbol), "limit": _DEPTH_LIMIT}
         )
@@ -441,6 +455,19 @@ class BinanceSpotConnector:
             msg = f"foto de libro de Binance con forma inesperada: {type(datos)!r}."
             raise BinanceTranslationError(msg)
         return raw_orderbook_seed_from_binance(datos, key.symbol, _MARKET_TYPE)
+
+    def _esperar_buffer_libro(self) -> None:
+        """Espera (ACOTADO) a que el WS del libro entregue >=1 delta antes de la foto.
+
+        No DRENA la cola (los deltas bufferizados los necesita el motor para encadenar):
+        solo comprueba qsize sin consumir. TIMEOUT: un stream muerto no cuelga el ciclo:
+        vencido el plazo se procede con la foto y el fail-safe/resync actua. El
+        apagado (_parar) interrumpe la espera de inmediato.
+        """
+        limite = time.monotonic() + self._config.orderbook_seed_buffer_timeout_s
+        while self._cola_orderbook.qsize() == 0 and time.monotonic() < limite:
+            if self._parar.wait(0.02):  # True si se pidio apagar: no esperamos mas.
+                return
 
     # -- Cableado del catalogo (B6b) -----------------------------------------
 

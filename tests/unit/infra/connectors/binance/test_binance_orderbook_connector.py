@@ -3,16 +3,26 @@
 TODO SIN RED. El socket real se valida en caliente (5.18). Aqui se prueba lo que el CI
 SI caza: el libro viaja por la MISMA conexion que velas y trades (no hay socket nuevo),
 el depthUpdate se enruta a la cola del LIBRO (no a velas ni trades), poll_deltas la
-drena, la foto la sirve seed() por REST /api/v3/depth, y la reconexion marca TAMBIEN la
-clave del libro.
+drena, la foto la sirve seed() por REST /api/v3/depth (que BUFFERIZA el WS antes de la
+foto, procedimiento oficial I-02), y la reconexion marca TAMBIEN la clave del libro.
 """
 
 from __future__ import annotations
 
 import json
+import threading
+import time
 
-from ce_v5.infra.connectors.binance.connector import BinanceSpotConnector
-from source.families.market import MarketDataKind, MarketStreamKey, MarketType
+from ce_v5.infra.connectors.binance.connector import (
+    BinanceConfig,
+    BinanceSpotConnector,
+)
+from source.families.market import (
+    MarketDataKind,
+    MarketStreamKey,
+    MarketType,
+    RawOrderbookDelta,
+)
 
 _OB_KEY = MarketStreamKey(
     exchange="binance",
@@ -23,7 +33,33 @@ _OB_KEY = MarketStreamKey(
 
 
 def _con_mapa() -> BinanceSpotConnector:
-    return BinanceSpotConnector(native_to_canonical={"BTCUSDT": "BTC-USDT"})
+    # timeout de pre-buffer a 0 en los tests SIN RED: no hay WS que bufferice, asi que
+    # seed() procede directo a la foto (el pre-buffer se prueba aparte, con su propio
+    # connector y un delta inyectado).
+    return BinanceSpotConnector(
+        config=BinanceConfig(orderbook_seed_buffer_timeout_s=0.0),
+        native_to_canonical={"BTCUSDT": "BTC-USDT"},
+    )
+
+
+def _un_delta() -> RawOrderbookDelta:
+    return RawOrderbookDelta(
+        exchange="binance",
+        market_type="spot",
+        symbol="BTC-USDT",
+        bids=(),
+        asks=(),
+        first_update_id=161,
+        final_update_id=165,
+    )
+
+
+def _fake_depth() -> dict[str, object]:
+    return {
+        "lastUpdateId": 160,
+        "bids": [["100.50", "2.0"]],
+        "asks": [["100.60", "1.5"]],
+    }
 
 
 def _delta_msg() -> str:
@@ -113,3 +149,59 @@ def test_la_reconexion_marca_la_clave_del_libro() -> None:
 
     assert connector.metrics.reconnections == 1
     assert connector.drain_reconnected() == {_OB_KEY.as_stream_key()}
+
+
+def test_seed_bufferiza_el_ws_antes_de_pedir_la_foto() -> None:
+    # I-02: seed() ESPERA a que el buffer tenga >=1 delta ANTES de pedir la foto REST,
+    # para que el buffer ABARQUE lastUpdateId (cierra la ventana perdida). Se simula
+    # el WS entregando un delta tras un momento; la foto debe pedirse DESPUES.
+    connector = BinanceSpotConnector(
+        config=BinanceConfig(orderbook_seed_buffer_timeout_s=5.0),
+        native_to_canonical={"BTCUSDT": "BTC-USDT"},
+    )
+    qsize_al_pedir_foto: list[int] = []
+
+    def _fake_get_json(path: str) -> object:
+        qsize_al_pedir_foto.append(connector._cola_orderbook.qsize())  # noqa: SLF001
+        return _fake_depth()
+
+    connector._get_json = _fake_get_json  # type: ignore[method-assign]  # noqa: SLF001
+
+    def _entregar_delta_tras_un_momento() -> None:
+        time.sleep(0.05)
+        connector._cola_orderbook.put(_un_delta())  # noqa: SLF001
+
+    hilo = threading.Thread(target=_entregar_delta_tras_un_momento)
+    hilo.start()
+    seed = connector.seed(_OB_KEY)
+    hilo.join()
+
+    assert seed.base_sequence == 160
+    # La foto se pidio DESPUES de que el buffer tuviera el delta (no con buffer vacio).
+    assert qsize_al_pedir_foto == [1]
+    # El delta bufferizado NO se drena en seed(): el motor lo necesita para encadenar.
+    assert connector._cola_orderbook.qsize() == 1  # noqa: SLF001
+
+
+def test_seed_con_timeout_procede_si_el_buffer_nunca_se_llena() -> None:
+    # Stream muerto: el buffer no se llena. seed() NO cuelga: vencido el tope procede
+    # con la foto (el fail-safe/resync del motor actua si el primer delta no abarca).
+    connector = BinanceSpotConnector(
+        config=BinanceConfig(orderbook_seed_buffer_timeout_s=0.2),
+        native_to_canonical={"BTCUSDT": "BTC-USDT"},
+    )
+    qsize_al_pedir_foto: list[int] = []
+
+    def _fake_get_json(path: str) -> object:
+        qsize_al_pedir_foto.append(connector._cola_orderbook.qsize())  # noqa: SLF001
+        return _fake_depth()
+
+    connector._get_json = _fake_get_json  # type: ignore[method-assign]  # noqa: SLF001
+
+    t0 = time.monotonic()
+    seed = connector.seed(_OB_KEY)
+    dt = time.monotonic() - t0
+
+    assert seed.base_sequence == 160
+    assert qsize_al_pedir_foto == [0]  # procedio con el buffer VACIO (fail-safe).
+    assert dt < 1.0  # no colgo: respeto el timeout (~0.2 s), no espera indefinida.
