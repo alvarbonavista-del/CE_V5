@@ -22,9 +22,35 @@ from ce_v5.entrypoints.worker_ingestion.composition import (
     IngestionContext,
     build_context,
 )
+from source.families.market import Timeframe
 
 _DEFAULT_TICK_MS = 1000
 _METRICS_EVERY = 10  # cada cuantos ciclos se imprime el resumen observable.
+# Cadencia por defecto del MUESTREO del libro (~1/s): entra en la idempotency_key del
+# snapshot (cond.1). No depende de candle_closed; la FRONTERA (as-of cierre de barra)
+# queda ELEVADA (su trigger no tiene enganche aditivo aqui, ver Tanda IV parcial).
+_DEFAULT_ORDERBOOK_SAMPLE_MS = 1000
+# Ventana de la muestra: la barra M1 que contiene el instante. Es el bucket mas fino; el
+# sample_time real es el instante. Solo describe a que barra pertenece la muestra.
+_SAMPLE_TIMEFRAME = Timeframe.M1
+
+
+class _OrderbookSampler:
+    """Decide cuando toca una muestra (a cadencia) y calcula su ventana.
+
+    Sin reloj propio: el instante se lo pasa el bucle, para que el muestreo no dependa
+    de un time.sleep exacto.
+    """
+
+    def __init__(self, cadence_ms: int) -> None:
+        self._cadence_ms = cadence_ms
+        self._last_ms: int | None = None
+
+    def due(self, now_ms: int) -> bool:
+        if self._last_ms is None or now_ms - self._last_ms >= self._cadence_ms:
+            self._last_ms = now_ms
+            return True
+        return False
 
 
 class _StopSignal:
@@ -62,6 +88,17 @@ def _print_metrics(context: IngestionContext) -> None:
         f"degradados={sorted(t.degraded_streams)}",
         flush=True,
     )
+    if context.orderbook_engine is None or context.orderbook_snapshot is None:
+        return
+    o = context.orderbook_engine.metrics
+    s = context.orderbook_snapshot.metrics
+    print(
+        f"[orderbook] deltas={o.deltas_applied} resyncs={o.resyncs} "
+        f"reseeds={o.reseeds} "
+        f"discontinuidades={o.discontinuities_recorded} muestras={s.samples_persisted} "
+        f"rechazos={o.rejected} degradados={sorted(o.degraded_streams)}",
+        flush=True,
+    )
 
 
 def _drain_trades(context: IngestionContext) -> None:
@@ -86,10 +123,61 @@ def _drain_trades(context: IngestionContext) -> None:
         )
 
 
+def _drain_orderbook(
+    context: IngestionContext, sampler: _OrderbookSampler, now_ms: int
+) -> None:
+    """Un ciclo del motor del LIBRO, junto al tick de velas y NO dentro de el.
+
+    Drena los deltas (aplica al libro, publica resync ante hueco) y, si toca por
+    cadencia, toma una MUESTRA (kind='sample', sin outbox) de cada libro vivo. La
+    FRONTERA (as-of el cierre de barra) NO se toma aqui: su trigger es candle_closed y
+    el nucleo no lo expone de forma aditiva; queda ELEVADO a Central (Tanda IV parcial).
+    take_frontier ya lo ejercitan los tests en frio de la Tanda III: no es
+    codigo muerto.
+
+    CON SU PROPIA FAULT ISOLATION, como el de trades: un poll o una muestra que fallan
+    degradan ESTE ciclo; el siguiente reintenta. Si la excepcion subiera, un fallo del
+    libro tumbaria tambien la ingesta de velas.
+    """
+    if context.orderbook_engine is None or context.orderbook_snapshot is None:
+        return
+    try:
+        context.orderbook_engine.drain_once()
+        if not sampler.due(now_ms):
+            return
+        open_time = (
+            now_ms // _SAMPLE_TIMEFRAME.duration_ms
+        ) * _SAMPLE_TIMEFRAME.duration_ms
+        close_time = open_time + _SAMPLE_TIMEFRAME.duration_ms
+        for book in context.orderbook_engine.books().values():
+            try:
+                context.orderbook_snapshot.take_sample(
+                    book,
+                    timeframe=_SAMPLE_TIMEFRAME,
+                    open_time=open_time,
+                    close_time=close_time,
+                    sample_time=now_ms,
+                )
+            except Exception as exc:  # noqa: BLE001 - aislar POR libro, no por ciclo.
+                print(
+                    f"[orderbook] muestra degradada: {type(exc).__name__}: {exc}",
+                    flush=True,
+                )
+    except Exception as exc:  # noqa: BLE001 - la aislacion es el objetivo.
+        print(
+            f"[orderbook] ciclo degradado: {type(exc).__name__}: {exc}",
+            flush=True,
+        )
+
+
 def main() -> None:
     """Cablea, sincroniza el catalogo, arranca el ingestor y entra en el bucle."""
     tick_ms = int(os.environ.get("CE_V5_INGESTION_TICK_MS", str(_DEFAULT_TICK_MS)))
+    sample_ms = int(
+        os.environ.get("CE_V5_ORDERBOOK_SAMPLE_MS", str(_DEFAULT_ORDERBOOK_SAMPLE_MS))
+    )
     context = build_context()
+    sampler = _OrderbookSampler(sample_ms)
 
     stop = _StopSignal()
     signal.signal(signal.SIGINT, stop.request)
@@ -119,11 +207,23 @@ def main() -> None:
             else "[trades] motor AUSENTE: el feed cableado no sirve trades.",
             flush=True,
         )
+        # DECLARADO como los trades: si el feed no sirve libro, el worker corre sin ese
+        # motor y hay que verlo en el arranque, no deducirlo de un contador que no sube.
+        print(
+            "[orderbook] motor ACTIVO sobre el mismo conector (frontera ELEVADA; "
+            "solo muestras a cadencia)."
+            if context.orderbook_engine is not None
+            else "[orderbook] motor AUSENTE: el feed cableado no sirve libro.",
+            flush=True,
+        )
 
         ciclos = 0
         while not stop.requested:
             context.component.tick()  # reconcile + drain, con fault isolation propia.
             _drain_trades(context)  # motor de trades, con la suya.
+            _drain_orderbook(
+                context, sampler, int(time.time() * 1000)
+            )  # libro, la suya.
             ciclos += 1
             if ciclos % _METRICS_EVERY == 0:
                 _print_metrics(context)

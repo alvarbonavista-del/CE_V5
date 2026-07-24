@@ -122,6 +122,14 @@ class OrderbookIngestionEngine:
         """
         return self._books.get(stream_id)
 
+    def books(self) -> Mapping[str, OrderbookBook]:
+        """Los libros vivos por stream (READ-ONLY): el cableado los muestrea a cadencia.
+
+        Copia superficial: el diccionario no se muta fuera, y cada libro solo se lee
+        (bids()/asks() devuelven copias). Solo aparecen los ya sembrados.
+        """
+        return dict(self._books)
+
     def drain_once(self) -> OrderbookIngestionMetrics:
         """Un ciclo: re-siembra reconectados, siembra nuevos, aplica deltas con
         backpressure.
