@@ -54,3 +54,16 @@ def to_trade_stream_name(canonical: str) -> str:
     reconoce el stream, no da error, y la suscripcion se queda muda para siempre.
     """
     return f"{to_native(canonical).lower()}@trade"
+
+
+def to_orderbook_stream_name(canonical: str) -> str:
+    """El nombre del stream de LIBRO (orderbook) que Binance exige, en MINUSCULAS.
+
+    'BTC-USDT' -> 'btcusdt@depth@100ms'. Deltas de profundidad cada 100 ms (fuente
+    fijada por Central/I-02-V). SIN intervalo, como el de trades: el libro es continuo y
+    su granularidad es depth/channel, no un timeframe a nivel de stream (ADR-014).
+
+    Las minusculas importan por lo MISMO que en velas y trades: en mayusculas Binance no
+    reconoce el stream, no da error, y la suscripcion se queda muda para siempre.
+    """
+    return f"{to_native(canonical).lower()}@depth@100ms"
