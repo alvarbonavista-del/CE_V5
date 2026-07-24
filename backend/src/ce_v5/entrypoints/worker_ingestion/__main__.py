@@ -170,7 +170,7 @@ def _print_metrics(context: IngestionContext) -> None:
     print(
         f"[orderbook] fronteras={s.frontiers_published} "
         f"incompletas={s.incomplete_frontiers} "
-        f"sin_semilla={s.frontiers_skipped_unseeded} "
+        f"sin_semilla={s.frontiers_unseeded} "
         f"duplicadas={s.duplicates_skipped}",
         flush=True,
     )
@@ -262,8 +262,8 @@ def _fronterizar(
     context: IngestionContext, frontier: _OrderbookFrontier, now_ms: int
 ) -> None:
     """La FRONTERA por reloj de barra: por cada barra de vela activa que cerro, la foto
-    as-of de su libro. El simbolo sin libro sembrado dispara igual (take_frontier -> no
-    publica, cond.5): fire-anyway honesto.
+    as-of de su libro. El simbolo sin libro sembrado dispara igual y EMITE su frontera
+    is_complete=False con niveles vacios (opcion B): la incompletitud va en el canon.
     """
     engine = context.orderbook_engine
     snapshot = context.orderbook_snapshot
@@ -278,9 +278,13 @@ def _fronterizar(
             symbol=key.symbol,
             data_kind=MarketDataKind.ORDERBOOK,
         ).as_stream_key()
-        # 'or OrderbookBook()': un simbolo sin libro sembrado dispara igual -- el libro
-        # vacio hace que take_frontier no publique (5.21). Fire-anyway sin fabricar.
-        book = engine.book_for(ob_stream_id) or OrderbookBook()
+        # Un simbolo sin libro sembrado dispara igual: se le da un libro VACIO pero YA
+        # IDENTIFICADO (la clave de vela sabe quien es), y take_frontier emite su
+        # frontera is_complete=False con niveles vacios (opcion B). Identidad: la vela.
+        # el libro de orderbook comparte exchange/mkt/symbol, solo cambia el data_kind.
+        book = engine.book_for(ob_stream_id) or OrderbookBook(
+            identity=(key.exchange, key.market_type.value, key.symbol)
+        )
         try:
             snapshot.take_frontier(
                 book, timeframe=tf, open_time=open_time, close_time=close_time

@@ -282,9 +282,10 @@ def test_drain_orderbook_drena_muestrea_y_fronteriza() -> None:
     assert snapshot.frontiers == [("BTC-USDT", _T0 - 60_000)]  # una, keyed a open_time.
 
 
-def test_fronteriza_un_simbolo_sin_libro_dispara_igual_fire_anyway() -> None:
-    # book_for devuelve None (sin libro sembrado): se pasa un OrderbookBook() vacio y
-    # take_frontier decide (no publica, cond.5). Aqui el fake solo registra la llamada.
+def test_fronteriza_un_simbolo_sin_libro_pasa_libro_identificado() -> None:
+    # book_for devuelve None (sin libro sembrado): la frontera dispara igual (opcion B)
+    # y se pasa un OrderbookBook IDENTIFICADO desde la clave de vela; take_frontier
+    # emitira la frontera is_complete=False con niveles vacios. El fake anota el symbol.
     key = _candle_key("BTC-USDT", Timeframe.M1)
     engine = _FakeEngine({})  # ningun libro sembrado.
     snapshot = _FakeSnapshot()
@@ -293,9 +294,9 @@ def test_fronteriza_un_simbolo_sin_libro_dispara_igual_fire_anyway() -> None:
 
     _drain_orderbook(ctx, _OrderbookSampler(1000), frontier, _T0 - 10)
     _drain_orderbook(ctx, _OrderbookSampler(1000), frontier, _T0 + 10)
-    # Fire-anyway: take_frontier SE LLAMA aunque no haya libro (symbol del libro vacio).
-    assert len(snapshot.frontiers) == 1
-    assert snapshot.frontiers[0][1] == _T0 - 60_000
+    # Fire-anyway: take_frontier SE LLAMA con un libro que YA sabe quien es (identidad
+    # de la vela), no anonimo: asi la frontera vacia lleva su exchange/symbol.
+    assert snapshot.frontiers == [("BTC-USDT", _T0 - 60_000)]
 
 
 def test_fronteriza_aisla_el_fallo_de_una_barra() -> None:

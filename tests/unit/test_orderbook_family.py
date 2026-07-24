@@ -133,10 +133,22 @@ class TestOrdenYProfundidad:
         with pytest.raises(ValidationError):
             _frontier(depth_k=1, bids=_levels([("100.5", "2"), ("100.4", "1")]))
 
-    def test_snapshot_vacio_rechazado(self) -> None:
-        # 5.21: un libro sin bids ni asks no es un hecho.
+    def test_snapshot_completo_vacio_rechazado(self) -> None:
+        # 5.21 (guardia que SIGUE mordiendo): un libro is_complete=True sin bids ni asks
+        # no es un hecho. El camino de dato COMPLETO exige niveles.
         with pytest.raises(ValidationError):
-            _frontier(bids=(), asks=())
+            _frontier(bids=(), asks=(), is_complete=True)
+
+    def test_snapshot_incompleto_vacio_aceptado_y_round_trip(self) -> None:
+        # Opcion B: la relajacion condicional. Un frontier is_complete=False SI admite
+        # ambos lados vacios (barra cuyo libro no sembro), y round-trips por su clase
+        # del registro: la incompletitud viaja EN EL CANON, no en una metrica.
+        payload = _frontier(bids=(), asks=(), is_complete=False)
+        assert payload.bids == () and payload.asks == ()
+        assert payload.is_complete is False
+        cls = payload_class_for(MarketOrderbookEventType.ORDERBOOK_FRONTIER.value)
+        vuelto = cls.model_validate_json(payload.model_dump_json())
+        assert vuelto == payload
 
     def test_nivel_con_tamano_no_positivo_rechazado(self) -> None:
         with pytest.raises(ValidationError):

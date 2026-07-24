@@ -90,11 +90,12 @@ class OrderbookSnapshotMetrics:
     frontiers_published: int = 0
     incomplete_frontiers: int = 0
     duplicates_skipped: int = 0
-    # Fronteras que el trigger dispara (fire-anyway, cond.5) sobre un libro SIN semilla
-    # (o vaciado): no hay top-K que fotografiar y un snapshot vacio viola 5.21, asi que
-    # NO se publica. Sin este contador, un arranque con el libro aun sin sembrar
-    # pareceria que "no dispara", cuando si: no tiene nada honesto que publicar.
-    frontiers_skipped_unseeded: int = 0
+    # TELEMETRIA (opcion B): fronteras EMITIDAS sobre un libro SIN semilla (o vaciado),
+    # con is_complete=False y niveles vacios. NO es la senal -- la senal es el
+    # is_complete=False publicado en el canon --; es solo para ver cuantas barras se
+    # capturaron sin libro (un arranque largo con muchas asi delata una siembra que no
+    # llega). Estas fronteras cuentan tambien en frontiers_published e incomplete.
+    frontiers_unseeded: int = 0
 
 
 def _top_k(
@@ -172,23 +173,24 @@ class OrderbookSnapshotEngine:
         """La FRONTERA de la barra por RELOJ DE BARRA (opcion 3). is_complete FAIL-SAFE
         UNIFORME (cond.3).
 
-        FIRE-ANYWAY HONESTO (cond.5): el trigger llama a esto en CADA barra de un
-        (symbol, tf) activo, aunque la vela sea plana. Pero un libro SIN semilla -- o
-        vaciado -- no tiene top-K que fotografiar, y un snapshot con ambos lados vacios
-        no es un libro (5.21): en vez de fabricar niveles, se cuenta y se declara NO
-        publicado (False). Disparar siempre, publicar solo lo real.
+        FIRE-ANYWAY HONESTO (cond.5, opcion B): el trigger llama a esto en CADA barra de
+        un (symbol, tf) activo, aunque la vela sea plana. Un libro SIN semilla -- o
+        vaciado -- NO se salta: EMITE su frontera con bids/asks VACIOS e is_complete=
+        False. La incompletitud va EN EL CANON, no en una metrica: quien lea el frontier
+        ve que esa barra no tenia libro (5.21 lo admite solo si is_complete=False).
+        El conteo de estos casos queda como TELEMETRIA (frontiers_unseeded), no como la
+        senal -- la senal es is_complete=False, publicada.
 
         is_complete = el libro esta completo AHORA **Y** ninguna discontinuidad (resync)
         solapa [open_time, close_time). Es el MISMO criterio que el footprint: un hueco
         dentro de la ventana marca la barra incompleta aunque el libro ya se recuperase.
-        Se PUBLICA por outbox (persist_and_enqueue). event_time = open_time (as_of de la
-        barra, ADR-007; la frontera es la foto de ESA barra, cond.2), la misma ancla que
-        su idempotency_key.
+        Un libro sin semilla nunca esta completo, asi que su frontera sale is_complete=
+        False por el mismo camino, sin caso especial. Se PUBLICA por outbox
+        (persist_and_enqueue). event_time = open_time (as_of de la barra, ADR-007; la
+        frontera es la foto de ESA barra, cond.2), misma ancla que su idempotency_key.
         """
-        if not book.seeded or (not book.bids() and not book.asks()):
-            self.metrics.frontiers_skipped_unseeded += 1
-            return False
         exchange, market_type, symbol = _identidad(book)
+        vacio = not book.bids() and not book.asks()
         solapes = self._reader.overlapping_discontinuities(
             exchange, market_type, symbol, open_time, close_time
         )
@@ -218,6 +220,8 @@ class OrderbookSnapshotEngine:
         self.metrics.frontiers_published += 1
         if not is_complete:
             self.metrics.incomplete_frontiers += 1
+        if not book.seeded or vacio:
+            self.metrics.frontiers_unseeded += 1  # TELEMETRIA, no la senal.
         return True
 
     def _build(

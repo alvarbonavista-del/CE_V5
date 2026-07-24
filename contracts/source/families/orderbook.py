@@ -275,10 +275,17 @@ class OrderbookSnapshotPayload(EventPayload):
             msg = "los asks deben ir por precio ASCENDENTE y sin repetir nivel."
             raise ValueError(msg)
 
-        # NO VACIO (5.21): un snapshot sin un solo nivel no es un libro. Si ambos lados
-        # estan vacios, no hay nada que persistir ni publicar.
-        if not self.bids and not self.asks:
-            msg = "snapshot vacio: un libro sin bids ni asks no es un hecho (5.21)."
+        # NO VACIO CONDICIONAL (5.21, opcion B): el guardia sigue MORDIENDO en el
+        # camino COMPLETO -- un snapshot is_complete=True sin un solo nivel no es un
+        # libro --. Pero is_complete=False SI admite ambos lados vacios: es la captura
+        # HONESTA de una barra cuyo libro aun no sembro (frontera fire-anyway, cond.5).
+        # La incompletitud va EN EL CANON (is_complete=False), no en una metrica: quien
+        # solo mire snapshots completos nunca vera ese vacio.
+        if self.is_complete and not self.bids and not self.asks:
+            msg = (
+                "snapshot COMPLETO vacio: un libro is_complete=True sin bids ni asks "
+                "no es un hecho (5.21); solo is_complete=False admite el vacio."
+            )
             raise ValueError(msg)
         return self
 

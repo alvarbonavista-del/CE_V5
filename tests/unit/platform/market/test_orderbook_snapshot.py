@@ -211,21 +211,26 @@ class TestFrontier:
         )
         assert writer.published_event_time[0] == _OPEN
 
-    def test_frontier_de_libro_sin_semilla_no_publica_fire_anyway(self) -> None:
-        # Cond.5: el trigger dispara en CADA barra (fire-anyway), pero un libro sin
-        # semilla no tiene top-K que fotografiar y un snapshot vacio viola 5.21: NO se
-        # publica y se cuenta. Disparar siempre, publicar solo lo real.
+    def test_frontier_de_libro_sin_semilla_emite_incompleto_y_vacio(self) -> None:
+        # Opcion B (cond.4/5): fire-anyway EMITE. Un libro IDENTIFICADO pero sin semilla
+        # publica su frontera is_complete=False con niveles vacios (la incompletitud va
+        # EN EL CANON --; la metrica unseeded queda como TELEMETRIA, no como la senal.
         writer = _Writer()
         engine = _engine(writer)
-        sin_semilla = OrderbookBook()  # nunca sembrado: bids/asks vacios.
+        sin_semilla = OrderbookBook(identity=("binance", "spot", "BTC-USDT"))
 
         publicado = engine.take_frontier(
             sin_semilla, timeframe=_TF, open_time=_OPEN, close_time=_CLOSE
         )
-        assert publicado is False
-        assert writer.published == []
-        assert engine.metrics.frontiers_skipped_unseeded == 1
-        assert engine.metrics.frontiers_published == 0
+        assert publicado is True
+        payload = writer.published[0][2]
+        assert payload.is_complete is False
+        assert payload.bids == () and payload.asks == ()
+        assert payload.exchange == "binance" and payload.symbol == "BTC-USDT"
+        assert writer.published_event_time[0] == _OPEN  # keyed al as_of, como siempre.
+        assert engine.metrics.frontiers_published == 1
+        assert engine.metrics.incomplete_frontiers == 1
+        assert engine.metrics.frontiers_unseeded == 1  # telemetria, no la senal.
 
 
 class TestTopK:

@@ -70,6 +70,27 @@ class TestSemilla:
         assert book.best_ask() == (Decimal("101.0"), Decimal("1.5"))
         assert book.stream_id() == "market:orderbook:binance:spot:BTC-USDT"
 
+    def test_identidad_al_construir_sin_semilla(self) -> None:
+        # Opcion B: un libro puede saber QUE stream es antes de sembrar (para emitir la
+        # frontera sin semilla). Trae identidad, pero sin semilla, incompleto y vacio.
+        book = OrderbookBook(identity=("binance", "spot", "BTC-USDT"))
+        assert book.exchange == "binance"
+        assert book.market_type == "spot"
+        assert book.symbol == "BTC-USDT"
+        assert book.stream_id() == "market:orderbook:binance:spot:BTC-USDT"
+        assert not book.seeded
+        assert not book.is_complete
+        assert book.bids() == {} and book.asks() == {}
+
+    def test_la_semilla_sobrescribe_la_identidad_de_construccion(self) -> None:
+        # seed() adopta la identidad de la foto; como _seeded era False no dispara la
+        # verificacion de pertenencia. Aqui la foto coincide, y el libro queda completo.
+        book = OrderbookBook(identity=("binance", "spot", "BTC-USDT"))
+        book.seed(_seed())
+        assert book.seeded
+        assert book.is_complete
+        assert book.stream_id() == "market:orderbook:binance:spot:BTC-USDT"
+
     def test_un_delta_sin_foto_previa_pide_resync(self) -> None:
         # Sin punto de partida un delta no significa nada: se levanta la senal, no se
         # inventa un libro de la nada.

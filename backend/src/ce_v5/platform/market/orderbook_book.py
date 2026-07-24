@@ -260,13 +260,21 @@ class OrderbookBook:
     trades.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, identity: tuple[str, str, str] | None = None) -> None:
         self._bids: dict[Decimal, Decimal] = {}
         self._asks: dict[Decimal, Decimal] = {}
         # Identidad del flujo, adoptada de la primera foto. None mientras no hay foto.
+        # OPCIONAL AL CONSTRUIR: un libro puede conocer su (exchange, market_type,
+        # symbol) ANTES de sembrar -- el cableado sabe QUE stream es aunque aun no llego
+        # la foto --. Sirve para EMITIR una frontera sin semilla (is_complete=False,
+        # niveles vacios, opcion B): la incompletitud va en el canon, y para eso la foto
+        # necesita a quien pertenece. NO altera el sembrado: seed() sobrescribe esta
+        # identidad con la de la foto (y como _seeded sigue False, no la verifica).
         self._exchange: str | None = None
         self._market_type: str | None = None
         self._symbol: str | None = None
+        if identity is not None:
+            self._exchange, self._market_type, self._symbol = identity
         # La ultima secuencia aplicada, en el vocabulario del exchange (Binance u, OKX
         # seqId, Bybit u). El ancla contra la que encadena el proximo delta.
         self._last_seq: int = 0
