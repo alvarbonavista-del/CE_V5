@@ -307,3 +307,81 @@ class TestIdempotencyReproducible:
             close_time=otra + _TF.duration_ms,
         )
         assert self._key(writer_a) != self._key(writer_b)
+
+
+class TestIdentidadDelFlujoEnLaClave:
+    """La otra mitad de cond.1: la clave tambien separa por IDENTIDAD DEL FLUJO.
+
+    La suite ya demostraba que la CONFIG (K, cadencia, formula_version, reloj) y la
+    ventana mueven la clave. Faltaba lo mas elemental: que dos flujos DISTINTOS no
+    compartan clave. Si el timeframe, el exchange, el simbolo o el tipo de mercado no
+    entraran, la foto del BTC de binance pisaria la del ETH de okx en la misma barra --
+    y el que pisa no deja rastro.
+    """
+
+    def _clave_de(
+        self,
+        *,
+        exchange: str = "binance",
+        market_type: str = "spot",
+        symbol: str = "BTC-USDT",
+        timeframe: Timeframe = _TF,
+    ) -> str:
+        from source.families.market import RawOrderbookSeed
+
+        book = OrderbookBook()
+        book.seed(
+            RawOrderbookSeed(
+                exchange=exchange,
+                market_type=market_type,
+                symbol=symbol,
+                bids=_BIDS,
+                asks=_ASKS,
+                base_sequence=100,
+            )
+        )
+        writer = _Writer()
+        # _OPEN esta alineado a 1h, que es multiplo de todos los tf mas cortos: sirve
+        # de open_time valido para cualquiera de ellos.
+        _engine(writer).take_frontier(
+            book,
+            timeframe=timeframe,
+            open_time=_OPEN,
+            close_time=_OPEN + timeframe.duration_ms,
+        )
+        return writer.published[0][1]
+
+    def test_distinto_timeframe_distinta_clave(self) -> None:
+        # CSA item 7: la MISMA foto as-of el mismo instante, pero como frontera de la
+        # barra de 1h y de la de 15m, son DOS hechos: distinta ventana, distinto canon.
+        assert self._clave_de(timeframe=Timeframe.H1) != self._clave_de(
+            timeframe=Timeframe.M15
+        )
+
+    def test_distinto_exchange_distinta_clave(self) -> None:
+        assert self._clave_de(exchange="binance") != self._clave_de(exchange="okx")
+
+    def test_distinto_symbol_distinta_clave(self) -> None:
+        assert self._clave_de(symbol="BTC-USDT") != self._clave_de(symbol="ETH-USDT")
+
+    def test_distinto_market_type_distinta_clave(self) -> None:
+        # v5.0 solo tiene MarketType.SPOT (los derivados quedan fuera de alcance), asi
+        # que el segundo tipo de mercado no puede construirse por el motor todavia. La
+        # discriminacion se prueba donde vive de verdad -- la funcion de clave --, con
+        # el stream_key de cada tipo: el dia que entre otro tipo, esto ya muerde.
+        from source.families.orderbook import orderbook_snapshot_idempotency_key
+
+        def clave(market_type: str) -> str:
+            return orderbook_snapshot_idempotency_key(
+                kind=MarketOrderbookSnapshotKind.FRONTIER,
+                stream_key=f"market:orderbook:binance:{market_type}:BTC-USDT",
+                timeframe=_TF,
+                open_time=_OPEN,
+                sample_time=None,
+                depth_k=25,
+                cadence_ms=1000,
+                formula_version=1,
+                clock_source="system",
+            )
+
+        assert clave("spot") != clave("futures")

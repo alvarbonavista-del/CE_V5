@@ -45,6 +45,21 @@ _ETH = MarketStreamKey(
     symbol="ETH-USDT",
     data_kind=MarketDataKind.ORDERBOOK,
 )
+# Los otros dos exchanges del libro: su continuidad tiene reglas propias (OKX por
+# prevSeqId, Bybit por u con reset), y lo que se observa desde el canon cuando esas
+# reglas se disparan tambien se prueba aqui.
+_OKX = MarketStreamKey(
+    exchange="okx",
+    market_type=MarketType.SPOT,
+    symbol="BTC-USDT",
+    data_kind=MarketDataKind.ORDERBOOK,
+)
+_BYBIT = MarketStreamKey(
+    exchange="bybit",
+    market_type=MarketType.SPOT,
+    symbol="BTC-USDT",
+    data_kind=MarketDataKind.ORDERBOOK,
+)
 
 
 def _seed(
@@ -313,6 +328,110 @@ class TestResyncPublicado:
         engine.drain_once()
         assert engine.metrics.resyncs == 1
         assert len(writer.published) == 1
+
+
+class TestIntegridadPorExchange:
+    """Lo propio de CADA exchange, visible en el CANON, no solo en el libro.
+
+    El motor del libro (test_orderbook_book.py) ya prueba la REGLA de continuidad de
+    cada exchange en frio. Aqui se prueba lo que se OBSERVA desde fuera cuando esa regla
+    se dispara: que hueco de OKX publica su resync y deja su discontinuidad apuntada, y
+    que el reset de Bybit recupera el libro SIN borrar la huella del hueco anterior.
+    """
+
+    def test_okx_hueco_real_publica_resync_y_discontinuidad(self) -> None:
+        # CSA item 14: en OKX el hueco de verdad es un mensaje que AVANZA
+        # (seqId > prevSeqId) cuyo prevSeqId no encadena con lo ultimo aplicado. No se
+        # confunde con el keepalive ni con el mantenimiento (esos son NOOP): este SI es
+        # un hecho del mercado y sale al canon.
+        source = _Source()
+        source.open(_OKX)
+        source.load_seed(_OKX, _seed(exchange="okx", base_sequence=100))
+        writer = _Writer()
+        engine = _engine(source, writer)
+
+        # prevSeqId=98 no encadena con seqId=100 de la foto: se perdio el tramo.
+        source.emit(_delta(exchange="okx", seq_id=105, prev_seq_id=98))
+        engine.drain_once()
+
+        book = engine.book_for(_OKX.as_stream_key())
+        assert book is not None
+        assert book.resync_required and not book.is_complete
+        assert engine.metrics.resyncs == 1
+
+        # OBSERVABLE (1): se publico market.orderbook_resynced del flujo de OKX.
+        assert len(writer.published) == 1
+        event_type, _clave, payload = writer.published[0]
+        assert event_type == MarketOrderbookEventType.ORDERBOOK_RESYNCED.value
+        assert isinstance(payload, OrderbookResyncedPayload)
+        assert payload.exchange == "okx"
+        assert payload.from_sequence == 100  # la ultima secuencia buena.
+        assert payload.to_sequence is None  # extremo desconocido hasta re-sembrar.
+
+        # OBSERVABLE (2): la discontinuidad quedo APUNTADA, que es lo que hace que el
+        # frontier de las barras solapadas salga incompleto (cond.3).
+        assert writer.discontinuities[-1][:3] == ("okx", "spot", "BTC-USDT")
+        assert writer.discontinuities[-1][6] == "gap"
+
+    def test_okx_keepalive_no_publica_nada(self) -> None:
+        # La cara negativa del item 14, sin la cual el positivo no prueba gran cosa: el
+        # keepalive de OKX atraviesa el ingestor SIN publicar resync ni apuntar
+        # discontinuidad. Si lo hiciera, un mercado quieto ensuciaria el canon.
+        source = _Source()
+        source.open(_OKX)
+        source.load_seed(_OKX, _seed(exchange="okx", base_sequence=100))
+        writer = _Writer()
+        engine = _engine(source, writer)
+
+        source.emit(_delta(exchange="okx", seq_id=100, prev_seq_id=100))
+        engine.drain_once()
+
+        book = engine.book_for(_OKX.as_stream_key())
+        assert book is not None and book.is_complete
+        assert engine.metrics.resyncs == 0
+        assert writer.published == []
+        assert writer.discontinuities == []
+
+    def test_bybit_u_igual_1_resetea_observable(self) -> None:
+        # CSA item 15: el reset de Bybit (u==1 + is_snapshot) es una FOTO en banda que
+        # recupera el libro. Observable desde el canon: el libro vuelve a estar completo
+        # y con los niveles NUEVOS, no se publica un segundo resync por la recuperacion
+        # -- y, sobre todo, la discontinuidad del hueco anterior SIGUE apuntada: la
+        # barra que contuvo el hueco sale incompleta aunque el libro ya se recuperase.
+        source = _Source()
+        source.open(_BYBIT)
+        source.load_seed(_BYBIT, _seed(exchange="bybit", base_sequence=100))
+        writer = _Writer()
+        engine = _engine(source, writer)
+
+        source.emit(_delta(exchange="bybit", update_id=105))  # salto: hueco
+        engine.drain_once()
+        book = engine.book_for(_BYBIT.as_stream_key())
+        assert book is not None and book.resync_required
+        assert engine.metrics.resyncs == 1
+
+        source.emit(
+            _delta(
+                exchange="bybit",
+                update_id=1,
+                is_snapshot=True,
+                bids=[("200.0", "5")],
+                asks=[("201.0", "6")],
+            )
+        )
+        engine.drain_once()
+
+        assert book.is_complete and not book.resync_required
+        assert book.sequence == 1
+        assert book.bids() == {Decimal("200.0"): Decimal("5")}
+        assert engine.metrics.resyncs == 1  # la recuperacion no es un hueco nuevo.
+        assert len(writer.published) == 1
+
+        # La huella del hueco NO se borra al recuperar: quien pregunte por la ventana
+        # que lo contuvo la sigue viendo (fail-safe del frontier, cond.3).
+        assert writer.overlapping_discontinuities(
+            "bybit", "spot", "BTC-USDT", _NOW - 1, _NOW + 1
+        )
 
 
 class TestReconexion:

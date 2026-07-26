@@ -133,6 +133,31 @@ class TestHueco:
         # El delta NO se aplico: el bid 100.0 sigue como en la foto.
         assert book.bids()[Decimal("100.0")] == Decimal("1.0")
 
+    def test_bybit_hueco_real_no_se_acepta_como_sano(self) -> None:
+        # CSA item 16: en Bybit el reset (u==1 / is_snapshot) es legitimo y NO es hueco;
+        # el riesgo es el contrario -- que por tolerar el reset se acabe tolerando un
+        # SALTO cualquiera. Un u que no encadena (105 tras 100) es un hueco de verdad:
+        # se han perdido 101..104. FAIL-SAFE, y el delta NO se aplica: un libro al que
+        # le falta un tramo no puede seguir contando como bueno.
+        book = OrderbookBook()
+        book.seed(_seed(exchange="bybit", base_sequence=100))
+        antes = book.bids()
+
+        book.apply(
+            _delta(exchange="bybit", update_id=105, bids=[("100.0", "42")])
+        )  # salto 101..104
+
+        assert not book.is_complete
+        assert book.resync_required
+        assert book.bids() == antes  # el delta del hueco no toco el libro.
+        assert book.sequence == 100  # la secuencia se queda en la ultima BUENA.
+
+        # Y no se recompone encadenando: solo una foto saca del resync.
+        book.apply(_delta(exchange="bybit", update_id=106, bids=[("100.0", "43")]))
+        assert not book.is_complete
+        assert book.resync_required
+        assert book.bids() == antes
+
     def test_una_foto_nueva_resuelve_el_hueco(self) -> None:
         # La UNICA salida de un resync: una foto nueva. seed() reconstruye y recupera.
         book = OrderbookBook()
@@ -366,20 +391,37 @@ class TestFueraDeOrden:
         assert book.bids()[Decimal("100.0")] == Decimal("9.0")
         assert book.asks()[Decimal("101.0")] == Decimal("8.0")
 
-    def test_okx_keepalive_y_mantenimiento_no_son_hueco(self) -> None:
-        # Las DOS excepciones de OKX que NO son hueco: keepalive (seqId==prevSeqId: el
-        # libro no cambio) y mantenimiento (seqId<prevSeqId: OKX reinicio su contador).
-        # Ninguna marca el libro incompleto ni pide resync.
+    def test_okx_keepalive_no_es_hueco(self) -> None:
+        # PRIMERA excepcion de OKX (CSA item 12): keepalive, seqId == prevSeqId. OKX
+        # reenvia el ultimo seqId para mantener viva la conexion cuando el libro NO
+        # cambio. Tratarlo como hueco provocaria un resync -- y una barra marcada
+        # incompleta -- cada vez que el mercado se queda quieto.
         book = OrderbookBook()
         book.seed(_seed(exchange="okx", base_sequence=100))
         antes = book.bids()
 
-        book.apply(_delta(exchange="okx", seq_id=100, prev_seq_id=100))  # keepalive
-        book.apply(_delta(exchange="okx", seq_id=90, prev_seq_id=100))  # mantenimiento
+        book.apply(_delta(exchange="okx", seq_id=100, prev_seq_id=100))
 
         assert book.is_complete
         assert not book.resync_required
         assert book.bids() == antes
+        assert book.sequence == 100  # el keepalive no mueve la secuencia.
+
+    def test_okx_mantenimiento_no_es_hueco_ni_corrupcion(self) -> None:
+        # SEGUNDA excepcion de OKX (CSA item 13): mantenimiento, seqId < prevSeqId. OKX
+        # REINICIA su contador tras una ventana de mantenimiento; el mensaje encadena
+        # con lo ultimo aplicado aunque su seqId retroceda. Ni hueco (no falta nada) ni
+        # corrupcion (el libro no se toca): se acepta y el libro sigue siendo de fiar.
+        book = OrderbookBook()
+        book.seed(_seed(exchange="okx", base_sequence=100))
+        antes = book.bids()
+
+        book.apply(_delta(exchange="okx", seq_id=90, prev_seq_id=100))
+
+        assert book.is_complete
+        assert not book.resync_required
+        assert book.bids() == antes
+        assert book.sequence == 100  # el mantenimiento tampoco mueve la secuencia.
 
 
 class TestSnapshotCorrupto:

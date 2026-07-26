@@ -1791,3 +1791,65 @@ EVIDENCIA CRUDA EN EL RASTRO (5.32/5.18): la salida VERBATIM de la validacion en
   tras el pre-buffer; keepalive/mantenimiento OKX sin resync; sonda 60018 /business vs
   /public) esta en docs/EVIDENCIA_CALIENTE_P07c.md -- no solo resumida en los informes de
   tanda.
+=====================================================================
+28. P07c -- REMEDIACION G2: EL cache_key/ADR-008 DEL LIBRO, CONSTRUIDO
+=====================================================================
+NATURALEZA: correccion HACIA DELANTE (5.14, append-only: no se edita la nota anterior ni
+la historia de commits) de la nota de cierre de f3870d0. Nace del dictamen G2 de Central
++ seccion 12 del CSA. Tanda de solo TEST/CONSISTENCIA: el motor de ingesta NO se toco.
+
+QUE QUEDA OBSOLETO DE f3870d0, Y QUE NO. La nota "CACHE_KEY / REPRODUCIBILIDAD
+(ADR-008/ADR-003) -- CONFIRMADO" de la seccion 27 afirmaba -- correctamente -- que K,
+cadencia, tf, as_of, formula_version y clock_source estan EN la clave que se persiste. Lo
+que NO decia, y era el hueco: esa clave vivia SOLO en el codigo de persistencia
+(orderbook_snapshot_idempotency_key); el snapshot del libro NO tenia DECLARACION ADR-008
+(DataSourceDeclaration con cache_key_schema), asi que el marco declarativo no conocia la
+fuente ni sus dimensiones de cache. Central (G2) EXIGIO construirlo. QUEDA CONSTRUIDO en
+esta tanda. La parte de f3870d0 que sigue VIGENTE sin cambio es el DIFERIDO v5.1
+propiamente dicho -- libro profundo + delta-log crudo --, con su dueno y su gatillo de
+reapertura intactos: eso NO se ha adelantado aqui.
+
+QUE SE CONSTRUYO (todo aditivo, CE-14):
+  (1) backend/src/ce_v5/platform/rules/rawbook.py: orderbook_snapshot_declaration(),
+      espejo de market_close_declaration() (rawclose.py). source_id
+      market.orderbook_snapshot, OBSERVABLE, NON_SERVIBLE (un top-K no es un escalar; las
+      magnitudes servibles -- imbalance, spread -- son fuentes DERIVADAS, catalogo de
+      I-02), RECURSIVE (el libro de T es el de T-1 mas sus deltas: declararlo POINT_LOCAL
+      autorizaria al motor a propagar correcciones por ventana acotada y daria un numero
+      silenciosamente incorrecto; coincide con la familia -- un libro no se corrige, se
+      REINICIA), DECIMAL, contextos = los seis timeframes, historia en BARS (frontier, uno
+      por barra) y TIME (muestra a cadencia), publica cross-tenant (ADR-011).
+  (2) cache_key_schema EXPLICITO y enumerado, con NUEVE dimensiones: exchange, symbol,
+      market_type, data_family, depth_k, cadence_ms, timeframe, frontier_time_anchor,
+      formula_version. Cada una tiene su test: quitar una del schema pone SU test en rojo.
+  (3) SIN schema_version, justificado (no omitido en silencio): el payload no tiene un
+      schema_version propio que pueda variar sin subir formula_version; la version del
+      esquema vive en el SOBRE (event_schema_version, registro + ADR-005) y todo cambio
+      semantico del recorte sube formula_version, que SI esta en la clave.
+  (4) NO se cablea en el catalogo vivo del worker de reglas (worker_rules/composition.py):
+      registrarla exigiria un evaluador para una fuente que en v5.0 no se sirve como
+      termino, y eso seria tocar el nucleo. Guardrail de la tanda respetado.
+
+OBSERVACION ABIERTA PARA CENTRAL (dato, no cambio): la clave PERSISTIDA lleva una decima
+parte que el schema dictado por Central no enumera -- clock_source (cs{...}, refino de
+procedencia ya en el contrato, con su test) --. Se respeto el enunciado a la letra y NO se
+anadio por cuenta propia: clock_source es procedencia de la CAPTURA (en produccion es
+siempre 'system', luego no discrimina evaluaciones compartidas), no dimension de la
+EVALUACION. Queda anotado para que Central decida si debe entrar tambien en el schema.
+
+RESTO DE LA REMEDIACION G2 (mismo commit): huella por identidad de flujo (timeframe,
+exchange, symbol, market_type: cuatro tests, el de timeframe es el item 7 del CSA);
+integridad por exchange cerrada 1:1 (item 12 y 13 PARTIDOS en dos tests con su propia
+asercion; item 14 elevado a nivel INGESTOR -- el hueco real de OKX publica resync y deja
+discontinuidad --; item 15 hecho OBSERVABLE -- el reset u==1 de Bybit recupera el libro
+SIN borrar la huella del hueco anterior --; item 16 anadido); y dos PRUEBAS NEGATIVAS que
+no hacia nadie: el rol de reglas no ESCRIBE market_orderbook_* (item 22, check_rules_
+access, con su primera suite unitaria) y el ingestor no toca la AUTORIA de reglas (item
+23, cruce anadido en check_identity_access; identidad ya estaba, politica/auditoria las
+cubre check_market_access, y de execution.* no hay tablas todavia: M5+).
+
+MAPEO TEST-POR-REQUISITO: docs/MAPEO_TESTS_P07c_SECCION12_CSA.md. Demuestra la cobertura
+con nombres de test REALES. LIMITE DECLARADO: el texto integro de la seccion 12 del CSA no
+consta en el repositorio -- solo los 11 requisitos que la tanda cita --; los 16 restantes
+quedan como PENDIENTE DE TEXTO, NO inventados y NO dados por cubiertos, con el inventario
+completo de la suite (134 tests, 7 ficheros) para emparejarlos en cuanto llegue el texto.

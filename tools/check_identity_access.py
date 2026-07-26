@@ -48,6 +48,16 @@ from check_tenancy import TABLAS_SIN_TENANT_PERMITIDAS  # noqa: E402
 
 IDENTITY_TABLES: tuple[str, ...] = ("app_user", "user_credential", "user_session")
 
+# CRUCE DE ROLES (P07c, remediacion G2): el ingestor tampoco toca la AUTORIA de reglas.
+# El cruce del ingestor estaba cubierto a trozos y le faltaba justo este: identidad, en
+# este mismo modulo; politica y auditoria, en check_market_access
+# (POLICY_AND_AUDIT_TABLES); pero rule_definition no lo miraba NADIE para el ingestor
+# -- check_rules_access solo examina el rol de reglas --. Una prueba negativa que nadie
+# hace es una promesa, no un hecho verificado. De execution.* no hay tablas todavia
+# (M5+): el rol nace sin privilegio sobre ellas; se anaden aqui cuando existan, no se
+# inventan nombres.
+RULES_AUTHORING_TABLES: tuple[str, ...] = ("rule_definition",)
+
 # Ningun privilegio de tabla, de ningun tipo, para ningun rol de runtime.
 _TABLE_PRIVILEGES: tuple[str, ...] = (
     "SELECT",
@@ -67,6 +77,12 @@ _RUNTIME_ROLES: tuple[str, ...] = (
     OPERATOR_ROLE_NAME,
     INGESTION_ROLE_NAME,
 )
+
+# Roles cuyo cruce con la autoria de reglas se verifica aqui. SOLO el ingestor: el rol
+# de la API escribe reglas (es la autoria) y el del motor tiene su propio check
+# (check_rules_access, que le prohibe el acceso DIRECTO). Meter a los tres aqui daria un
+# rojo falso el dia que la API haga lo que debe hacer.
+_CROSS_ROLES: tuple[str, ...] = (INGESTION_ROLE_NAME,)
 
 # Marcadores de SQL dinamico en el cuerpo de una funcion. El SQL dinamico dentro de
 # una SECURITY DEFINER es la via directa a la inyeccion con privilegios de dueno.
@@ -252,6 +268,22 @@ def _privilege_violations(privileges: Mapping[tuple[str, str, str], bool]) -> li
     return out
 
 
+def _cross_violations(privileges: Mapping[tuple[str, str, str], bool]) -> list[str]:
+    """El ingestor no toca la AUTORIA de reglas (regla 5.20, cruce de P07c)."""
+    out: list[str] = []
+    for role in _CROSS_ROLES:
+        for table in RULES_AUTHORING_TABLES:
+            for privilege in _TABLE_PRIVILEGES:
+                if privileges.get((role, table, privilege), False):
+                    out.append(
+                        f"{table}: el rol {role} tiene {privilege} (regla 5.20): el "
+                        "ingestor escribe mercado y nada mas. Con acceso a la autoria "
+                        "podria leer -- o peor, alterar -- las reglas que su propio "
+                        "dato dispara."
+                    )
+    return out
+
+
 def _function_violations(functions: Mapping[str, FunctionFacts]) -> list[str]:
     out: list[str] = []
     for name, allowed in IDENTITY_FUNCTIONS.items():
@@ -344,6 +376,7 @@ def check_identity(
     problems: list[str] = []
     problems.extend(_table_violations(tables))
     problems.extend(_privilege_violations(privileges))
+    problems.extend(_cross_violations(privileges))
     problems.extend(_function_violations(functions))
     return problems
 
@@ -421,6 +454,15 @@ def load_identity_facts(
             for privilege in _TABLE_PRIVILEGES
             if tables[table].exists
         ]
+        # has_table_privilege ABORTA si la tabla no existe: solo se pregunta por las que
+        # el catalogo confirma que estan.
+        combos += [
+            (role, table, privilege)
+            for role in _CROSS_ROLES
+            for table in RULES_AUTHORING_TABLES
+            for privilege in _TABLE_PRIVILEGES
+            if table in present
+        ]
         privileges: dict[tuple[str, str, str], bool] = {}
         if combos:
             placeholders = ", ".join(["(%s, %s, %s)"] * len(combos))
@@ -448,7 +490,9 @@ def main() -> int:
             print(f"  - {problem}")
         return 1
     print(
-        "OK check identity (P06b/CA-07): el rol de aplicacion no tiene ningun "
+        f"OK check identity (P06b/CA-07): {INGESTION_ROLE_NAME} no toca "
+        f"{', '.join(RULES_AUTHORING_TABLES)} (cruce de la regla 5.20); el rol de "
+        "aplicacion no tiene ningun "
         f"privilegio de tabla sobre {', '.join(IDENTITY_TABLES)}; las "
         f"{len(IDENTITY_FUNCTIONS)} ventanillas son SECURITY DEFINER con search_path "
         "fijo, sin SQL dinamico, sin EXECUTE para PUBLIC y con la firma esperada."
