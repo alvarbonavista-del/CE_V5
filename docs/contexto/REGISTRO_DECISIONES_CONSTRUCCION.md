@@ -299,6 +299,13 @@ validacion; la salida cruda y Actions siguen siendo los arbitros, sea cual sea e
 (5.31/5.32). No contradice la economia de 5.23: el grueso de la ejecucion sigue agrupado en
 Sonnet; solo se separan los pasos de nivel distinto. Se cita junto a la 5.23 en la seccion de
 redaccion de tandas de todo periferico. Nace de la economia de tokens abordada en P07c.
+AMPLIACION (mecanica de la etiqueta): toda tanda [CLAUDE CODE] declara en cabecera su NIVEL y su
+MODELO, y cita -como PRIMERA linea de accion FUERA del bloque, dirigida a Alvaro- el COMANDO
+TEXTUAL EXACTO a teclear antes de pegar (p.ej. /model sonnet). La etiqueta [MODELO: X] y el
+comando DEBEN COINCIDIR; si la sesion no esta en ese modelo, Alvaro cambia PRIMERO -el registro
+y lo ejecutado no se separan-. Claude Code NO cambia de modelo por si mismo (verificado en doc):
+una etiqueta sin su comando citado es declaracion sin efecto. Los micropasos se agrupan por
+MISMO nivel/modelo (criterio de 5.23); al cambiar de nivel, cambia la tanda.
 =====================================================================
 6. CIERRE DE PIEZA P01 - CONTRATOS BASE Y ENVELOPE
 =====================================================================
