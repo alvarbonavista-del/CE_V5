@@ -4,12 +4,18 @@ Archivo vivo de estado de proceso (sin logica). Lo mantiene Claude Code
 en disco; Alvaro lo resube al knowledge cada vez que se cierra una pieza
 o un hito (DOC_ENTREGABLES sec.8).
 
-Ultima actualizacion: 2026-07-23 (P07b ENTREGADA: cierre formal con doble revision
-Central+CSA; fase 3b -agregacion del footprint- cerrada sobre la 3a (conectores de trades
-+ modelo honesto de backfill), tests de costura anadidos y DoD de retencion redefinido
-(escenario B). M3 SIGUE ABIERTO: faltan P07c, P08b, P08c, P09a. Ver REGISTRO_DECISIONES
-seccion 26. T-05 ENTREGADA y en main; T-04 (feasibility comparador TradingView) CERRADA:
-verificacion del RSI por FIXTURE (no hay API en vivo)).
+Ultima actualizacion: 2026-07-26 (P07c ENTREGADA: cierre formal con doble revision
+Central+CSA, firmada por Alvaro. Orderbook L2 con estado (snapshots top-K
+observacionales, frontera por reloj de barra, resync como hecho propio, 2a conexion OKX
+a /public), cache_key_schema ADR-008 construido (10 dimensiones, un-diferido de la nota
+de f3870d0), gates G1 (5.31/5.32/5.33 registradas y firmadas) y G2 (mapeo de los 27
+requisitos del CSA) cerrados. HEAD 8869ec9, PR #3 mergeado a main. Ver
+REGISTRO_DECISIONES seccion 29. M3 SIGUE ABIERTO: faltan P08b, P08c, P09a. P07b
+ENTREGADA (cierre formal con doble revision Central+CSA; fase 3b -agregacion del
+footprint- cerrada sobre la 3a, tests de costura anadidos y DoD de retencion redefinido,
+escenario B; ver REGISTRO_DECISIONES seccion 26). T-05 ENTREGADA y en main; T-04
+(feasibility comparador TradingView) CERRADA: verificacion del RSI por FIXTURE (no hay
+API en vivo)).
 
 ## Hito actual
 M3 (datos, reglas y notificacion backend) ABIERTO y EXPANDIDO a paridad
@@ -18,7 +24,7 @@ no reabre ADR). Piezas de M3 y su estado:
   - P07  (ingesta de market data) .................... ENTREGADA
   - T-03 (conectores OKX y Bybit; transversal) ....... ENTREGADA
   - P07b (trades + footprint) ........................ ENTREGADA
-  - P07c (orderbook L2 con estado) ................... PENDIENTE
+  - P07c (orderbook L2 con estado) ................... ENTREGADA
   - P08  (motor de reglas) ........................... ENTREGADA
   - P08b (DataSources candle-derived) ................ PENDIENTE
   - P08c (DataSources footprint/L2-derived) .......... PENDIENTE
@@ -87,8 +93,9 @@ P07 - Ingesta de market data (hibrida), ADR-014: ENTREGADA. ABRE el hito M3
   cola en el arbol.)
 
 ## Pieza en curso
-Ninguna. P07b ENTREGADA (cierre formal, ver "Piezas cerradas"). Las siguientes de M3
-(P07c, P08b, P08c, P09a) estan PENDIENTES; admiten paralelismo P07c y P08b.
+Ninguna. P07c ENTREGADA (cierre formal, ver "Piezas cerradas"). Las siguientes de M3
+(P08b, P08c, P09a) estan PENDIENTES; admiten paralelismo P08b (P08c tras P07b+P07c, ya
+ambas entregadas).
 T-05 (visor de desarrollo, transversal): CERRADA (ver "Transversales cerradas").
 
 ## Piezas cerradas
@@ -118,7 +125,17 @@ T-05 (visor de desarrollo, transversal): CERRADA (ver "Transversales cerradas").
 - P08 - Motor de reglas (ADR-015/016/017): ENTREGADA. Commit de pieza 59855bf;
   refinamiento documental 107e94f; merge a main 143f4f0. Actions verde 3/3 sobre
   107e94f. NO cierra M3.
-Van 12 piezas cerradas de 23 (inventario ampliado de 19 a 23 por EXP-M3-01,
+- P07c - Orderbook L2 con estado (ADR-014): ENTREGADA (cierre formal, doble revision
+  Central+CSA, firmada por Alvaro 2026-07-26). Snapshots top-K observacionales
+  (frontier+sample), resync como hecho propio (market.orderbook_resynced), frontera por
+  reloj de barra keyed a open_time, 2a conexion OKX a /public (mismo proceso/rol).
+  cache_key_schema ADR-008 de 10 dimensiones (un-diferido de f3870d0). Gates G1
+  (5.31/5.32/5.33 registradas y firmadas) y G2 (mapeo de los 27 requisitos del CSA en
+  docs/MAPEO_TESTS_P07c_SECCION12_CSA.md) cerrados. HEAD 8869ec9 mergeado a main (PR
+  #3). Actions run 30195904966, 3/3 success; ci_local 24/24; 1587+319 tests, cero
+  skips/xfail. Diferido a v5.1 (5.11): libro profundo + delta-log crudo. Ver
+  REGISTRO_DECISIONES seccion 29. NO cierra M3.
+Van 13 piezas cerradas de 23 (inventario ampliado de 19 a 23 por EXP-M3-01,
 firmada 2026-07-17: entran P07b, P07c, P08b y P08c).
 
 ## Transversales cerradas (no cuentan en las 23 piezas)

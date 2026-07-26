@@ -306,6 +306,11 @@ comando DEBEN COINCIDIR; si la sesion no esta en ese modelo, Alvaro cambia PRIME
 y lo ejecutado no se separan-. Claude Code NO cambia de modelo por si mismo (verificado en doc):
 una etiqueta sin su comando citado es declaracion sin efecto. Los micropasos se agrupan por
 MISMO nivel/modelo (criterio de 5.23); al cambiar de nivel, cambia la tanda.
+NOTA SUCESORA (tanda de cierre P07c, verificacion cruzada): la clausula de cabecera obligatoria
+-etiqueta [MODELO: X] + comando TEXTUAL EXACTO citado fuera del bloque, Claude Code no cambia de
+modelo por si mismo- llega tambien en el prompt de cierre. Su contenido COINCIDE con la
+AMPLIACION de arriba (commit 5ae2577): no se repite el parrafo para no duplicar (5.14); esta
+nota deja constancia de que la clausula pedida ya esta vigente en la regla.
 =====================================================================
 6. CIERRE DE PIEZA P01 - CONTRATOS BASE Y ENVELOPE
 =====================================================================
@@ -1937,3 +1942,60 @@ clava los dos hosts EN FRIO y ademas comprueba que ningun dominio geo-restringid
 cuela. SOLO TEST: connector.py no se toco; el test se limita a leer sus constantes. Un
 cambio de host futuro seguira siendo posible, pero tendra que ser DELIBERADO y aparecer
 en el diff junto al test.
+
+=====================================================================
+29. CIERRE DE PIEZA P07c - INGESTA DE ORDERBOOK L2 CON ESTADO
+=====================================================================
+Estado: ENTREGADA. HEAD 8869ec9. PR #3 mergeado a main.
+Actions run 30195904966, 3/3 success. ci_local 24/24; 1587+319 tests; cero skips/xfail.
+Doble revision Central + CSA CONFORME; firmada por Alvaro 2026-07-26.
+
+GATES DE CIERRE:
+- G1: reglas 5.31 y 5.32 REGISTRADAS (commit 7569401, sec.5) y FIRMADAS. Regla 5.33
+  (nivel/modelo como criterio de agrupacion de tandas, extiende 5.23) registrada y
+  firmada.
+- G2: cache_key_schema OBSERVACIONAL (ADR-008) construido, un-diferido (anula la nota
+  "diferido a v5.1" de f3870d0). 10 dimensiones explicitas: exchange, symbol,
+  market_type, data_family, depth_k, cadence_ms, timeframe, frontier_time_anchor,
+  formula_version, clock_source. Tests de mutacion que MUERDEN por dimension. Mapeo de
+  los 27 requisitos del CSA en docs/MAPEO_TESTS_P07c_SECCION12_CSA.md.
+
+DECISIONES ARQUITECTONICAS HONRADAS (dictamen Central + firma):
+- (a) Persistencia: snapshots top-K observacionales (K/cadencia parametros, defaults
+  25-50 / ~1/s) + snapshot en frontera de vela; persist+outbox atomico (ADR-013),
+  append-only, is_complete fail-safe (ADR-007). Reproducibilidad POR PROCEDENCIA, no por
+  replay.
+- (b) Topologia: b-i (multiplex en worker_ingestion, rol ce_v5_ingestion). Medicion:
+  <0.25% core/simbolo, ~10 deltas/s.
+- Frontera por RELOJ DE BARRA (opcion 3): floor(t/tf)*tf con Clock inyectado, keyed a
+  open_time, por tf; NO cablea candle_corrected (el libro es estado anclado al tiempo).
+- Frontera sin semilla (opcion B): niveles vacios + is_complete=False EN EL CANON;
+  validador condicional 5.21 (vacio <=> is_complete=False) con test doble que muerde.
+- OKX: 2a conexion a /ws/v5/public para books (opcion 1), mismo proceso/rol. Correccion
+  de trazabilidad: "cero sockets nuevos" era cierto para Binance/Bybit, ERRONEO para OKX
+  (+1 conexion /public por separacion de endpoint del exchange).
+
+ANOTACIONES DE ARQUITECTURA (no ADR nuevo, no reabre nada):
+- Clarificacion ADR-008: DataSource OBSERVACIONAL (canon por captura viva, reproducible
+  por procedencia) frente a DERIVADO (recomputable desde fuente persistida). Recurrira en
+  toda familia de captura viva.
+- N1: el JSON schema del snapshot quedo mas permisivo que el validador de borde; unico
+  productor = backend (Pydantic autoritativo). Re-elevar si un productor no-backend emite.
+
+DIFERIDO REGISTRADO (5.11):
+- Libro profundo completo y delta-log crudo NO persistidos: diferido a v5.1. Admisible
+  porque hoy el market data no fluye en produccion. DISPARADOR DE REVISION: si el market
+  data empezara a fluir a produccion antes de que v5.1 construya la retencion profunda, se
+  REABRE (o seria historia perdida en silencio).
+- execution.*: negativa de rol completa queda para M5 (no hay tablas de execution hasta
+  entonces); hoy se verifica que el ingestor no fabrica execution.* por outbox.
+
+FIXES (3, ninguno roza el tope de 2 por problema):
+- (a) Puente del primer delta tras semilla en Binance (U<=last+1<=u).
+- (b) Hosts a data-*.binance.vision (commit ee21f0f) + pin en frio (G2-PIN). FRONTERA: la
+  lectura legal MiCA es de Alvaro con asesoria; ABIERTA para posture de produccion.
+- (c) Pre-buffer WS antes del snapshot REST (commit b447f89); 8/8 semillas limpias.
+
+ADR: sin ADR nuevo; 5.12 NO activada. P07c NO cierra M3; siguen pendientes P08b, P08c,
+P09a.
+=====================================================================

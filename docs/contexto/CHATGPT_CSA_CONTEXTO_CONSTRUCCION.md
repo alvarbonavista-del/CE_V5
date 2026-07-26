@@ -5,7 +5,8 @@ estable para revisar las piezas. El CSA revisa coherencia y calidad
 contra los documentos-norte; NO decide (firma Alvaro). Archivo vivo
 mantenido por Claude Code.
 
-Ultima actualizacion: 2026-07-21 (P08 ENTREGADA: motor de reglas, firmada; M3 sigue abierto).
+Ultima actualizacion: 2026-07-26 (P07c ENTREGADA: orderbook L2 con estado, firmada; HEAD
+8869ec9, PR #3 mergeado a main; M3 sigue abierto -4/7-, faltan P08b, P08c y P09a).
 
 ## 1. Que construimos
 CE v5: plataforma comercial multiusuario de analisis cuantitativo y
@@ -420,3 +421,92 @@ PARA LA PROXIMA REVISION: el orden de M3 continua con P07b (trades+footprint), P
 es quien consume signal.*/alert.*. Para P09a, la herencia dura de P08 es que las
 proyecciones alert.raised/signal.raised salen POR TRANSICION y ya vienen unidas a su
 rule.firing por causation_id: el router entrega esos hechos, no los reinterpreta.
+
+=====================================================================
+REVISION CSA - PIEZA P07c (hito M3) - 2026-07-26
+=====================================================================
+Veredicto: CONFORME (Central y CSA). Firmado por Alvaro 2026-07-26.
+P07c ENTREGADA (4/7 de M3). NO cierra M3: quedan P08b, P08c y P09a. Entre P08 (revision
+anterior, 2026-07-21) y esta cierran tambien P07b (trades+footprint, 2026-07-23; ver
+REGISTRO_DECISIONES sec.26) sin bloque propio en este documento. HEAD 8869ec9, PR #3
+mergeado a main. Actions run 30195904966, 3/3 success sobre el HEAD (Backend,
+Backend-integration y Frontend). ci_local 24/24; 1587 tests unit + 319 integracion, CERO
+skips/xfail.
+
+RESUMEN DE LA PIEZA: motor del libro L2 CON ESTADO y ORDER-DEPENDIENTE (a diferencia del
+de trades, gemelo pero sin estado): un OrderbookBook vivo por stream, deltas aplicados EN
+ORDEN con backpressure. Continuidad propia por exchange -- Binance con puente
+U<=lastUpdateId+1<=u SOLO en el primer delta tras la siembra (regla oficial I-02, cierra
+un hallazgo de construccion), OKX con prevSeqId estricto y sus dos excepciones que NO son
+hueco (keepalive seqId==prevSeqId; mantenimiento seqId<prevSeqId), Bybit con reset u==1
+que reconstruye en banda --. Un hueco REAL detectado por el motor publica su PROPIO hecho
+(market.orderbook_resynced), nunca una correccion al estilo candle_corrected: un libro no
+se corrige retroactivamente, se REINICIA desde una foto nueva. Snapshots top-K en dos
+variantes de un mismo payload: FRONTIER (as-of el cierre de barra, publicado por outbox,
+uno por barra, fire-anyway aunque el libro no tenga semilla) y SAMPLE (intra-ventana a
+cadencia, persistido sin publicar, como los trades). is_complete FAIL-SAFE identico al
+footprint: un hueco que solapa la ventana marca la barra incompleta aunque el libro ya se
+hubiera recuperado. Topologia b-i: multiplex en worker_ingestion bajo ce_v5_ingestion,
+salvo OKX que abre una 2a conexion a /ws/v5/public para el libro (mismo proceso/rol) --
+correccion de trazabilidad frente a la premisa "cero sockets nuevos", cierta para
+Binance/Bybit pero erronea para OKX, que separa el endpoint de libro del de trades/velas.
+
+LO QUE EL CSA MIRO CON MAS DUREZA (dictamen G2, dos rondas de remediacion, ninguna toco el
+motor de ingesta):
+(G1) Las reglas de proceso 5.31 (bateria de CI por Claude Code, con salida cruda VERBATIM
+como condicion) y 5.32 (validacion en caliente conducida por tandas, evidencia cruda
+obligatoria) se USARON durante toda la pieza pero NO estaban REGISTRADAS ni FIRMADAS al
+cerrar en caliente (commit f3870d0). Corregido: registradas verbatim en REGISTRO_DECISIONES
+sec.5 (commit 7569401) y ahora FIRMADAS. Se anadio ademas la 5.33 (nivel/modelo como
+criterio de agrupacion y separacion de tandas, extiende 5.23), tambien firmada, con su
+mecanica de cabecera obligatoria: etiqueta [MODELO: X] + comando /model exacto citado
+fuera del bloque.
+(G2) El snapshot del libro se persistia con una idempotency/cache_key explicita (K,
+cadencia, timeframe, as_of, formula_version, clock_source) pero SIN declaracion ADR-008:
+el marco declarativo no conocia la fuente ni sus dimensiones de cache. La nota de cierre
+en caliente lo habia marcado "diferido a v5.1" por error -- confundia el diferido REAL
+(libro profundo + delta-log crudo, que SI sigue en v5.1) con la declaracion, que no
+dependia de eso. Corregido: orderbook_snapshot_declaration() en
+platform/rules/rawbook.py, espejo de market_close_declaration(), con cache_key_schema de
+DIEZ dimensiones explicitas -exchange, symbol, market_type, data_family, depth_k,
+cadence_ms, timeframe, frontier_time_anchor, formula_version, clock_source (esta ultima
+por dictamen G2/clock_source, cerrando una observacion que el propio doc de mapeo habia
+dejado abierta)-, ADITIVA (CE-14: no se cablea en el catalogo vivo del worker de reglas,
+que exigiria un evaluador que tocaria el nucleo). Cada dimension tiene su test de
+mutacion, verificado que MUERDE. Los 27 requisitos de la seccion 12 del CSA quedan
+emparejados 1:1 con tests reales en docs/MAPEO_TESTS_P07c_SECCION12_CSA.md; tres de ellos
+(24, 25, 27) son de PROCESO, no de test, y se marcan como tales con su artefacto exacto --
+el 27 en particular distingue REGISTRADAS (verificable) de FIRMADAS (acto humano, no
+verificable por el periferico).
+Red de seguridad anadida por decision de Alvaro (no del CSA): los hosts
+data-*.binance.vision (fix ee21f0f, dominio de DATOS no geobloqueado por MiCA) quedan
+CLAVADOS en frio por test, para que un revert accidental al host geobloqueado se ponga
+rojo sin esperar a la siguiente validacion en caliente.
+
+REGLAS NUEVAS (verbatim en REGISTRO_DECISIONES sec.5): 5.31 (ejecucion de la bateria de CI
+por Claude Code), 5.32 (conduccion de la validacion en caliente por tandas) y 5.33 (nivel/
+modelo como criterio de agrupacion y separacion de tandas, extiende 5.23).
+
+LIMITACIONES v5.0 DECLARADAS (no son deuda oculta, son alcance firmado y fechado): libro
+profundo completo (mas alla del top-K) y delta-log crudo NO persistidos, diferidos a v5.1
+(5.11) -- DISPARADOR DE REVISION: si el market data empezara a fluir a produccion antes de
+que v5.1 construya la retencion profunda, se reabre, o seria historia perdida en
+silencio--. execution.*: no hay tablas hasta M5, asi que la prueba negativa completa del
+cruce de roles queda pendiente de que existan; hoy se verifica que el ingestor no fabrica
+un execution.* por la outbox. La lectura legal de los dominios .vision bajo MiCA queda
+PENDIENTE de asesoria de Alvaro antes de cualquier postura de PRODUCCION (no bloquea dev).
+
+VERIFICADO EN ESTA REVISION: que el resync es un hecho publicado propio y no una
+correccion; que is_complete es fail-safe en la MISMA logica que el footprint (ventana
+solapada, no solo estado actual del libro); que la declaracion ADR-008 es ADITIVA de
+verdad (no aparece en el catalogo vivo del worker de reglas); que cada dimension de la
+cache_key discrimina la clave REAL persistida, no solo la declarada; que ningun requisito
+de la seccion 12 quedo sin test o sin artefacto de proceso citado; y que las reglas 5.31/
+5.32/5.33 estan registradas Y firmadas, no solo usadas.
+
+PARA LA PROXIMA REVISION: el orden de M3 continua con P08b y P08c (DataSources
+candle-derived y footprint/L2-derived), que consumiran por primera vez las declaraciones
+ADR-008 -incluida orderbook_snapshot_declaration()- desde el catalogo real; y P09a (router
+de notificaciones backend). P08c hereda de P07c el criterio memory_model=RECURSIVE del
+libro: cualquier fuente derivada del orderbook NO es candidata a correccion por ventana
+acotada, a diferencia de las derivadas de market.close (POINT_LOCAL).
