@@ -10,6 +10,7 @@ from check_identity_access import (
 
 APP = "ce_v5_app"
 OPERATOR = "ce_v5_operator"
+INGESTION = "ce_v5_ingestion"
 
 
 def _tables() -> dict[str, TableFacts]:
@@ -136,6 +137,27 @@ def test_security_definer_fuera_de_la_allowlist_falla() -> None:
     )
     problems = check_identity(_tables(), functions, _privileges())
     assert any("fuera de la allowlist" in p for p in problems)
+
+
+def test_el_ingestor_con_acceso_a_la_autoria_de_reglas_falla() -> None:
+    # CRUCE de la regla 5.20 (P07c, CSA item 23): el ingestor escribe mercado y nada
+    # mas. Identidad ya se cubria arriba; politica y auditoria las cubre
+    # check_market_access; rule_definition no la miraba nadie para el ingestor.
+    for privilegio in ("SELECT", "INSERT", "UPDATE", "DELETE"):
+        problems = check_identity(
+            _tables(), _functions(), {(INGESTION, "rule_definition", privilegio): True}
+        )
+        assert any("rule_definition" in p for p in problems), privilegio
+        assert any(INGESTION in p for p in problems), privilegio
+
+
+def test_el_rol_de_aplicacion_si_puede_escribir_la_autoria() -> None:
+    # Sin falso rojo: la API ES la autoria de reglas. El cruce vigila al ingestor, no a
+    # quien tiene ese trabajo.
+    problems = check_identity(
+        _tables(), _functions(), {(APP, "rule_definition", "INSERT"): True}
+    )
+    assert problems == []
 
 
 def test_tabla_sin_force_rls_falla() -> None:

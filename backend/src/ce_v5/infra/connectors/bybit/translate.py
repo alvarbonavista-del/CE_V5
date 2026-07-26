@@ -15,7 +15,14 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
-from source.families.market import RawCandle, RawTrade, Timeframe
+from source.families.market import (
+    RawCandle,
+    RawOrderbookDelta,
+    RawOrderbookLevel,
+    RawOrderbookSeed,
+    RawTrade,
+    Timeframe,
+)
 
 _SUPPORTED: frozenset[Timeframe] = frozenset(
     {
@@ -224,4 +231,97 @@ def raw_trade_from_bybit_rest(
         qty=_trade_field(row, "size"),
         side=_trade_field(row, "side"),
         event_time=_trade_field(row, "time"),
+    )
+
+
+def _book_field(data: dict[str, Any], clave: str) -> Any:  # noqa: ANN401
+    if clave not in data:
+        message = f"libro de Bybit sin la clave {clave!r}: no se traduce a medias."
+        raise BybitTranslationError(message)
+    return data[clave]
+
+
+def _entero(valor: object, campo: str) -> int:
+    """Un campo de SECUENCIA de Bybit (u, seq) a entero, o error de traduccion."""
+    try:
+        return int(str(valor))
+    except (TypeError, ValueError) as exc:
+        message = f"campo {campo!r} del libro de Bybit no es un entero: {valor!r}."
+        raise BybitTranslationError(message) from exc
+
+
+def _niveles(arr: object, lado: str) -> tuple[RawOrderbookLevel, ...]:
+    """Niveles de Bybit [precio, tamano] -> (precio, tamano) EN TEXTO.
+
+    Se copian TAL CUAL como texto (nunca float); un tamano 0 se conserva (el motor lo
+    interpreta como borrar el nivel). Un nivel que no es [precio, tamano] es un mensaje
+    malformado: se rechaza, no se traduce a medias.
+    """
+    if not isinstance(arr, (list, tuple)):
+        message = f"{lado} del libro de Bybit no es un array: {type(arr)!r}."
+        raise BybitTranslationError(message)
+    niveles: list[RawOrderbookLevel] = []
+    for nivel in arr:
+        if not isinstance(nivel, (list, tuple)) or len(nivel) < 2:
+            message = (
+                f"nivel de {lado} malformado en el libro de Bybit: {nivel!r} "
+                "(se espera [precio, tamano])."
+            )
+            raise BybitTranslationError(message)
+        niveles.append((str(nivel[0]), str(nivel[1])))
+    return tuple(niveles)
+
+
+def raw_orderbook_seed_from_bybit(
+    data: dict[str, Any], canonical_symbol: str, market_type: str
+) -> RawOrderbookSeed:
+    """El 'data' de un mensaje type=snapshot (topic orderbook.*) -> RawOrderbookSeed.
+
+    Forma: {"s":"BTCUSDT","b":[[precio,tamano],..],"a":[..],"u":<updateId>,"seq":<int>}.
+    La SECUENCIA BASE es 'u' (updateId): el motor encadena los deltas por u (el u del
+    primer delta debe ser este +1), no por 'seq' (secuencia cruzada, que solo se
+    conserva en los deltas). canonical_symbol lo resuelve el LLAMADOR desde el catalogo
+    (Bybit pega el simbolo, la vuelta a canonico se consulta).
+    """
+    if not isinstance(data, dict):
+        message = f"libro de Bybit no es un objeto: {type(data)!r}."
+        raise BybitTranslationError(message)
+    return RawOrderbookSeed(
+        exchange="bybit",
+        market_type=market_type,
+        symbol=canonical_symbol,
+        bids=_niveles(_book_field(data, "b"), "b"),
+        asks=_niveles(_book_field(data, "a"), "a"),
+        base_sequence=_entero(_book_field(data, "u"), "u"),
+    )
+
+
+def raw_orderbook_delta_from_bybit(
+    data: dict[str, Any],
+    canonical_symbol: str,
+    market_type: str,
+    *,
+    is_snapshot: bool = False,
+) -> RawOrderbookDelta:
+    """El 'data' de un mensaje type=delta (topic orderbook.*) -> RawOrderbookDelta.
+
+    u (updateId) es la secuencia SIN INTERPRETAR por la que el motor encadena; seq
+    (secuencia cruzada) se conserva sin usar. Un tamano 0 = borrar el nivel (lo aplica
+    el motor). is_snapshot marca un RESET: Bybit reinicia u a 1 y reenvia una foto
+    cuando su servicio se reinicia, asi que u == 1 => is_snapshot=True; el llamador
+    ademas puede forzarlo (pasando el type=snapshot de un reenvio a mitad de flujo).
+    """
+    if not isinstance(data, dict):
+        message = f"libro de Bybit no es un objeto: {type(data)!r}."
+        raise BybitTranslationError(message)
+    update_id = _entero(_book_field(data, "u"), "u")
+    return RawOrderbookDelta(
+        exchange="bybit",
+        market_type=market_type,
+        symbol=canonical_symbol,
+        bids=_niveles(_book_field(data, "b"), "b"),
+        asks=_niveles(_book_field(data, "a"), "a"),
+        update_id=update_id,
+        seq=_entero(_book_field(data, "seq"), "seq"),
+        is_snapshot=is_snapshot or update_id == 1,
     )

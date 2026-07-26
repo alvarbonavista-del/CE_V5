@@ -249,6 +249,68 @@ se invoca por UN SOLO comando espejo de ci.yml (para que "la bateria completa" n
 ensamblaje manual que pueda olvidar un check -el fallo que origina esta regla-); si ese comando
 no existe, se crea y se mantiene. Nace del run #26 (437a1dc verde en ruff+mypy+pytest pero rojo
 en check_tenancy: la tabla public_market market_trade_gap no estaba declarada).
+
+5.31 EJECUCION DE LA BATERIA DE CI POR CLAUDE CODE (refina 5.24). Claude Code PUEDE
+ejecutar la bateria de CI local (tools/ci_local.py), commit y push, siempre que: (1) PEGUE
+LA SALIDA CRUDA VERBATIM de la terminal -estado por check, recuento de skips (5.18) y
+cualquier fallo sin abreviar-, nunca un resumen ni un "paso afirmado"; (2) su entorno
+corra la bateria COMPLETA (Postgres+Redis arriba, los tres DSN operador/ingesta/reglas
+presentes) Y ci_local.py NO reporte ningun skip ni servicio/DSN ausente -si lo reporta o
+no puede levantarlos, NO empuja: CAE a [POWERSHELL] (Alvaro). El disparador del fallback
+es el REPORTE OBJETIVO de ci_local.py, no un juicio del modelo; (3) respete 5.29 (git add
+de rutas explicitas) y 5.30 (bateria completa espejo de ci.yml antes del push); (4)
+Actions (5.13/5.22) siga siendo el ARBITRO FINAL sobre el commit empujado: correr local NO
+lo sustituye. Esta regla ESTRECHA el "VER LA SALIDA REAL" de 5.24 a la VALIDACION EN
+CALIENTE: la bateria de CI es determinista y hermetica (el CI no abre sockets) y puede ir
+a Claude Code; la validacion en caliente del Roadmap/DoD (contra exchanges/DB reales)
+SIGUE regida por la 5.32. Motivo: 5.24 nacio para acortar operaciones; con Claude Code
+capaz de correr y pegar salida cruda, el relay manual de la bateria hermetica anade tiempo
+sin ganar garantia (la garantia la dan salida cruda + 5.18 + Actions, no quien teclea).
+Riesgo unico: verde ilusorio (T-01), mitigado por salida cruda verbatim, fallback objetivo
+y Actions como arbitro final. Nace de P07c.
+
+5.32 CONDUCCION DE LA VALIDACION EN CALIENTE POR TANDAS A CLAUDE CODE (extiende 5.31,
+precisa 5.23(b)). El periferico CONDUCE la validacion en caliente escribiendo tandas
+[CLAUDE CODE] que AGRUPAN TODAS LAS ACCIONES del escenario: levantar la conexion viva,
+provocar el evento (p.ej. el hueco de secuencia), capturar re-sync, metricas y trazas.
+Claude Code las ejecuta y PEGA LA EVIDENCIA CRUDA VERBATIM, nunca un resumen. Agrupar la
+EJECUCION no rebaja el checkpoint de 5.23(b): la validacion en caliente SIGUE ocurriendo y
+produciendo evidencia (5.18: cero validaciones en silencio). El escenario se disena para
+que su exito sea OBSERVABLE en la evidencia cruda. UNICO LIMITE: piezas que toquen dinero
+o claves (P10a/P10b) mantienen la ejecucion en caliente por [POWERSHELL] de Alvaro (menor
+privilegio en superficies con riesgo real). Nace de P07c.
+
+5.33 NIVEL DE DIFICULTAD Y MODELO COMO CRITERIO DE AGRUPACION Y SEPARACION DE TANDAS (extiende
+5.23). Cada micropaso se clasifica por su carga cognitiva y su modelo:
+  - ALTO (decidir, disenar, diagnosticar, revisar) -> Opus.
+  - MEDIO (ejecutar una tanda precisa ya dictada, boilerplate desde un spec ya aprobado) ->
+    Sonnet.
+  - BAJO (micro-tareas triviales sueltas que NO tocan la rama de trabajo) -> Haiku.
+Este nivel es un criterio ADICIONAL a las excepciones (a)/(b)/(c) de 5.23:
+  - AGRUPACION: solo se agrupan en una misma tanda micropasos del MISMO nivel/modelo.
+  - SEPARACION: al cambiar el nivel/modelo, cambia la tanda. Una unidad de trabajo que mezcle
+    niveles se PARTE en sub-tandas homogeneas por modelo, cada una etiquetada y corrida en
+    secuencia (respeta 5.25: cada sub-tanda es UN bloque).
+Cada tanda [CLAUDE CODE] lleva en su cabecera la etiqueta [MODELO: X]. El cambio de modelo entre
+sub-tandas lo ejecuta Alvaro con /model (Claude Code NO se auto-cambia desde el texto del
+prompt). El diagnostico emergente -una tanda de ejecucion que falla de forma inesperada- sube a
+Opus de forma reactiva. GUARDARRAIL: la eleccion de modelo es ECONOMIA y jamas rebaja una
+validacion; la salida cruda y Actions siguen siendo los arbitros, sea cual sea el modelo
+(5.31/5.32). No contradice la economia de 5.23: el grueso de la ejecucion sigue agrupado en
+Sonnet; solo se separan los pasos de nivel distinto. Se cita junto a la 5.23 en la seccion de
+redaccion de tandas de todo periferico. Nace de la economia de tokens abordada en P07c.
+AMPLIACION (mecanica de la etiqueta): toda tanda [CLAUDE CODE] declara en cabecera su NIVEL y su
+MODELO, y cita -como PRIMERA linea de accion FUERA del bloque, dirigida a Alvaro- el COMANDO
+TEXTUAL EXACTO a teclear antes de pegar (p.ej. /model sonnet). La etiqueta [MODELO: X] y el
+comando DEBEN COINCIDIR; si la sesion no esta en ese modelo, Alvaro cambia PRIMERO -el registro
+y lo ejecutado no se separan-. Claude Code NO cambia de modelo por si mismo (verificado en doc):
+una etiqueta sin su comando citado es declaracion sin efecto. Los micropasos se agrupan por
+MISMO nivel/modelo (criterio de 5.23); al cambiar de nivel, cambia la tanda.
+NOTA SUCESORA (tanda de cierre P07c, verificacion cruzada): la clausula de cabecera obligatoria
+-etiqueta [MODELO: X] + comando TEXTUAL EXACTO citado fuera del bloque, Claude Code no cambia de
+modelo por si mismo- llega tambien en el prompt de cierre. Su contenido COINCIDE con la
+AMPLIACION de arriba (commit 5ae2577): no se repite el parrafo para no duplicar (5.14); esta
+nota deja constancia de que la clausula pedida ya esta vigente en la regla.
 =====================================================================
 6. CIERRE DE PIEZA P01 - CONTRATOS BASE Y ENVELOPE
 =====================================================================
@@ -1682,3 +1744,258 @@ HEREDA P08c:
 REGLAS Y CHECKS: 5.29 (rutas explicitas) y 5.30 (bateria completa antes del push) ya
   persistidas. check_market_access (5.22) enganchado y demostrado EN ACTIONS (job
   backend-integration de ci.yml). Sin ADR nuevo; 5.12 no se activa.
+=====================================================================
+27. P07c -- NOTAS DE CIERRE (registro previo a doble revision Central+CSA + firma Alvaro)
+=====================================================================
+NATURALEZA: notas de cierre de P07c (libro L2 con estado), PENDIENTES de la doble revision
+(Central+CSA) y la firma de Alvaro. Se registran AQUI (append-only, 5.14) los diferidos,
+clarificaciones y el fix de host, para que el cierre no arranque sin ellos. NO afirman
+firma: el flujo (Actions verde -> Central -> CSA -> firma Alvaro) sigue pendiente.
+
+REGLAS DE PROCESO USADAS (5.31/5.32): toda la validacion en caliente de P07c se condujo
+bajo 5.31 (bateria de CI por Claude Code con salida cruda) y 5.32 (validacion en caliente
+por tandas). AMBAS estan REGISTRADAS en la seccion 5 (nacen de P07c). Su FIRMA por Alvaro
+es acto humano PENDIENTE, no verificable por el periferico; se deja constancia de que se
+USARON, no de que esten firmadas.
+
+DIFERIDO v5.1 (5.11 / cond.4 del cierre (a)) -- LIBRO PROFUNDO + DELTA-LOG CRUDO:
+  ESTADO: se persiste SOLO el top-K por lado (DEFAULT_DEPTH_K=25) en
+    market_orderbook_snapshot; el LIBRO PROFUNDO (mas alla del top-K) y el DELTA-LOG crudo
+    (la secuencia de deltas @depth/books) NO se persisten. El libro completo vive en
+    memoria (OrderbookBook). Documentado en los COMMENT de las tablas en 0020.
+  DUENO: pieza de v5.1 (persistencia profunda del libro / delta-log). NO entregable de P07c.
+  MOTIVO (5.11): el market data aun no fluye a produccion; persistir profundidad+delta-log
+    sin consumidor seria coste de almacenamiento sin invariante. El top-K cubre el frontier
+    (K=25-50, dictamen Central) y las muestras; la reproducibilidad no depende de la
+    profundidad guardada.
+  DISPARADOR DE REVISION: si el market data empezara a SERVIRSE a produccion ANTES de v5.1,
+    se REABRE esta decision y se evalua persistir profundidad y delta-log (mismo gatillo en
+    market_orderbook_snapshot y market_orderbook_discontinuity). Fechado, con gatillo: NO es
+    deuda silenciosa.
+
+CACHE_KEY / REPRODUCIBILIDAD (ADR-008/ADR-003) -- CONFIRMADO:
+  K (depth_k), cadencia (cadence_ms), tf (timeframe), open_time (as_of), formula_version y
+  clock_source estan EN la cache_key del snapshot (orderbook_snapshot_idempotency_key en
+  contracts/source/families/orderbook.py: parts = [prefix, stream_key, tf, ventana(open_time
+  [@sample_time]), k{K}, c{cadencia}, v{formula_version}, cs{clock_source}]), NO solo como
+  columnas de 0020. Recapturar con la MISMA procedencia reconstruye la MISMA clave; cambiar
+  cualquiera de esos parametros produce OTRO hecho y no colisiona.
+
+CLARIFICACION ADR-008 -- DataSource OBSERVACIONAL vs DERIVADO (anotacion, no ADR nuevo):
+  El snapshot de orderbook es un DataSource OBSERVACIONAL: una CAPTURA del libro vivo en su
+  as_of, tal como se guarda. NO es DERIVADO (no se re-deriva de un flujo aguas abajo, como
+  el CVD/footprint). REFINO DE LA REPRODUCIBILIDAD: para orderbook es POR PROCEDENCIA (la
+  cache_key registra COMO se capturo), NO por replay. Por eso el snapshot de orderbook YA NO
+  es espejo del snapshot+replay del CVD (DEC-SNAPSHOT-REPLAY-01, que gobierna el VALOR/CVD,
+  P08b/c): esa maquinaria no aplica aqui. Reflejado en los docstrings de
+  OrderbookSnapshotPayload y orderbook_snapshot.py.
+
+N1 -- JSON SCHEMA MAS PERMISIVO QUE EL VALIDADOR DE BORDE (anotacion):
+  La relajacion condicional de 5.21 (niveles vacios admitidos SOLO si is_complete=False,
+  opcion B) vive en el VALIDADOR Pydantic de OrderbookSnapshotPayload (borde, ADR-006). El
+  JSON Schema generado NO expresa esa condicion (no tiene minItems condicional): queda MAS
+  PERMISIVO que el validador. ES SEGURO MIENTRAS el UNICO productor sea el backend (que pasa
+  por el validador Pydantic antes de persistir/publicar). RE-ELEVAR si algun dia hay un
+  productor NO-backend que escriba estos payloads saltandose el validador (p.ej. un
+  ingestor en otro lenguaje): habria que llevar la condicion tambien al JSON Schema.
+
+FIX (b) -- BINANCE AL DOMINIO DE DATOS data-*.binance.vision:
+  El conector Binance usa wss://data-stream.binance.vision (WS) y https://data-api.binance
+  .vision (REST /api/v3/depth), NO los hosts geo-restringidos (stream.binance.com /
+  api.binance.com). MOTIVO: la API PUBLICA de DATOS de Binance no esta geo-restringida por
+  MiCA (lo esta el SERVICIO, no el dato); los dominios .vision sirven los MISMOS streams y
+  payloads. Verificado en caliente (Fase A). Anadido al allowlist del barrido 5.15
+  (BARRIDO_SEGURIDAD_P07c.md, Parte B; y comentario en connector.py). REGRESION: P07/P07b
+  siguen VERDES tras el cambio de host -- ci_local 24/24 (ruff, mypy, todos los tests
+  unit+integracion de velas/trades) verde con cero skips; el path combinado (/stream) y
+  /api/v3/* son identicos, solo cambia el host, asi que no hay cambio de logica que
+  regresione P07/P07b. FRONTERA ABIERTA (de Alvaro, no bloquea dev): la lectura legal de
+  usar los dominios .vision bajo MiCA queda PENDIENTE de asesoria antes de cualquier
+  posture de PRODUCCION.
+
+BYBIT -- CANAL DE PROFUNDIDAD: quedo orderbook.200 (push cada 100 ms; _DEFAULT_ORDERBOOK_
+  DEPTH=200 en bybit/symbols.py), COHERENTE con el K por defecto del snapshot (25, rango
+  25-50): 200 niveles cubren de sobra el top-25. orderbook.50 (push 20 ms) se descarto por
+  mas caudal sin ganar para el top-K; parametrizable si la medicion del paso 8 lo pidiera.
+
+EVIDENCIA CRUDA EN EL RASTRO (5.32/5.18): la salida VERBATIM de la validacion en caliente
+  (Binance/OKX/Bybit: siembra, resync, recuperacion, metricas de CPU; siembra Binance 8/8
+  tras el pre-buffer; keepalive/mantenimiento OKX sin resync; sonda 60018 /business vs
+  /public) esta en docs/EVIDENCIA_CALIENTE_P07c.md -- no solo resumida en los informes de
+  tanda.
+=====================================================================
+28. P07c -- REMEDIACION G2: EL cache_key/ADR-008 DEL LIBRO, CONSTRUIDO
+=====================================================================
+NATURALEZA: correccion HACIA DELANTE (5.14, append-only: no se edita la nota anterior ni
+la historia de commits) de la nota de cierre de f3870d0. Nace del dictamen G2 de Central
++ seccion 12 del CSA. Tanda de solo TEST/CONSISTENCIA: el motor de ingesta NO se toco.
+
+QUE QUEDA OBSOLETO DE f3870d0, Y QUE NO. La nota "CACHE_KEY / REPRODUCIBILIDAD
+(ADR-008/ADR-003) -- CONFIRMADO" de la seccion 27 afirmaba -- correctamente -- que K,
+cadencia, tf, as_of, formula_version y clock_source estan EN la clave que se persiste. Lo
+que NO decia, y era el hueco: esa clave vivia SOLO en el codigo de persistencia
+(orderbook_snapshot_idempotency_key); el snapshot del libro NO tenia DECLARACION ADR-008
+(DataSourceDeclaration con cache_key_schema), asi que el marco declarativo no conocia la
+fuente ni sus dimensiones de cache. Central (G2) EXIGIO construirlo. QUEDA CONSTRUIDO en
+esta tanda. La parte de f3870d0 que sigue VIGENTE sin cambio es el DIFERIDO v5.1
+propiamente dicho -- libro profundo + delta-log crudo --, con su dueno y su gatillo de
+reapertura intactos: eso NO se ha adelantado aqui.
+
+QUE SE CONSTRUYO (todo aditivo, CE-14):
+  (1) backend/src/ce_v5/platform/rules/rawbook.py: orderbook_snapshot_declaration(),
+      espejo de market_close_declaration() (rawclose.py). source_id
+      market.orderbook_snapshot, OBSERVABLE, NON_SERVIBLE (un top-K no es un escalar; las
+      magnitudes servibles -- imbalance, spread -- son fuentes DERIVADAS, catalogo de
+      I-02), RECURSIVE (el libro de T es el de T-1 mas sus deltas: declararlo POINT_LOCAL
+      autorizaria al motor a propagar correcciones por ventana acotada y daria un numero
+      silenciosamente incorrecto; coincide con la familia -- un libro no se corrige, se
+      REINICIA), DECIMAL, contextos = los seis timeframes, historia en BARS (frontier, uno
+      por barra) y TIME (muestra a cadencia), publica cross-tenant (ADR-011).
+  (2) cache_key_schema EXPLICITO y enumerado, con NUEVE dimensiones: exchange, symbol,
+      market_type, data_family, depth_k, cadence_ms, timeframe, frontier_time_anchor,
+      formula_version. Cada una tiene su test: quitar una del schema pone SU test en rojo.
+  (3) SIN schema_version, justificado (no omitido en silencio): el payload no tiene un
+      schema_version propio que pueda variar sin subir formula_version; la version del
+      esquema vive en el SOBRE (event_schema_version, registro + ADR-005) y todo cambio
+      semantico del recorte sube formula_version, que SI esta en la clave.
+  (4) NO se cablea en el catalogo vivo del worker de reglas (worker_rules/composition.py):
+      registrarla exigiria un evaluador para una fuente que en v5.0 no se sirve como
+      termino, y eso seria tocar el nucleo. Guardrail de la tanda respetado.
+
+OBSERVACION ABIERTA PARA CENTRAL (dato, no cambio): la clave PERSISTIDA lleva una decima
+parte que el schema dictado por Central no enumera -- clock_source (cs{...}, refino de
+procedencia ya en el contrato, con su test) --. Se respeto el enunciado a la letra y NO se
+anadio por cuenta propia: clock_source es procedencia de la CAPTURA (en produccion es
+siempre 'system', luego no discrimina evaluaciones compartidas), no dimension de la
+EVALUACION. Queda anotado para que Central decida si debe entrar tambien en el schema.
+
+RESTO DE LA REMEDIACION G2 (mismo commit): huella por identidad de flujo (timeframe,
+exchange, symbol, market_type: cuatro tests, el de timeframe es el item 7 del CSA);
+integridad por exchange cerrada 1:1 (item 12 y 13 PARTIDOS en dos tests con su propia
+asercion; item 14 elevado a nivel INGESTOR -- el hueco real de OKX publica resync y deja
+discontinuidad --; item 15 hecho OBSERVABLE -- el reset u==1 de Bybit recupera el libro
+SIN borrar la huella del hueco anterior --; item 16 anadido); y dos PRUEBAS NEGATIVAS que
+no hacia nadie: el rol de reglas no ESCRIBE market_orderbook_* (item 22, check_rules_
+access, con su primera suite unitaria) y el ingestor no toca la AUTORIA de reglas (item
+23, cruce anadido en check_identity_access; identidad ya estaba, politica/auditoria las
+cubre check_market_access, y de execution.* no hay tablas todavia: M5+).
+
+MAPEO TEST-POR-REQUISITO: docs/MAPEO_TESTS_P07c_SECCION12_CSA.md. Demuestra la cobertura
+con nombres de test REALES. LIMITE DECLARADO: el texto integro de la seccion 12 del CSA no
+consta en el repositorio -- solo los 11 requisitos que la tanda cita --; los 16 restantes
+quedan como PENDIENTE DE TEXTO, NO inventados y NO dados por cubiertos, con el inventario
+completo de la suite (134 tests, 7 ficheros) para emparejarlos en cuanto llegue el texto.
+
+--- ADENDA A LA SECCION 28 (tanda G2-FINAL) -- CIERRE DEL clock_source ---------------
+DICTAMEN DE CENTRAL (G2/clock_source): INCLUIR. clock_source ENTRA en el
+cache_key_schema del snapshot como DECIMA dimension, y Central corrige asi su propia
+lista de nueve. La OBSERVACION ABIERTA que quedo mas arriba en esta seccion -- "queda
+anotado para que Central decida si debe entrar tambien en el schema" -- QUEDA CERRADA
+por este dictamen: no era una pregunta del periferico contra la lista, era una pregunta
+que Central se llevo y ha resuelto. No se edita lo ya escrito (5.14); esto lo cierra
+hacia delante.
+
+ORDEN DICTADO de las diez dimensiones (rawbook.py, ORDERBOOK_SNAPSHOT_CACHE_KEY_SCHEMA):
+  exchange, symbol, market_type, data_family, depth_k, cadence_ms, timeframe,
+  frontier_time_anchor, formula_version, clock_source.
+
+CONSECUENCIA: declaracion y clave persistida coinciden ahora DIMENSION A DIMENSION -- la
+clave ya llevaba el segmento cs{clock_source}; lo que faltaba era declararlo --. La
+lectura que lo resuelve: dos capturas del MISMO as_of por relojes distintos (real vs
+simulado) son HECHOS DISTINTOS, y una fuente que no lo declara podria compartir
+evaluacion entre una captura real y una simulada.
+
+TESTS: los dos sets parametrizados de la declaracion pasan de nueve a DIEZ casos
+(test_la_cache_key_declara_la_dimension[clock_source] y
+test_cambiar_la_dimension_cambia_la_clave_persistida[clock_source]); verificado que
+MUERDEN quitando la dimension del schema. La huella concreta ya existia
+(test_distinto_clock_source_distinta_clave, motor de snapshot) y NO se duplica: se
+referencia en el mapeo.
+
+schema_version: criterio MANTENIDO (no entra). El payload no tiene un schema_version
+propio que pueda variar sin subir formula_version; la version del esquema vive en el
+SOBRE (event_schema_version, registro + ADR-005). La justificacion escrita en el doc de
+mapeo se conserva. Si algun dia el payload gana un schema_version propio, se reabre.
+
+MAPEO COMPLETO (docs/MAPEO_TESTS_P07c_SECCION12_CSA.md): con el texto integro de la
+seccion 12 ya entregado, los 27 requisitos quedan emparejados 1:1 con tests REALES. NO
+QUEDA NINGUN PENDIENTE. Las antiguas TABLA A (11 conocidos) y TABLA B (16 pendientes) se
+funden en una sola tabla. Tres requisitos NO son de test sino de PROCESO y se marcan como
+tales con su artefacto: 24 (check_market_access en el step de Actions, espejado y
+vigilado por la guardia anti-deriva de ci_local), 25 (suites P07/P07b verdes en la misma
+bateria tras el cambio de host .vision) y 27 (5.31/5.32 REGISTRADAS -- verificable,
+commit 7569401 --; FIRMADAS es acto humano de Alvaro y sigue PENDIENTE: no se afirma).
+
+OBSERVACION ANOTADA, NO CERRADA (item 25): los hosts .vision son constantes en
+infra/connectors/binance/connector.py (_WS_BASE, _REST_BASE) y NINGUN test los fija; un
+cambio de host accidental no pondria nada en rojo. No se anade el test porque no es lo
+que el requisito 25 pide (pide que P07/P07b sigan verdes, y lo estan); queda para que
+Central decida si quiere fijarlo en una tanda posterior.
+
+--- ADENDA A LA SECCION 28 (tanda G2-PIN) -- HOSTS .vision CLAVADOS ------------------
+La OBSERVACION que la adenda anterior dejo "ANOTADA, NO CERRADA" -- ningun test fijaba
+_WS_BASE ni _REST_BASE, asi que un revert accidental al host geobloqueado no habria
+puesto nada en rojo y el fallo de ee21f0f solo habria reaparecido en la siguiente
+validacion en caliente -- QUEDA CERRADA por decision de ALVARO (no de Central): se anade
+la red de seguridad en tests/unit/infra/connectors/binance/test_binance_hosts.py, que
+clava los dos hosts EN FRIO y ademas comprueba que ningun dominio geo-restringido se
+cuela. SOLO TEST: connector.py no se toco; el test se limita a leer sus constantes. Un
+cambio de host futuro seguira siendo posible, pero tendra que ser DELIBERADO y aparecer
+en el diff junto al test.
+
+=====================================================================
+29. CIERRE DE PIEZA P07c - INGESTA DE ORDERBOOK L2 CON ESTADO
+=====================================================================
+Estado: ENTREGADA. HEAD 8869ec9. PR #3 mergeado a main.
+Actions run 30195904966, 3/3 success. ci_local 24/24; 1587+319 tests; cero skips/xfail.
+Doble revision Central + CSA CONFORME; firmada por Alvaro 2026-07-26.
+
+GATES DE CIERRE:
+- G1: reglas 5.31 y 5.32 REGISTRADAS (commit 7569401, sec.5) y FIRMADAS. Regla 5.33
+  (nivel/modelo como criterio de agrupacion de tandas, extiende 5.23) registrada y
+  firmada.
+- G2: cache_key_schema OBSERVACIONAL (ADR-008) construido, un-diferido (anula la nota
+  "diferido a v5.1" de f3870d0). 10 dimensiones explicitas: exchange, symbol,
+  market_type, data_family, depth_k, cadence_ms, timeframe, frontier_time_anchor,
+  formula_version, clock_source. Tests de mutacion que MUERDEN por dimension. Mapeo de
+  los 27 requisitos del CSA en docs/MAPEO_TESTS_P07c_SECCION12_CSA.md.
+
+DECISIONES ARQUITECTONICAS HONRADAS (dictamen Central + firma):
+- (a) Persistencia: snapshots top-K observacionales (K/cadencia parametros, defaults
+  25-50 / ~1/s) + snapshot en frontera de vela; persist+outbox atomico (ADR-013),
+  append-only, is_complete fail-safe (ADR-007). Reproducibilidad POR PROCEDENCIA, no por
+  replay.
+- (b) Topologia: b-i (multiplex en worker_ingestion, rol ce_v5_ingestion). Medicion:
+  <0.25% core/simbolo, ~10 deltas/s.
+- Frontera por RELOJ DE BARRA (opcion 3): floor(t/tf)*tf con Clock inyectado, keyed a
+  open_time, por tf; NO cablea candle_corrected (el libro es estado anclado al tiempo).
+- Frontera sin semilla (opcion B): niveles vacios + is_complete=False EN EL CANON;
+  validador condicional 5.21 (vacio <=> is_complete=False) con test doble que muerde.
+- OKX: 2a conexion a /ws/v5/public para books (opcion 1), mismo proceso/rol. Correccion
+  de trazabilidad: "cero sockets nuevos" era cierto para Binance/Bybit, ERRONEO para OKX
+  (+1 conexion /public por separacion de endpoint del exchange).
+
+ANOTACIONES DE ARQUITECTURA (no ADR nuevo, no reabre nada):
+- Clarificacion ADR-008: DataSource OBSERVACIONAL (canon por captura viva, reproducible
+  por procedencia) frente a DERIVADO (recomputable desde fuente persistida). Recurrira en
+  toda familia de captura viva.
+- N1: el JSON schema del snapshot quedo mas permisivo que el validador de borde; unico
+  productor = backend (Pydantic autoritativo). Re-elevar si un productor no-backend emite.
+
+DIFERIDO REGISTRADO (5.11):
+- Libro profundo completo y delta-log crudo NO persistidos: diferido a v5.1. Admisible
+  porque hoy el market data no fluye en produccion. DISPARADOR DE REVISION: si el market
+  data empezara a fluir a produccion antes de que v5.1 construya la retencion profunda, se
+  REABRE (o seria historia perdida en silencio).
+- execution.*: negativa de rol completa queda para M5 (no hay tablas de execution hasta
+  entonces); hoy se verifica que el ingestor no fabrica execution.* por outbox.
+
+FIXES (3, ninguno roza el tope de 2 por problema):
+- (a) Puente del primer delta tras semilla en Binance (U<=last+1<=u).
+- (b) Hosts a data-*.binance.vision (commit ee21f0f) + pin en frio (G2-PIN). FRONTERA: la
+  lectura legal MiCA es de Alvaro con asesoria; ABIERTA para posture de produccion.
+- (c) Pre-buffer WS antes del snapshot REST (commit b447f89); 8/8 semillas limpias.
+
+ADR: sin ADR nuevo; 5.12 NO activada. P07c NO cierra M3; siguen pendientes P08b, P08c,
+P09a.
+=====================================================================

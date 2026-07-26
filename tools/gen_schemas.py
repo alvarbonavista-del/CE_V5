@@ -46,6 +46,10 @@ from source.families.market import (  # noqa: E402
     CandleCorrectedPayload,
     CandleUpdatedPayload,
 )
+from source.families.orderbook import (  # noqa: E402
+    OrderbookResyncedPayload,
+    OrderbookSnapshotPayload,
+)
 from source.families.policy import (  # noqa: E402
     KillSwitchPayload,
     PolicyVersionPublishedPayload,
@@ -93,6 +97,10 @@ def build_schemas() -> dict[str, dict[str, object]]:
     footprint_closed_schema["title"] = "FootprintClosedPayload"
     footprint_corrected_schema = FootprintCorrectedPayload.model_json_schema()
     footprint_corrected_schema["title"] = "FootprintCorrectedPayload"
+    orderbook_snapshot_schema = OrderbookSnapshotPayload.model_json_schema()
+    orderbook_snapshot_schema["title"] = "OrderbookSnapshotPayload"
+    orderbook_resynced_schema = OrderbookResyncedPayload.model_json_schema()
+    orderbook_resynced_schema["title"] = "OrderbookResyncedPayload"
     register_request_schema = RegisterRequest.model_json_schema()
     register_request_schema["title"] = "RegisterRequest"
     login_request_schema = LoginRequest.model_json_schema()
@@ -143,6 +151,8 @@ def build_schemas() -> dict[str, dict[str, object]]:
         "market_candle_corrected.schema.json": candle_corrected_schema,
         "market_footprint_closed.schema.json": footprint_closed_schema,
         "market_footprint_corrected.schema.json": footprint_corrected_schema,
+        "market_orderbook_frontier.schema.json": orderbook_snapshot_schema,
+        "market_orderbook_resynced.schema.json": orderbook_resynced_schema,
         "api_register_request.schema.json": register_request_schema,
         "api_login_request.schema.json": login_request_schema,
         "api_session.schema.json": session_schema,

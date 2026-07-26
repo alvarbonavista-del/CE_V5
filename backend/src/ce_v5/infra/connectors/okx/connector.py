@@ -28,7 +28,7 @@ import ssl
 import threading
 import urllib.parse
 import urllib.request
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass, field
 from typing import Any
@@ -39,16 +39,20 @@ from ce_v5.infra.connectors.okx.pool import ConnectionPlanner, OkxLimits
 from ce_v5.infra.connectors.okx.symbols import (
     SymbolTranslationError,
     TimeframeTranslationError,
+    is_orderbook_channel,
     is_trade_channel,
     timeframe_from_channel,
     to_bar,
     to_channel,
     to_native,
+    to_orderbook_channel,
     to_trade_channel,
 )
 from ce_v5.infra.connectors.okx.translate import (
     OkxTranslationError,
     raw_candle_from_okx,
+    raw_orderbook_delta_from_okx,
+    raw_orderbook_seed_from_okx,
     raw_trade_from_okx,
     supported_okx_timeframes,
 )
@@ -57,13 +61,23 @@ from source.families.market import (
     LastSeenTrade,
     MarketDataKind,
     MarketStreamKey,
+    MarketType,
     RawCandle,
+    RawOrderbookDelta,
+    RawOrderbookSeed,
     RawTrade,
     Timeframe,
     TradeBackfillResult,
 )
 
+# DOS CARRILES WS EN OKX (verificado en caliente, Tanda V): velas y trades viven en
+# /business (ahi migro OKX candle), pero el LIBRO ('books') vive SOLO en /public
+# (/business responde 60018 "channel doesn't exist"). Por eso el connector abre una 2a
+# conexion DEDICADA a /public para el libro (Tanda VI, opcion 1 ratificada por Central):
+# mismo proceso worker_ingestion, mismo rol ce_v5_ingestion; sockets SEPARADOS, con su
+# propio ConnectionPlanner (<=200 subs/conn cada carril, margen bajo el 240 de OKX).
 _WS_BASE = "wss://ws.okx.com:8443/ws/v5/business"
+_WS_BASE_PUBLIC = "wss://ws.okx.com:8443/ws/v5/public"
 _REST_BASE = "https://www.okx.com"
 _MARKET_TYPE = "spot"
 _PING = "ping"
@@ -167,6 +181,9 @@ class ConnectorMetrics:
     # flujos pierde datos, y son de escalas muy distintas (un par liquido publica miles
     # de trades por minuto y una vela por minuto).
     dropped_full_queue_trades: int = 0
+    # Contador PROPIO del libro (caudal de 100 ms, otra escala): mezclarlo taparia cual
+    # de las tres clases pierde datos.
+    dropped_full_queue_orderbook: int = 0
     translation_errors: int = 0
     reconnections: int = 0
     degraded_streams: set[str] = field(default_factory=set)
@@ -184,11 +201,27 @@ class OkxSpotConnector:
     trades. Abrir un socket aparte para los trades del mismo par gastaria el doble
     contra el limite de conexiones sin ganar nada. Lo que SI esta separado es la COLA de
     cada clase: un pico de trades no puede desalojar velas, ni al reves.
+
+    EL LIBRO ('books') VIAJA POR UNA 2a CONEXION a /public (Tanda VI). No es capricho:
+    OKX movio 'candle' a /business pero dejo 'books' SOLO en /public, y /business da
+    60018 a 'books' (verificado en caliente, Tanda V). No se puede multiplexar el libro
+    sobre
+    la conexion de velas/trades: el propio exchange lo separa. La 2a conexion es de
+    PLENO DERECHO (mismo lector, reconexion, re-semilla, integridad seqId/prevSeqId y
+    excepciones keepalive/mantenimiento) y tiene su PROPIO ConnectionPlanner. Sockets
+    SEPARADOS => fault isolation: un fallo del carril de libro no tumba velas/trades, ni
+    al reves. Sigue siendo b-i: MISMO proceso y MISMO rol; solo cambia el socket, que lo
+    obliga OKX.
     """
 
     def __init__(self, config: OkxConfig | None = None) -> None:
         self._config = config or OkxConfig()
+        # DOS PLANIFICADORES, uno por carril (cond.5): /business (velas/trades) y books
+        # (books). Cada uno reparte SUS suscripciones con su propio tope (<=200/conn,
+        # margen bajo el 240 de OKX). Que sean instancias distintas evita que la demanda
+        # de un carril compute contra la capacidad del otro.
         self._planner = ConnectionPlanner(self._config.limits)
+        self._planner_books = ConnectionPlanner(self._config.limits)
         self._deseados: dict[str, MarketStreamKey] = {}
         self._cola: queue.Queue[RawCandle] = queue.Queue(maxsize=self._config.max_queue)
         # Cola SEPARADA para los trades, con el mismo tope y el mismo backpressure
@@ -197,13 +230,25 @@ class OkxSpotConnector:
         self._cola_trades: queue.Queue[RawTrade] = queue.Queue(
             maxsize=self._config.max_queue
         )
+        # Cola SEPARADA del libro y almacen de la ULTIMA foto por stream. En OKX la
+        # semilla llega por el WS (primer action=snapshot), no por REST: el lector
+        # la guarda aqui y seed() la sirve. Bajo lock: el lector escribe, el motor lee.
+        self._cola_orderbook: queue.Queue[RawOrderbookDelta] = queue.Queue(
+            maxsize=self._config.max_queue
+        )
+        self._seeds: dict[str, RawOrderbookSeed] = {}
+        self._seeds_lock = threading.Lock()
         self._lectores: dict[int, threading.Thread] = {}
+        # Carril del LIBRO: sus propios lectores y conexiones (/public), con indice
+        # PROPIO (no colisiona con el de /business porque son dicts distintos).
+        self._lectores_books: dict[int, threading.Thread] = {}
         self._parar = threading.Event()
         self._ssl = ssl.create_default_context()  # verificacion ON. No se toca.
         self.metrics = ConnectorMetrics()
         self._reconnected: set[str] = set()
         self._reconnected_lock = threading.Lock()
         self._conexiones: dict[int, Any] = {}
+        self._conexiones_books: dict[int, Any] = {}
 
     # -- MarketDataSourcePort ------------------------------------------------
 
@@ -429,6 +474,41 @@ class OkxSpotConnector:
                 self.metrics.translation_errors += 1
         return trades
 
+    # -- OrderbookDataSourcePort ---------------------------------------------
+    #
+    # open/close/active/drain_reconnected los comparte con velas y trades.
+
+    def poll_deltas(self, timeout_ms: int) -> Sequence[RawOrderbookDelta]:
+        """DRENA la cola del libro. Espejo de poll()/poll_trades(): PULL con tope."""
+        lote: list[RawOrderbookDelta] = []
+        try:
+            lote.append(self._cola_orderbook.get(timeout=timeout_ms / 1000.0))
+        except queue.Empty:
+            return lote
+        while True:
+            try:
+                lote.append(self._cola_orderbook.get_nowait())
+            except queue.Empty:
+                break
+        return lote
+
+    def seed(self, key: MarketStreamKey) -> RawOrderbookSeed:
+        """La FOTO de partida: la ULTIMA action=snapshot que el WS dio del stream.
+
+        A DIFERENCIA de Binance (REST), OKX manda la foto por el MISMO canal 'books'
+        como primer mensaje (action=snapshot); el lector la guardo. Si aun no llego
+        (recien suscrito), se LANZA y el motor reintenta -- no inventa un
+        libro vacio. Un re-snapshot posterior (reconexion) actualiza la foto y
+        marca el stream como reconectado para que el motor re-siembre.
+        """
+        clave = key.as_stream_key()
+        with self._seeds_lock:
+            raw = self._seeds.get(clave)
+        if raw is None:
+            msg = f"aun no llego la foto (action=snapshot) del libro de {clave!r}."
+            raise OkxTranslationError(msg)
+        return raw
+
     def drain_reconnected(self) -> AbstractSet[str]:
         """Devuelve (y limpia) las claves canonicas que reconectaron. Bajo lock."""
         with self._reconnected_lock:
@@ -439,9 +519,15 @@ class OkxSpotConnector:
     # -- Operacion / validacion en caliente ----------------------------------
 
     def force_reconnect_all(self) -> int:
-        """Cierra las conexiones vivas para FORZAR reconexion. Devuelve cuantas."""
+        """Cierra TODAS las conexiones vivas (ambos carriles) para FORZAR reconexion.
+
+        Incluye /business (velas+trades) y /public (books): cada lector se reconecta y,
+        si tenia estado (velas/trades) o libro, se re-bootstrapea/re-siembra por su
+        propio camino (drain_reconnected). Devuelve cuantas cerro.
+        """
         cerradas = 0
-        for conexion in list(self._conexiones.values()):
+        conexiones = [*self._conexiones.values(), *self._conexiones_books.values()]
+        for conexion in conexiones:
             try:
                 conexion.close()
             except Exception:  # noqa: BLE001 - cerrar es best-effort; no debe lanzar.
@@ -466,40 +552,87 @@ class OkxSpotConnector:
         """
         if key.data_kind is MarketDataKind.CANDLES:
             return key.timeframe is not None
-        return key.data_kind is MarketDataKind.TRADES
+        return key.data_kind in (MarketDataKind.TRADES, MarketDataKind.ORDERBOOK)
+
+    def _es_books(self, key: MarketStreamKey) -> bool:
+        """Carril /public: SOLO el libro (OKX no sirve 'books' en /business)."""
+        return key.data_kind is MarketDataKind.ORDERBOOK
+
+    def _es_business(self, key: MarketStreamKey) -> bool:
+        """Carril /business: lo suscribible que NO es libro (velas y trades)."""
+        return self._es_suscribible(key) and not self._es_books(key)
 
     def _replanificar(self) -> None:
-        claves = {
+        """Reparte la demanda en DOS carriles y arranca los lectores de cada uno.
+
+        /business (velas + trades) y /public (books) son SOCKETS SEPARADOS con planner
+        propio: OKX solo sirve 'books' en /public. Que el libro tenga carril NO cambia
+        el de velas/trades, que sigue exactamente igual (fault isolation, cond.3).
+        """
+        business = {
             key.as_stream_key()
             for key in self._deseados.values()
-            if self._es_suscribible(key)
+            if self._es_business(key)
         }
-        plan = self._planner.assign(claves)
+        books = {
+            key.as_stream_key()
+            for key in self._deseados.values()
+            if self._es_books(key)
+        }
+        self._arrancar_lectores(
+            self._planner.assign(business), _WS_BASE, self._lectores, self._conexiones
+        )
+        self._arrancar_lectores(
+            self._planner_books.assign(books),
+            _WS_BASE_PUBLIC,
+            self._lectores_books,
+            self._conexiones_books,
+        )
+
+    def _arrancar_lectores(
+        self,
+        plan: Mapping[int, list[str]],
+        endpoint: str,
+        lectores: dict[int, threading.Thread],
+        conexiones: dict[int, Any],
+    ) -> None:
+        """Arranca (o revive) un lector por conexion del plan, contra su endpoint."""
         for indice, stream_keys in plan.items():
-            if indice not in self._lectores or not self._lectores[indice].is_alive():
+            if indice not in lectores or not lectores[indice].is_alive():
                 keys = tuple(
                     self._deseados[sk] for sk in stream_keys if sk in self._deseados
                 )
                 hilo = threading.Thread(
                     target=self._leer,
-                    args=(indice, keys),
-                    name=f"okx-reader-{indice}",
+                    args=(indice, keys, endpoint, conexiones),
+                    name=f"okx-reader-{endpoint.rsplit('/', 1)[-1]}-{indice}",
                     daemon=True,
                 )
-                self._lectores[indice] = hilo
+                lectores[indice] = hilo
                 hilo.start()
 
-    def _leer(self, indice: int, keys: tuple[MarketStreamKey, ...]) -> None:
-        """Lector de UNA conexion: suscribe al conectar y reconecta con backoff."""
+    def _leer(
+        self,
+        indice: int,
+        keys: tuple[MarketStreamKey, ...],
+        endpoint: str,
+        conexiones: dict[int, Any],
+    ) -> None:
+        """Lector de UNA conexion (de su ENDPOINT): suscribe al conectar y reconecta con
+        backoff. El endpoint y el registro de conexiones vivas los da el llamador: el
+        MISMO lector sirve /business y /public. La re-suscripcion, la reconexion, la
+        re-semilla (via _registrar_reconexion + drain_reconnected) y el ping son iguales
+        en los dos carriles: la 2a conexion es de PLENO DERECHO, no fire-and-forget.
+        """
         espera = self._config.backoff_initial_s
         ya_conecto = False
         args = [self._sub_arg(k) for k in keys if self._es_suscribible(k)]
         while not self._parar.is_set():
             try:
                 with ws_client.connect(
-                    _WS_BASE, ssl=self._ssl, user_agent_header=_USER_AGENT
+                    endpoint, ssl=self._ssl, user_agent_header=_USER_AGENT
                 ) as conexion:
-                    self._conexiones[indice] = conexion
+                    conexiones[indice] = conexion
                     try:
                         espera = self._config.backoff_initial_s
                         self._suscribir(conexion, args)
@@ -508,9 +641,9 @@ class OkxSpotConnector:
                         ya_conecto = True
                         self._bucle_recv(conexion)
                     finally:
-                        self._conexiones.pop(indice, None)
+                        conexiones.pop(indice, None)
             except Exception:  # noqa: BLE001 - un lector NO puede matar el proceso.
-                self._conexiones.pop(indice, None)
+                conexiones.pop(indice, None)
                 jitter = self._jitter()
                 self._parar.wait(
                     timeout=min(espera + jitter, self._config.backoff_max_s)
@@ -545,6 +678,8 @@ class OkxSpotConnector:
         """
         if key.data_kind is MarketDataKind.TRADES:
             return {"channel": to_trade_channel(), "instId": to_native(key.symbol)}
+        if key.data_kind is MarketDataKind.ORDERBOOK:
+            return {"channel": to_orderbook_channel(), "instId": to_native(key.symbol)}
         assert key.timeframe is not None
         return {
             "channel": to_channel(key.timeframe.value),
@@ -581,6 +716,9 @@ class OkxSpotConnector:
         channel = str(arg.get("channel", ""))
         if is_trade_channel(channel):
             self._encolar_trades(arg, datos)
+            return
+        if is_orderbook_channel(channel):
+            self._encolar_orderbook(arg, sobre, datos)
             return
         if not channel.startswith("candle"):
             return
@@ -625,6 +763,61 @@ class OkxSpotConnector:
                 # BACKPRESSURE OBSERVABLE, con su contador propio (ConnectorMetrics).
                 self.metrics.dropped_full_queue_trades += 1
                 self.metrics.degraded_streams.add(canonico)
+
+    def _encolar_orderbook(
+        self, arg: dict[str, Any], sobre: dict[str, Any], datos: list[Any]
+    ) -> None:
+        """Un mensaje de 'books' -> foto (action=snapshot) o delta (action=update).
+
+        La foto se GUARDA para seed(); el delta va a la cola. El 'action' los
+        distingue, no el canal. data[0] es el libro (OKX envia UN libro por mensaje).
+        """
+        try:
+            canonico = to_native(str(arg.get("instId", "")))
+        except SymbolTranslationError:
+            self.metrics.translation_errors += 1
+            return
+        if not datos:
+            return
+        book = datos[0]
+        action = str(sobre.get("action", ""))
+        if action == "snapshot":
+            try:
+                semilla = raw_orderbook_seed_from_okx(book, canonico, _MARKET_TYPE)
+            except OkxTranslationError:
+                self.metrics.translation_errors += 1
+                return
+            self._guardar_semilla(canonico, semilla)
+            return
+        if action != "update":
+            return
+        try:
+            delta = raw_orderbook_delta_from_okx(book, canonico, _MARKET_TYPE)
+        except OkxTranslationError:
+            self.metrics.translation_errors += 1
+            return
+        try:
+            self._cola_orderbook.put_nowait(delta)
+        except queue.Full:
+            self.metrics.dropped_full_queue_orderbook += 1
+            self.metrics.degraded_streams.add(canonico)
+
+    def _guardar_semilla(self, canonico: str, semilla: RawOrderbookSeed) -> None:
+        """Guarda la ULTIMA foto de un stream. Si ya habia una (re-snapshot), marca el
+        stream como reconectado para que el motor la re-siembre.
+        """
+        clave = MarketStreamKey(
+            exchange="okx",
+            market_type=MarketType.SPOT,
+            symbol=canonico,
+            data_kind=MarketDataKind.ORDERBOOK,
+        ).as_stream_key()
+        with self._seeds_lock:
+            es_reset = clave in self._seeds
+            self._seeds[clave] = semilla
+        if es_reset:
+            with self._reconnected_lock:
+                self._reconnected.add(clave)
 
     def _registrar_reconexion(self, keys: tuple[MarketStreamKey, ...]) -> None:
         """Cuenta una reconexion EXITOSA y marca sus claves para el bootstrap.

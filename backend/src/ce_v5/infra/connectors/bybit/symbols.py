@@ -25,6 +25,12 @@ _BYBIT_TO_TIMEFRAME: dict[str, str] = {
     codigo: tf for tf, codigo in _TIMEFRAME_TO_BYBIT.items()
 }
 
+# Profundidad por defecto del topic de LIBRO L2 de Bybit (fuente fijada por Central/
+# I-02-V): orderbook.200 (push cada 100 ms). Coherente con el K por defecto del snapshot
+# (25-50) y mas ligero que orderbook.50 (20 ms); parametrizable si la medicion del
+# paso 8 (cond.6) lo pide.
+_DEFAULT_ORDERBOOK_DEPTH = 200
+
 
 class SymbolTranslationError(ValueError):
     """El simbolo no tiene la forma canonica BASE-QUOTE."""
@@ -66,6 +72,18 @@ def to_trade_topic(canonical: str) -> str:
     vuelta a canonico se CONSULTA al catalogo (set_symbol_map), no se calcula.
     """
     return f"publicTrade.{to_native(canonical)}"
+
+
+def to_orderbook_topic(canonical: str, depth: int = _DEFAULT_ORDERBOOK_DEPTH) -> str:
+    """Topic de suscripcion del LIBRO L2: 'BTC-USDT' -> 'orderbook.200.BTCUSDT'.
+
+    depth es la profundidad del stream de Bybit (por defecto 200, fuente fijada por
+    Central); parametrizable porque su tasa entra en la medicion del paso 8 (cond.6). El
+    native (BTCUSDT) es el mismo que en velas/trades: Bybit pega el simbolo y la vuelta
+    a canonico se CONSULTA al catalogo (set_symbol_map), no se calcula. type=snapshot ->
+    semilla y type=delta -> delta los distingue el propio mensaje, no el topic.
+    """
+    return f"orderbook.{depth}.{to_native(canonical)}"
 
 
 def timeframe_from_interval(interval: str) -> str:

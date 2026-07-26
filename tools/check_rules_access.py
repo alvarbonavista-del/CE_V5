@@ -125,9 +125,21 @@ MARKET_TABLES_FORBIDDEN: tuple[str, ...] = (
     "market_subscription_intent",
 )
 
+# El LIBRO L2 (P07c). NO va en MARKET_TABLES_FORBIDDEN a proposito: P08c consumira el
+# frontier del libro y podria necesitar LECTURA, decision que no es de esta tanda. Lo
+# que si es innegociable YA es la ESCRITURA: el motor de reglas no ingiere mercado, y un
+# snapshot del libro fabricado por el motor alimentaria sus propias reglas de orderflow.
+# Van en MARKET_TABLES, que es el conjunto de "no escribir".
+MARKET_ORDERBOOK_TABLES: tuple[str, ...] = (
+    "market_orderbook_snapshot",
+    "market_orderbook_discontinuity",
+)
+
 # Tablas de mercado sobre las que el motor NO puede ESCRIBIR (market_candle incluida:
 # el historico es append-only tambien para el motor).
-MARKET_TABLES: tuple[str, ...] = (MARKET_CANDLE_TABLE,) + MARKET_TABLES_FORBIDDEN
+MARKET_TABLES: tuple[str, ...] = (
+    (MARKET_CANDLE_TABLE,) + MARKET_TABLES_FORBIDDEN + MARKET_ORDERBOOK_TABLES
+)
 IDENTITY_TABLES: tuple[str, ...] = ("app_user", "user_credential", "user_session")
 POLICY_TABLES: tuple[str, ...] = (
     "policy_version",

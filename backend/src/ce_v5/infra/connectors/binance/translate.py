@@ -17,7 +17,14 @@ from __future__ import annotations
 
 from typing import Any
 
-from source.families.market import RawCandle, RawTrade, Timeframe
+from source.families.market import (
+    RawCandle,
+    RawOrderbookDelta,
+    RawOrderbookLevel,
+    RawOrderbookSeed,
+    RawTrade,
+    Timeframe,
+)
 
 # Los intervalos de Binance coinciden en texto con los canonicos, pero eso es una
 # COINCIDENCIA, no un contrato: se valida contra el vocabulario cerrado. Binance sirve
@@ -135,4 +142,87 @@ def raw_trade_from_binance(
         event_time_ms=int(_requerido(msg, "T", "el mensaje")),
         # El trade id de Binance es monotono por simbolo: sirve de secuencia de origen.
         source_sequence=int(trade_id),
+    )
+
+
+def _entero(valor: object, campo: str, contexto: str) -> int:
+    """Un campo de SECUENCIA a entero, o error de traduccion (no un libro a medias).
+
+    Las secuencias de Binance (lastUpdateId, U, u) son enteros por contrato; si llega
+    algo que no lo es, el mensaje esta malformado y se rechaza aqui, no se construye un
+    libro con una secuencia inventada.
+    """
+    try:
+        return int(str(valor))
+    except (TypeError, ValueError) as exc:
+        msg = f"campo {campo!r} de {contexto} no es un entero: {valor!r}."
+        raise BinanceTranslationError(msg) from exc
+
+
+def _niveles(arr: object, lado: str, contexto: str) -> tuple[RawOrderbookLevel, ...]:
+    """Un array de niveles [precio, cantidad] -> tupla de (precio, cantidad) EN TEXTO.
+
+    SOLO traduce forma: copia precio y cantidad TAL CUAL, como texto (nunca float). Una
+    cantidad 0 se conserva -- el motor la interpreta como BORRAR el nivel --; que sea un
+    numero valido lo decide la frontera de confianza, no este traductor. Un nivel que no
+    es [precio, cantidad] es un mensaje malformado: se rechaza, no se traduce a medias.
+    """
+    if not isinstance(arr, (list, tuple)):
+        msg = f"{lado} de {contexto} no es un array: {type(arr)!r}."
+        raise BinanceTranslationError(msg)
+    niveles: list[RawOrderbookLevel] = []
+    for nivel in arr:
+        if not isinstance(nivel, (list, tuple)) or len(nivel) < 2:
+            msg = (
+                f"nivel de {lado} malformado en {contexto}: {nivel!r} "
+                "(se espera [precio, cantidad])."
+            )
+            raise BinanceTranslationError(msg)
+        niveles.append((str(nivel[0]), str(nivel[1])))
+    return tuple(niveles)
+
+
+def raw_orderbook_seed_from_binance(
+    msg: dict[str, Any], canonical_symbol: str, market_type: str
+) -> RawOrderbookSeed:
+    """La foto REST /api/v3/depth de Binance -> RawOrderbookSeed (CRUDO, sin validar).
+
+    Forma: {"lastUpdateId": <int>, "bids": [[precio, cantidad], ...], "asks": [...]}.
+    lastUpdateId es la SECUENCIA BASE contra la que el motor encadena los deltas (su U
+    del primer delta debe ser lastUpdateId+1). canonical_symbol lo resuelve el LLAMADOR
+    desde el catalogo: de 'BTCUSDT' no se puede deducir donde parte.
+    """
+    return RawOrderbookSeed(
+        exchange="binance",
+        market_type=market_type,
+        symbol=canonical_symbol,
+        bids=_niveles(_requerido(msg, "bids", "el snapshot"), "bids", "el snapshot"),
+        asks=_niveles(_requerido(msg, "asks", "el snapshot"), "asks", "el snapshot"),
+        base_sequence=_entero(
+            _requerido(msg, "lastUpdateId", "el snapshot"),
+            "lastUpdateId",
+            "el snapshot",
+        ),
+    )
+
+
+def raw_orderbook_delta_from_binance(
+    msg: dict[str, Any], canonical_symbol: str, market_type: str
+) -> RawOrderbookDelta:
+    """Un depthUpdate WS de Binance -> RawOrderbookDelta (CRUDO, sin validar).
+
+    Forma: {"e":"depthUpdate","E":..,"s":..,"U":<first_update_id>,"u":<final_update_id>,
+    "b":[[precio,cantidad],..],"a":[..]}. U y u son las secuencias SIN INTERPRETAR que
+    el motor usa para la continuidad (U == u_previo+1) y para descartar deltas viejos (u
+    <= lastUpdateId de la semilla). Una cantidad 0 = borrar el nivel (lo aplica el
+    motor). canonical_symbol lo resuelve el LLAMADOR desde el catalogo.
+    """
+    return RawOrderbookDelta(
+        exchange="binance",
+        market_type=market_type,
+        symbol=canonical_symbol,
+        bids=_niveles(_requerido(msg, "b", "el delta"), "bids", "el delta"),
+        asks=_niveles(_requerido(msg, "a", "el delta"), "asks", "el delta"),
+        first_update_id=_entero(_requerido(msg, "U", "el delta"), "U", "el delta"),
+        final_update_id=_entero(_requerido(msg, "u", "el delta"), "u", "el delta"),
     )

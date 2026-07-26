@@ -53,16 +53,19 @@ class MarketDataKind(StrEnum):
     CANDLES es un flujo publico del exchange. TRADES es el flujo publico de
     operaciones individuales que P07b suscribe. FOOTPRINT es la clase DERIVADA
     (no un flujo del exchange): el footprint por barra que P07b agrega de los
-    trades. Orderbook (P07c) y ticker entraran cuando exista quien los produzca
-    y consuma; declararlos hoy seria vocabulario muerto. Todos los reservo
-    ADR-014 ("timeframe para candles, depth/channel para orderbook, tipo para
-    trades/ticker"): anadirlos es la extension ADITIVA prevista, no un cambio
-    estructural de MarketStreamKey.
+    trades. ORDERBOOK (P07c) es el flujo publico del libro L2 con estado, que ya
+    tiene quien lo produzca (los conectores) y lo consuma (el motor del libro).
+    Ticker entrara cuando exista quien lo produzca y consuma; declararlo hoy
+    seria vocabulario muerto. Todos los reservo ADR-014 ("timeframe para candles,
+    depth/channel para orderbook, tipo para trades/ticker"): ANADIR un miembro al
+    enum es la extension ADITIVA prevista (enum que crece = compatible 7.7), no un
+    cambio estructural de MarketStreamKey.
     """
 
     CANDLES = "candles"
     TRADES = "trades"
     FOOTPRINT = "footprint"
+    ORDERBOOK = "orderbook"
 
 
 class MarketType(StrEnum):
@@ -150,9 +153,10 @@ class MarketStreamKey(BaseModel):
 
     @model_validator(mode="after")
     def _granularidad_aplicable(self) -> "MarketStreamKey":
-        # candles y footprint van bucketeados por barra: exigen timeframe. El
-        # flujo de trades es continuo (no se bucketea a nivel de stream): lo
-        # prohibe. Asi la clave de cada clase de dato es inequivoca (ADR-014).
+        # candles y footprint van bucketeados por barra: exigen timeframe. trades
+        # y orderbook NO se bucketean por timeframe a nivel de stream: el flujo de
+        # trades es continuo y el del libro se granula por depth/channel (ADR-014),
+        # no por intervalo. Asi la clave de cada clase de dato es inequivoca.
         needs_timeframe = self.data_kind in (
             MarketDataKind.CANDLES,
             MarketDataKind.FOOTPRINT,
@@ -160,10 +164,15 @@ class MarketStreamKey(BaseModel):
         if needs_timeframe and self.timeframe is None:
             msg = f"data_kind={self.data_kind.value} exige timeframe (ADR-014)."
             raise ValueError(msg)
-        if self.data_kind is MarketDataKind.TRADES and self.timeframe is not None:
+        forbids_timeframe = self.data_kind in (
+            MarketDataKind.TRADES,
+            MarketDataKind.ORDERBOOK,
+        )
+        if forbids_timeframe and self.timeframe is not None:
             msg = (
-                "data_kind=trades no admite timeframe: el flujo de trades no se "
-                "bucketea a nivel de stream (el footprint si, ADR-014)."
+                f"data_kind={self.data_kind.value} no admite timeframe: ni el flujo "
+                "de trades ni el del libro se bucketean a nivel de stream (el "
+                "footprint si, ADR-014)."
             )
             raise ValueError(msg)
         return self
@@ -553,6 +562,79 @@ class RawTrade:
     # el mensaje del exchange (Binance 'T', Bybit 'T', OKX 'ts').
     event_time_ms: int
     source_sequence: int | None = None
+
+
+# Un nivel del libro TAL COMO LLEGA: [precio, tamano] como TEXTO, en el mismo orden y
+# forma en que lo publican los exchanges (Binance ["104.25","0.13"], OKX y Bybit igual).
+# Nunca float: un float binario no representa 0.1 exacto, y el libro es la base del
+# precio de ejecucion (M5). El tamano 0 tiene un significado propio en un DELTA --
+# BORRAR el nivel -- que la normalizacion interpreta; en una FOTO no deberia aparecer.
+RawOrderbookLevel = tuple[str, str]
+
+
+@dataclass(frozen=True, slots=True)
+class RawOrderbookSeed:
+    """La FOTO COMPLETA del libro L2 TAL COMO LLEGA del exchange: NEUTRAL y NO VALIDADA.
+
+    Hermana de RawTrade para la familia orderbook (P07c). La produce infra (el conector
+    que pide el snapshot REST/WS del exchange) y la consume platform (el motor del
+    libro, su unica frontera de confianza); por eso vive aqui y es dataclass, no un
+    modelo Pydantic (validar aqui daria la falsa impresion de que el dato ya es de
+    fiar).
+
+    A DIFERENCIA de un trade -- un hecho unico, conmutativo y sin estado -- una foto es
+    el PUNTO DE PARTIDA de un libro CON ESTADO y ORDER-DEPENDIENTE: los deltas
+    posteriores se encadenan a ella por numero de secuencia. Por eso trae la SECUENCIA
+    BASE del snapshot, que es el ancla del encadenamiento: Binance la publica como
+    lastUpdateId; OKX y Bybit como el seq del propio snapshot. El conector la traduce a
+    este entero comun; NO la interpreta (que sea contigua con los deltas lo decide el
+    motor, no el conector).
+    """
+
+    exchange: str
+    market_type: str
+    symbol: str  # CANONICO ya (BTC-USDT): el adaptador ya tradujo el nativo.
+    bids: Sequence[RawOrderbookLevel]  # [precio, tamano] como TEXTO; lado comprador.
+    asks: Sequence[RawOrderbookLevel]  # [precio, tamano] como TEXTO; lado vendedor.
+    base_sequence: int  # Binance lastUpdateId; OKX/Bybit seq del snapshot.
+
+
+@dataclass(frozen=True, slots=True)
+class RawOrderbookDelta:
+    """Un CAMBIO INCREMENTAL del libro L2 TAL COMO LLEGA del exchange: NO VALIDADO.
+
+    Hermana de RawOrderbookSeed: la produce infra y la consume el motor del libro. Trae
+    SOLO los niveles que cambian [precio, tamano]; un tamano 0 no es un nivel a precio
+    cero, es la orden de BORRAR ese nivel del libro (asi publican los exchanges el
+    vaciado de un nivel), y esa semantica la aplica la normalizacion del motor.
+
+    Las SECUENCIAS VIAJAN SIN INTERPRETAR, cada exchange rellena SOLO las suyas, porque
+    cada uno encadena distinto y la continuidad la decide el motor, no el conector:
+    - Binance: first_update_id (U) y final_update_id (u) por evento;
+    - OKX: seq_id y prev_seq_id (el prev encadena con el seq del mensaje anterior);
+    - Bybit: update_id (u) y seq; un u==1 es un RESET (el exchange reinicio la secuencia
+      y manda una foto nueva), que is_snapshot tambien marca de forma explicita.
+
+    is_snapshot distingue una FOTO reenviada por el socket (Bybit manda snapshots ademas
+    de deltas) de un delta normal: cuando esta puesto, el mensaje reconstruye el libro
+    en vez de encadenarse. Los campos de secuencia ausentes van a None: cada exchange
+    trae los suyos y no los del vecino.
+    """
+
+    exchange: str
+    market_type: str
+    symbol: str  # CANONICO ya (BTC-USDT): el adaptador ya tradujo el nativo.
+    bids: Sequence[RawOrderbookLevel]  # niveles del lado comprador a actualizar.
+    asks: Sequence[RawOrderbookLevel]  # niveles del lado vendedor a actualizar.
+    # Secuencias SIN INTERPRETAR. Cada exchange rellena las suyas; el resto queda a
+    # None.
+    first_update_id: int | None = None  # Binance U.
+    final_update_id: int | None = None  # Binance u.
+    seq_id: int | None = None  # OKX seqId.
+    prev_seq_id: int | None = None  # OKX prevSeqId.
+    update_id: int | None = None  # Bybit u (==1 -> reset/snapshot).
+    seq: int | None = None  # Bybit seq (secuencia cruzada, se conserva sin usar).
+    is_snapshot: bool = False  # el mensaje es una FOTO, no un delta encadenado.
 
 
 @dataclass(frozen=True, slots=True)

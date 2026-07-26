@@ -3,14 +3,16 @@
 Archivo vivo (sin logica). Mantenido por Claude Code; Alvaro lo resube
 al knowledge al cerrar cada pieza o hito (DOC_ENTREGABLES sec.8).
 
-Ultima actualizacion: 2026-07-23 (P07b ENTREGADA: trades + footprint, cierre formal Central+CSA; M3 SIGUE ABIERTO: faltan P07c, P08b, P08c, P09a).
+Ultima actualizacion: 2026-07-26 (P07c ENTREGADA: orderbook L2 con estado, cierre formal
+Central+CSA firmado por Alvaro; HEAD 8869ec9, PR #3 mergeado a main. M3 SIGUE ABIERTO:
+faltan P08b, P08c, P09a).
 
 | Hito | Definicion breve (DOC_ROADMAP sec.4) | Piezas | Estado |
 |------|--------------------------------------|--------|--------|
 | M0 | Repo creado + CI de guardarrailes en verde (base estructural) | P00 | CERRADO |
 | M1 | Un evento viaja de punta a punta con envelope, idempotencia y Clock sobre el bus externo, con outbox transaccional; reinicio sin perdida | P01, P02, P02b, P03 | CERRADO |
 | M2 | Un Componente se descubre por carpeta, aislado por tenant/RLS, con capacidades por el gate fail-closed; API/auth/realtime en pie; kill switch en caliente | P04, P05, P06, P06b | CERRADO |
-| M3 | Una Rule dispara sobre datos reales y proyecta signal.*/alert.*; el router backend entrega por un canal no-PWA/mock (sin overlay, sin ejecucion) | P07, P07b, P07c, P08, P08b, P08c, P09a | ABIERTO (3 de 7: P07, P07b y P08 ENTREGADAS; faltan P07c, P08b, P08c y P09a; EXPANDIDO por EXP-M3-01) |
+| M3 | Una Rule dispara sobre datos reales y proyecta signal.*/alert.*; el router backend entrega por un canal no-PWA/mock (sin overlay, sin ejecucion) | P07, P07b, P07c, P08, P08b, P08c, P09a | ABIERTO (4 de 7: P07, P07b, P07c y P08 ENTREGADAS; faltan P08b, P08c y P09a; EXPANDIDO por EXP-M3-01) |
 | M4 | PWA instalable con dashboard, chart y overlays de signal.* en movil real; push PWA; geo-blocking corta ejecucion, no visualizacion | P12a, P12b, P13, P09b | PENDIENTE |
 | M5 | Ejecucion gateada: bloqueo UE/EEA/UK, orden manual BYOC, autotrade BYOC, reconciliacion | P10a, P10b, P11 | PENDIENTE |
 
@@ -200,6 +202,36 @@ se escribio y se conserva sin tocar; queda DEROGADA hacia delante (regla
   backend-integration y se anadieron 37 tests de integracion (frontera 5.20 con negativos
   bidireccionales rechazados por el MOTOR, y el ciclo-nucleo atomico).
   M3: 3 de 7; SIGUE ABIERTO (faltan P07c, P08b, P08c y P09a).
+- P07c - Orderbook L2 con estado (ADR-014): ENTREGADA 2026-07-26 (4 de 7 de M3). NO cierra
+  M3: tras ella quedan P08b, P08c y P09a. Cierre formal con doble revision Central+CSA,
+  firmado por Alvaro 2026-07-26. HEAD 8869ec9, PR #3 mergeado a main. Actions run
+  30195904966, 3/3 success sobre el HEAD; ci_local 24/24; 1587+319 tests, cero
+  skips/xfail.
+  Demostracion: motor del libro CON ESTADO y ORDER-DEPENDIENTE por exchange (puente
+  U<=lastUpdateId+1<=u en Binance, tras la primera foto; prevSeqId estricto en OKX con sus
+  dos excepciones -keepalive y mantenimiento- que NO son hueco; reset u==1 en Bybit).
+  Snapshots top-K observacionales en dos variantes (frontier publicado por outbox,
+  sample persistido sin publicar), frontera por RELOJ DE BARRA keyed a open_time,
+  is_complete FAIL-SAFE identico al footprint (un hueco en la ventana marca la barra
+  incompleta aunque el libro ya se recuperase). El resync es su PROPIO hecho publicado
+  (market.orderbook_resynced), no una correccion. Topologia b-i: 2a conexion OKX a
+  /ws/v5/public para el libro, mismo proceso/rol ce_v5_ingestion (correccion de
+  trazabilidad: "cero sockets nuevos" era cierto para Binance/Bybit, erroneo para OKX).
+  GATES DE CIERRE (dictamen Central G2, dos rondas de remediacion): G1 reglas 5.31
+  (bateria de CI por Claude Code con salida cruda), 5.32 (validacion en caliente por
+  tandas) y 5.33 (nivel/modelo como criterio de agrupacion de tandas, extiende 5.23)
+  registradas y firmadas. G2 cache_key_schema OBSERVACIONAL (ADR-008) construido y
+  un-diferido (anula la nota "diferido a v5.1" de f3870d0): 10 dimensiones explicitas
+  -exchange, symbol, market_type, data_family, depth_k, cadence_ms, timeframe,
+  frontier_time_anchor, formula_version, clock_source-, con un test de mutacion que
+  MUERDE por dimension, y mapeo de los 27 requisitos de la seccion 12 del CSA en
+  docs/MAPEO_TESTS_P07c_SECCION12_CSA.md. Red de seguridad anadida (decision de Alvaro):
+  los hosts data-*.binance.vision (fix ee21f0f) quedan CLAVADOS en frio contra un revert
+  accidental al host geobloqueado.
+  Diferido registrado (5.11): libro profundo completo y delta-log crudo NO persistidos,
+  a v5.1 -disparador de revision si el market data empezara a fluir a produccion antes-.
+  Ver REGISTRO_DECISIONES seccion 29.
+  M3: 4 de 7; SIGUE ABIERTO (faltan P08b, P08c y P09a).
 
 ## Nota EXP-M3-01 (2026-07-17): M3 AMPLIADO A PARIDAD FUNCIONAL v4
 M3 queda AMPLIADO a paridad funcional v4. Firmado por Alvaro 2026-07-17, con doble
