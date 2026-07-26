@@ -44,6 +44,9 @@ _DIMENSIONES = (
     "timeframe",
     "frontier_time_anchor",
     "formula_version",
+    # DECIMA dimension, por dictamen de Central (G2/clock_source): una captura por reloj
+    # real y otra por reloj simulado del MISMO as_of son hechos distintos.
+    "clock_source",
 )
 
 
@@ -148,6 +151,7 @@ class TestLasDimensionesDiscriminanDeVerdad:
             ("timeframe", {"timeframe": Timeframe.M15}),
             ("frontier_time_anchor", {"open_time": 1_784_073_600_000 + 3_600_000}),
             ("formula_version", {"formula_version": 2}),
+            ("clock_source", {"clock_source": "simulated"}),
         ],
     )
     def test_cambiar_la_dimension_cambia_la_clave_persistida(

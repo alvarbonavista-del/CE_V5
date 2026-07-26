@@ -1853,3 +1853,49 @@ con nombres de test REALES. LIMITE DECLARADO: el texto integro de la seccion 12 
 consta en el repositorio -- solo los 11 requisitos que la tanda cita --; los 16 restantes
 quedan como PENDIENTE DE TEXTO, NO inventados y NO dados por cubiertos, con el inventario
 completo de la suite (134 tests, 7 ficheros) para emparejarlos en cuanto llegue el texto.
+
+--- ADENDA A LA SECCION 28 (tanda G2-FINAL) -- CIERRE DEL clock_source ---------------
+DICTAMEN DE CENTRAL (G2/clock_source): INCLUIR. clock_source ENTRA en el
+cache_key_schema del snapshot como DECIMA dimension, y Central corrige asi su propia
+lista de nueve. La OBSERVACION ABIERTA que quedo mas arriba en esta seccion -- "queda
+anotado para que Central decida si debe entrar tambien en el schema" -- QUEDA CERRADA
+por este dictamen: no era una pregunta del periferico contra la lista, era una pregunta
+que Central se llevo y ha resuelto. No se edita lo ya escrito (5.14); esto lo cierra
+hacia delante.
+
+ORDEN DICTADO de las diez dimensiones (rawbook.py, ORDERBOOK_SNAPSHOT_CACHE_KEY_SCHEMA):
+  exchange, symbol, market_type, data_family, depth_k, cadence_ms, timeframe,
+  frontier_time_anchor, formula_version, clock_source.
+
+CONSECUENCIA: declaracion y clave persistida coinciden ahora DIMENSION A DIMENSION -- la
+clave ya llevaba el segmento cs{clock_source}; lo que faltaba era declararlo --. La
+lectura que lo resuelve: dos capturas del MISMO as_of por relojes distintos (real vs
+simulado) son HECHOS DISTINTOS, y una fuente que no lo declara podria compartir
+evaluacion entre una captura real y una simulada.
+
+TESTS: los dos sets parametrizados de la declaracion pasan de nueve a DIEZ casos
+(test_la_cache_key_declara_la_dimension[clock_source] y
+test_cambiar_la_dimension_cambia_la_clave_persistida[clock_source]); verificado que
+MUERDEN quitando la dimension del schema. La huella concreta ya existia
+(test_distinto_clock_source_distinta_clave, motor de snapshot) y NO se duplica: se
+referencia en el mapeo.
+
+schema_version: criterio MANTENIDO (no entra). El payload no tiene un schema_version
+propio que pueda variar sin subir formula_version; la version del esquema vive en el
+SOBRE (event_schema_version, registro + ADR-005). La justificacion escrita en el doc de
+mapeo se conserva. Si algun dia el payload gana un schema_version propio, se reabre.
+
+MAPEO COMPLETO (docs/MAPEO_TESTS_P07c_SECCION12_CSA.md): con el texto integro de la
+seccion 12 ya entregado, los 27 requisitos quedan emparejados 1:1 con tests REALES. NO
+QUEDA NINGUN PENDIENTE. Las antiguas TABLA A (11 conocidos) y TABLA B (16 pendientes) se
+funden en una sola tabla. Tres requisitos NO son de test sino de PROCESO y se marcan como
+tales con su artefacto: 24 (check_market_access en el step de Actions, espejado y
+vigilado por la guardia anti-deriva de ci_local), 25 (suites P07/P07b verdes en la misma
+bateria tras el cambio de host .vision) y 27 (5.31/5.32 REGISTRADAS -- verificable,
+commit 7569401 --; FIRMADAS es acto humano de Alvaro y sigue PENDIENTE: no se afirma).
+
+OBSERVACION ANOTADA, NO CERRADA (item 25): los hosts .vision son constantes en
+infra/connectors/binance/connector.py (_WS_BASE, _REST_BASE) y NINGUN test los fija; un
+cambio de host accidental no pondria nada en rojo. No se anade el test porque no es lo
+que el requisito 25 pide (pide que P07/P07b sigan verdes, y lo estan); queda para que
+Central decida si quiere fijarlo en una tanda posterior.

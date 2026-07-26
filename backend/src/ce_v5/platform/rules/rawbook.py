@@ -48,6 +48,14 @@ ORDERBOOK_SNAPSHOT_SOURCE_ID = "market.orderbook_snapshot"
 #   frontier_time_anchor                        -> el as_of (open_time de la barra)
 #   depth_k, cadence_ms, formula_version        -> la CONFIG que hace el recorte
 #                                                  reproducible por procedencia (cond.1)
+#   clock_source                                -> el RELOJ que fecho la captura
+#                                                  ('system' en produccion, 'simulated'
+#                                                  en backtest/tests)
+#
+# clock_source ES LA DECIMA DIMENSION POR DICTAMEN DE CENTRAL (G2/clock_source). Estaba
+# ya en la clave que se persiste (segmento cs{...}) pero no en el schema declarado: dos
+# capturas del MISMO as_of por relojes distintos son HECHOS DISTINTOS, y una fuente que
+# no lo declara podria compartir evaluacion entre una captura real y una simulada.
 #
 # SIN schema_version: el payload del snapshot NO tiene un campo schema_version propio
 # que pueda variar sin subir formula_version. La version del esquema del evento vive en
@@ -64,6 +72,7 @@ ORDERBOOK_SNAPSHOT_CACHE_KEY_SCHEMA: tuple[str, ...] = (
     "timeframe",
     "frontier_time_anchor",
     "formula_version",
+    "clock_source",
 )
 
 
