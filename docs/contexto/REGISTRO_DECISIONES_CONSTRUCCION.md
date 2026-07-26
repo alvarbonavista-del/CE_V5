@@ -279,6 +279,26 @@ produciendo evidencia (5.18: cero validaciones en silencio). El escenario se dis
 que su exito sea OBSERVABLE en la evidencia cruda. UNICO LIMITE: piezas que toquen dinero
 o claves (P10a/P10b) mantienen la ejecucion en caliente por [POWERSHELL] de Alvaro (menor
 privilegio en superficies con riesgo real). Nace de P07c.
+
+5.33 NIVEL DE DIFICULTAD Y MODELO COMO CRITERIO DE AGRUPACION Y SEPARACION DE TANDAS (extiende
+5.23). Cada micropaso se clasifica por su carga cognitiva y su modelo:
+  - ALTO (decidir, disenar, diagnosticar, revisar) -> Opus.
+  - MEDIO (ejecutar una tanda precisa ya dictada, boilerplate desde un spec ya aprobado) ->
+    Sonnet.
+  - BAJO (micro-tareas triviales sueltas que NO tocan la rama de trabajo) -> Haiku.
+Este nivel es un criterio ADICIONAL a las excepciones (a)/(b)/(c) de 5.23:
+  - AGRUPACION: solo se agrupan en una misma tanda micropasos del MISMO nivel/modelo.
+  - SEPARACION: al cambiar el nivel/modelo, cambia la tanda. Una unidad de trabajo que mezcle
+    niveles se PARTE en sub-tandas homogeneas por modelo, cada una etiquetada y corrida en
+    secuencia (respeta 5.25: cada sub-tanda es UN bloque).
+Cada tanda [CLAUDE CODE] lleva en su cabecera la etiqueta [MODELO: X]. El cambio de modelo entre
+sub-tandas lo ejecuta Alvaro con /model (Claude Code NO se auto-cambia desde el texto del
+prompt). El diagnostico emergente -una tanda de ejecucion que falla de forma inesperada- sube a
+Opus de forma reactiva. GUARDARRAIL: la eleccion de modelo es ECONOMIA y jamas rebaja una
+validacion; la salida cruda y Actions siguen siendo los arbitros, sea cual sea el modelo
+(5.31/5.32). No contradice la economia de 5.23: el grueso de la ejecucion sigue agrupado en
+Sonnet; solo se separan los pasos de nivel distinto. Se cita junto a la 5.23 en la seccion de
+redaccion de tandas de todo periferico. Nace de la economia de tokens abordada en P07c.
 =====================================================================
 6. CIERRE DE PIEZA P01 - CONTRATOS BASE Y ENVELOPE
 =====================================================================
