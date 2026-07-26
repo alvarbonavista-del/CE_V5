@@ -1899,3 +1899,14 @@ infra/connectors/binance/connector.py (_WS_BASE, _REST_BASE) y NINGUN test los f
 cambio de host accidental no pondria nada en rojo. No se anade el test porque no es lo
 que el requisito 25 pide (pide que P07/P07b sigan verdes, y lo estan); queda para que
 Central decida si quiere fijarlo en una tanda posterior.
+
+--- ADENDA A LA SECCION 28 (tanda G2-PIN) -- HOSTS .vision CLAVADOS ------------------
+La OBSERVACION que la adenda anterior dejo "ANOTADA, NO CERRADA" -- ningun test fijaba
+_WS_BASE ni _REST_BASE, asi que un revert accidental al host geobloqueado no habria
+puesto nada en rojo y el fallo de ee21f0f solo habria reaparecido en la siguiente
+validacion en caliente -- QUEDA CERRADA por decision de ALVARO (no de Central): se anade
+la red de seguridad en tests/unit/infra/connectors/binance/test_binance_hosts.py, que
+clava los dos hosts EN FRIO y ademas comprueba que ningun dominio geo-restringido se
+cuela. SOLO TEST: connector.py no se toco; el test se limita a leer sus constantes. Un
+cambio de host futuro seguira siendo posible, pero tendra que ser DELIBERADO y aparecer
+en el diff junto al test.

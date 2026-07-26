@@ -69,6 +69,7 @@ donde mantener lo mismo. NO QUEDA NINGUN PENDIENTE.
 | 23 | ... execution | NO HAY TABLAS DE EXECUTION todavia (M5+): el rol nace sin privilegio sobre ellas y no se inventan nombres. Lo que SI se verifica hoy es que el ingestor no puede FABRICAR un execution.* por la outbox: `TestOutboxAcotadaPorElMotor::test_policy_que_menciona_otra_familia_es_violacion` y, contra el motor, `test_el_ingestor_no_puede_fabricar_un_execution_falso` | tests/unit/test_check_market_access.py, tests/integration/test_market_access.py | CUBIERTO (la parte verificable hoy) |
 | 24 | check_market_access corre en Actions. | Step `Market - rol de ingesta y ventanilla agregada (5.20, CA-P07-D/G)` -> `uv run python tools/check_market_access.py`, job `Backend integration (DB + bus + tenancy)`. Espejado en `tools/ci_local.py` (paso 17/24) y vigilado en las DOS direcciones por su guardia anti-deriva (5.30) | .github/workflows/ci.yml, tools/ci_local.py | PROCESO |
 | 25 | P07/P07b siguen verdes tras .vision. | Suites completas de velas (P07) y trades+footprint (P07b) verdes en la misma bateria: tests/unit/platform/market/{test_ingestor,test_normalize,test_trade_ingestor,test_trade_normalize,test_footprint_ingestor,test_footprint_aggregate}.py y tests/integration/{test_market_candles,test_market_store,test_market_trade_store,test_market_footprint,test_footprint_okx_gap_seam,test_worker_ingestion}.py, mas los del conector Binance (tests/unit/infra/connectors/binance/) | ci_local 24/24 verde + run de Actions del HEAD | PROCESO |
+| 25 | ... y el .vision se SOSTIENE: los hosts quedan CLAVADOS por test | `test_el_ws_apunta_al_dominio_de_datos_no_geobloqueado`, `test_el_rest_apunta_al_dominio_de_datos_no_geobloqueado`, `test_ningun_host_geobloqueado_se_cuela` (pin literal de `_WS_BASE` y `_REST_BASE`: un revert accidental al host geobloqueado -- el fallo que arreglo ee21f0f -- se pone rojo en frio, sin esperar a la siguiente validacion en caliente) | tests/unit/infra/connectors/binance/test_binance_hosts.py | ANADIDO |
 | 26 | Validacion caliente cruda referenciada en cierre. | docs/EVIDENCIA_CALIENTE_P07c.md, referenciado desde la seccion 27 del registro ("EVIDENCIA CRUDA EN EL RASTRO (5.32/5.18)") | docs/EVIDENCIA_CALIENTE_P07c.md, docs/contexto/REGISTRO_DECISIONES_CONSTRUCCION.md | PROCESO |
 | 27 | 5.31/5.32 registradas y firmadas. | REGISTRADAS: SI, y es verificable -- seccion 5 del registro, reglas 5.31 y 5.32, commit 7569401. FIRMADAS: acto humano de Alvaro, NO verificable por el periferico; la seccion 27 lo deja explicitamente PENDIENTE ("su FIRMA por Alvaro es acto humano PENDIENTE... se deja constancia de que se USARON, no de que esten firmadas") | docs/contexto/REGISTRO_DECISIONES_CONSTRUCCION.md | PROCESO (registro SI; firma pendiente de Alvaro) |
 
@@ -77,12 +78,14 @@ INSERT/UPDATE/DELETE/TRUNCATE del rol de reglas sobre las dos tablas del libro y
 prohibe la lectura: P08c consumira el frontier y decidir hoy que el motor no puede leerlo
 seria adelantarse a una decision que no es de esta tanda.
 
-NOTA sobre el item 25 (observacion, no hueco del requisito). El requisito pide que P07 y
-P07b sigan VERDES tras el cambio de host, y eso se demuestra con la bateria. Aparte de
-eso: los hosts `.vision` son constantes en `infra/connectors/binance/connector.py`
-(`_WS_BASE`, `_REST_BASE`) y NINGUN test los fija. Un cambio de host accidental no
-pondria nada en rojo. No se anade el test aqui porque no es lo que el requisito 25 pide;
-queda anotado por si Central quiere fijarlo en una tanda posterior.
+NOTA sobre el item 25 -- OBSERVACION CERRADA (tanda G2-PIN). El requisito pide que P07 y
+P07b sigan VERDES tras el cambio de host, y eso se demuestra con la bateria. Se anoto
+ademas que los hosts `.vision` eran dos constantes de
+`infra/connectors/binance/connector.py` (`_WS_BASE`, `_REST_BASE`) que NINGUN test fijaba:
+un revert accidental no habria puesto nada en rojo, y el fallo solo habria reaparecido en
+la siguiente validacion en caliente. POR DECISION DE ALVARO se anade la red de seguridad:
+tests/unit/infra/connectors/binance/test_binance_hosts.py clava los dos hosts en frio.
+connector.py NO se toco: el test se limita a leer sus constantes.
 
 ---
 
