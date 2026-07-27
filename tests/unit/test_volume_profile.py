@@ -1,0 +1,198 @@
+"""Tests de vp.*: declaraciones ADR-008 + nucleo determinista del volume profile (P08c).
+
+Dos bloques. (1) DECLARACIONES: forma ADR-008 de vp.poc/vah/val, bin_count como
+parametro con su default, y el grafo consumes contra market.footprint (completo ->
+valida; sin la base -> fail-loud). (2) NUCLEO: verificacion NUMERICA contra referente
+CALCULADO a mano desde footprint conocido (DEC-VP-INPUT-01: paridad SEMANTICA, no
+numerica contra v4). El volumen-a-precio es dado y el POC/VA/VAH/VAL correcto se
+deriva a mano siguiendo la definicion (bin center, expansion 70%, empate al alza).
+HVN/LVN NO se prueban aqui: llegan tras su AHP.
+"""
+
+from __future__ import annotations
+
+from decimal import Decimal
+
+import pytest
+
+from ce_v5.platform.rules.catalog import DataSourceCatalog, MissingDependencyError
+from ce_v5.platform.rules.rawfootprint import (
+    MARKET_FOOTPRINT_SOURCE_ID,
+    market_footprint_declaration,
+)
+from ce_v5.platform.rules.volume_profile import (
+    VP_POC_SOURCE_ID,
+    VP_VAH_SOURCE_ID,
+    VP_VAL_SOURCE_ID,
+    VolumeProfileError,
+    compute_volume_profile,
+    vp_poc_declaration,
+    vp_vah_declaration,
+    vp_val_declaration,
+)
+from source.datasource import MemoryModel, Servibility, SourceType
+from source.families.footprint import FootprintCell, FootprintClosedPayload
+from source.families.market import MarketType, Timeframe
+from source.rules.scalar import ScalarType
+from source.time import MaturityState
+
+_TF = Timeframe.M1
+_OPEN = 1_784_073_600_000  # alineado a M1 (divisible por 60_000).
+
+
+class TestDeclaraciones:
+    def test_las_tres_salidas_comparten_forma_adr008(self) -> None:
+        for declaration in (
+            vp_poc_declaration(),
+            vp_vah_declaration(),
+            vp_val_declaration(),
+        ):
+            assert declaration.source_type is SourceType.OBSERVABLE
+            assert declaration.servibility is Servibility.CONTINUOUS
+            assert declaration.memory_model is MemoryModel.WINDOWED
+            assert declaration.value_type is ScalarType.DECIMAL
+            assert declaration.consumes == (MARKET_FOOTPRINT_SOURCE_ID,)
+
+    def test_source_ids_distintos_y_esperados(self) -> None:
+        ids = {
+            vp_poc_declaration().source_id,
+            vp_vah_declaration().source_id,
+            vp_val_declaration().source_id,
+        }
+        assert ids == {VP_POC_SOURCE_ID, VP_VAH_SOURCE_ID, VP_VAL_SOURCE_ID}
+        assert len(ids) == 3
+
+    def test_bin_count_es_parametro_con_default_50(self) -> None:
+        # bin_count es PARAMETRO (entra en la cache_key); value_area_pct NO: es
+        # definicion fija, no un tunable.
+        declaration = vp_poc_declaration()
+        params = {param.name: param for param in declaration.params}
+        assert set(params) == {"bin_count"}
+        bin_count = params["bin_count"]
+        assert bin_count.value_type is ScalarType.INTEGER
+        assert bin_count.default is not None
+        assert bin_count.default.integer_value == 50
+        assert "bin_count" in declaration.cache_key_schema
+        assert "market_type" in declaration.cache_key_schema
+
+    def test_dag_completo_valida_con_market_footprint(self) -> None:
+        catalog = DataSourceCatalog()
+        catalog.register(market_footprint_declaration())
+        catalog.register(vp_poc_declaration())
+        catalog.register(vp_vah_declaration())
+        catalog.register(vp_val_declaration())
+        catalog.validate()  # no lanza: grafo completo y aciclico.
+
+    def test_vp_sin_market_footprint_falla_el_dag(self) -> None:
+        # vp.* consume market.footprint: sin registrarla el grafo esta incompleto.
+        catalog = DataSourceCatalog()
+        catalog.register(vp_poc_declaration())
+        with pytest.raises(MissingDependencyError):
+            catalog.validate()
+
+
+def _footprint(
+    levels: list[tuple[str, str, str]],
+    *,
+    exchange: str = "binance",
+    symbol: str = "BTC-USDT",
+    open_time: int = _OPEN,
+) -> FootprintClosedPayload:
+    """Un footprint cerrado valido a partir de (precio, buy, sell) por nivel.
+
+    Ordena las celdas por precio y cuadra los totales de barra, como exige el contrato.
+    Para el volume profile solo cuenta buy+sell por precio; el reparto es libre.
+    """
+    cells = tuple(
+        FootprintCell(
+            price=Decimal(p),
+            buy_volume=Decimal(b),
+            sell_volume=Decimal(s),
+            delta=Decimal(b) - Decimal(s),
+        )
+        for p, b, s in sorted(levels, key=lambda level: Decimal(level[0]))
+    )
+    bar_buy = sum((c.buy_volume for c in cells), Decimal(0))
+    bar_sell = sum((c.sell_volume for c in cells), Decimal(0))
+    return FootprintClosedPayload(
+        exchange=exchange,
+        market_type=MarketType.SPOT,
+        symbol=symbol,
+        timeframe=_TF,
+        open_time=open_time,
+        close_time=open_time + _TF.duration_ms,
+        cells=cells,
+        bar_buy_volume=bar_buy,
+        bar_sell_volume=bar_sell,
+        bar_delta=bar_buy - bar_sell,
+        trade_count=len(cells),
+        is_complete=True,
+        maturity_state=MaturityState.CLOSED,
+    )
+
+
+class TestNucleoDeterminista:
+    def test_precio_unico_da_poc_va_degenerados(self) -> None:
+        # Todo el volumen a un precio: rango nulo -> POC=VAH=VAL=ese precio.
+        profile = compute_volume_profile(
+            [_footprint([("100", "10", "0")])], bin_count=5
+        )
+        assert profile.poc == Decimal("100")
+        assert profile.vah == Decimal("100")
+        assert profile.val == Decimal("100")
+
+    def test_poc_y_value_area_sobre_un_perfil_conocido(self) -> None:
+        # Precios 100..104, volumen 10/20/40/20/10 (total 100). bin_count=5 -> min=100,
+        # max=104, ancho=0.8. Bins: {0:10,1:20,2:40,3:20,4:10}. POC=bin2 (centro 102.0).
+        # VA 70% (objetivo 70): 40 -> +bin3(20, empate al alza)=60 -> +bin1(20)=80>=70.
+        # VAL=centro bin1=101.2 ; VAH=centro bin3=102.8.
+        profile = compute_volume_profile(
+            [
+                _footprint(
+                    [
+                        ("100", "10", "0"),
+                        ("101", "20", "0"),
+                        ("102", "40", "0"),
+                        ("103", "20", "0"),
+                        ("104", "10", "0"),
+                    ]
+                )
+            ],
+            bin_count=5,
+        )
+        assert profile.poc == Decimal("102.0")
+        assert profile.vah == Decimal("102.8")
+        assert profile.val == Decimal("101.2")
+
+    def test_agrega_el_volumen_por_precio_a_traves_de_varias_barras(self) -> None:
+        # El precio 102 aparece en DOS barras (30 y 20): el perfil suma 50 en 102.
+        # Precios 100/102/104 -> vol 10/50/10, bin_count=5 (ancho 0.8): POC=bin de 102,
+        # VA ya cubierta por el POC (50 de 70) -> POC=VAH=VAL=102.0.
+        window = [
+            _footprint([("100", "10", "0"), ("102", "30", "0")]),
+            _footprint([("102", "20", "0"), ("104", "10", "0")]),
+        ]
+        profile = compute_volume_profile(window, bin_count=5)
+        assert profile.poc == Decimal("102.0")
+        assert profile.vah == Decimal("102.0")
+        assert profile.val == Decimal("102.0")
+
+
+class TestBordes:
+    def test_ventana_vacia_es_error(self) -> None:
+        with pytest.raises(VolumeProfileError, match="ventana vacia"):
+            compute_volume_profile([], bin_count=5)
+
+    def test_bin_count_no_positivo_es_error(self) -> None:
+        with pytest.raises(VolumeProfileError, match="bin_count"):
+            compute_volume_profile([_footprint([("100", "1", "0")])], bin_count=0)
+
+    def test_mezclar_flujos_es_error(self) -> None:
+        with pytest.raises(VolumeProfileError, match="mezcla flujos"):
+            compute_volume_profile(
+                [
+                    _footprint([("100", "1", "0")], symbol="BTC-USDT"),
+                    _footprint([("100", "1", "0")], symbol="ETH-USDT"),
+                ],
+                bin_count=5,
+            )
