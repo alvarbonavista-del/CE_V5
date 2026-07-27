@@ -108,6 +108,19 @@ class TestDeteccion:
         )
         assert not signal.detected
 
+    def test_frontera_exacta_del_umbral_no_emite(self) -> None:
+        # A == threshold: la condicion es A > U (estricta) -> en la frontera NO emite.
+        # V=100, R=10 -> ratio=10 ; threshold=10 -> 10 > 10 es False. Las otras 3
+        # condiciones si se cumplirian; aisla la frontera del ratio.
+        signal = detect_absorption(
+            volume=Decimal("100"),
+            delta=Decimal("-60"),
+            price_range=Decimal("10"),
+            displacement=Decimal("2"),
+            threshold=Decimal("10"),
+        )
+        assert not signal.detected
+
     def test_rango_o_volumen_no_positivos_no_es_absorcion(self) -> None:
         assert not detect_absorption(
             volume=Decimal("100"),
