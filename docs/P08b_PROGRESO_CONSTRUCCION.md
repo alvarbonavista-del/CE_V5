@@ -151,3 +151,33 @@ divergence.py y test_divergence.py, 1 por fichero, dentro del limite de 2.
 PENDIENTE (no en esta tanda): integracion = declaracion + materializador +
 p08b_declarations(), condicionada al merge de la capa de materializacion de
 P08c.
+
+---
+
+## candle.* -- COMPLETADA (commit 603e0a0)
+
+Familia de fuentes descriptivas deterministas sobre la vela, re-expresion pura de v4 (dictamen P08b-10, D1..D5).
+
+Fuentes (una capacidad = un DataSource):
+  - candle.body_pct, candle.upper_shadow_pct, candle.lower_shadow_pct: escalares Decimal (componente/rango*100), EXACTAS (sin redondeo; el round-2 de v4 era presentacion, D3).
+  - candle.direction: categorica BULLISH / BEARISH / NEUTRAL.
+  - candle.new_high / candle.new_low: booleanas, estricto sobre las lookback barras ANTERIORES (param lookback=20).
+  - candle.shadow_signal: categorica HAMMER / SHOOTING_STAR / NONE (param shadow_ratio=2; requiere cuerpo>0).
+  - candle.pullback_moment: categorica M1/M2/M3 x bull/bear + NONE (params window=8, doji=10% del rango).
+
+Decisiones aplicadas:
+  - NO existe candle.pivot: se reusa swing.* (D2).
+  - Decimal pinned (prec 34, HALF_EVEN) en toda la aritmetica; sin AHP (descriptivas, no predictivas, D4).
+  - volume_confirm FUERA: composicion hacia volume.* (D5).
+  - Rama inalcanzable de v4 en el pullback ("last_seg[1] >= 2") NO reproducida: los segmentos comprimidos alternan, asi que n>=3 -> M3, ==2 -> M2, ==1 -> M1; mismo resultado sin codigo muerto (CE-8).
+
+Verificacion:
+  - Anatomia: golden exacto (OHLC de suma 100) + diferencial contra Fraction exacta (tol 1e-30) + borde rango=0 + independencia del contexto Decimal.
+  - direction / new_high / new_low / shadow_signal: casos escritos a mano.
+  - pullback_moment: patrones M1/M2/M3 a mano + DIFERENCIAL contra replica LITERAL del algoritmo de v4 (incluida su rama inalcanzable) sobre serie de 400 barras -> identico.
+  - Guard CANDLE_FORMULA_VERSION = 1.
+  - 17 tests verdes; ci_local completa 24/24 verde.
+
+Nota Actions: los push a wip/p08b no disparan el workflow (configurado para main/PR); el veredicto de Actions llegara en el PR de integracion a main. Gate vigente en la rama = ci_local (5.30), verde.
+
+PENDIENTE (no en esta tanda): integracion (declaracion + materializador + p08b_declarations()), condicionada al merge de la capa de materializacion de P08c.
