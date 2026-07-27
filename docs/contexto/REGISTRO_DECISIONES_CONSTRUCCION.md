@@ -311,6 +311,36 @@ NOTA SUCESORA (tanda de cierre P07c, verificacion cruzada): la clausula de cabec
 modelo por si mismo- llega tambien en el prompt de cierre. Su contenido COINCIDE con la
 AMPLIACION de arriba (commit 5ae2577): no se repite el parrafo para no duplicar (5.14); esta
 nota deja constancia de que la clausula pedida ya esta vigente en la regla.
+
+5.34 CONSTRUCCION EN PARALELO: WORKTREE + SUPERFICIE COMPARTIDA + INTEGRACION POR TURNO
+     (extiende 5.29). Cuando dos o mas piezas se construyen EN PARALELO sobre el mismo
+     repo/infra/relay:
+  CAPA 1 (aislamiento estructural): cada pieza en su PROPIO git worktree, rama propia sacada de
+    main, mismo .git. Un git add -A en un worktree NO alcanza a otro; git impide la misma rama en
+    dos worktrees. Convierte la 5.29 de disciplina en IMPOSIBILIDAD FISICA. (Arbol unico solo si
+    la pieza en pausa COMMITEA antes de ceder; via fragil, no recomendada: pario abb7324.)
+  CAPA 2 (propiedad de superficie compartida): todo fichero de framework compartido tiene UN
+    dueno; las demas piezas CONSUMEN, no forkean; todo cambio a superficie compartida se ELEVA a
+    Central.
+  CAPA 3 (integracion por turno): la EDICION es paralela; la bateria 5.30 + push + merge va POR
+    TURNO (un testigo/token; DB/Redis/main son compartidos). El token se libera tras el merge.
+  CAPA 4 (migraciones): el numero de migracion se toma EN EL PUSH (serializado por el token); la
+    pieza que no empuja REBASA sobre main y RENUMERA su migracion no commiteada (5.14); si ya
+    empujada, sucesora.
+  CAPA 5 (rebase/orden de merge): quien llega verde primero mergea; la otra REBASA sobre main
+    actualizado ANTES de su bateria+push. Actions (5.13) sigue siendo arbitro final.
+  Nace de P08b||P08c; leccion de abb7324 (5.29): la disciplina manual sobre un arbol unico ya
+  fallo; se sustituye por aislamiento estructural.
+
+5.35 CABECERA DE IDENTIDAD Y WORKTREE EN TODA TANDA (extiende 5.33 y 5.34). Con worktrees (5.34),
+     la PRIMERA linea DENTRO del bloque [CLAUDE CODE] de toda tanda declara la IDENTIDAD del
+     emisor y su WORKTREE/RAMA, y advierte de las carpetas AJENAS. Formato:
+       IDENTIDAD: <Periferico Pxx (area) / Central>. WORKTREE: <ruta> -- RAMA: <rama>.
+       NO trabajes en <otras rutas ajenas> (son de <quien>).
+     Objetivo: impedir que Claude Code trabaje por error en el worktree de otra pieza (salvaguarda
+     FISICA de 5.29 al nivel de la tanda). La cabecera de modelo de 5.33 ([MODELO: X] + comando
+     /model) sigue delante. Nace del rescate de P08c (ficheros vivos flotando en carpeta/rama
+     ajena).
 =====================================================================
 6. CIERRE DE PIEZA P01 - CONTRATOS BASE Y ENVELOPE
 =====================================================================
