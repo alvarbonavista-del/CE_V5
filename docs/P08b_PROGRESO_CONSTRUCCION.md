@@ -109,3 +109,45 @@ tocar nucleo, PARAR y ELEVAR); reglas 5.34/5.35 (worktree por pieza, cabecera de
 identidad).
 
 FIN P08b_PROGRESO_CONSTRUCCION (documento de trabajo).
+
+---
+
+## divergence.* -- COMPLETADA (commit da80d66)
+
+Fuente derivada de velas: deteccion de divergencias precio/RSI, re-expresion
+pura en v5 de la logica de v4 (paridad de RESULTADO/SEMANTICA, sin engines).
+
+Convenciones fijadas (fieles a v4; go de Central tras el I-03 ADDENDUM):
+  - Pivotes GEOMETRICOS via swing.symmetric_pivots (DA-I03-9): maximos sobre
+    HIGH, minimos sobre LOW.
+  - RSI Wilder (rsi.wilder_rsi) leido EN la barra del pivote de precio
+    (convencion 'i' de v4).
+  - Pares de pivotes consecutivos del mismo tipo (equivale a "ultimos 2" de
+    v4 sobre replay).
+  - Desigualdad ESTRICTA en precio Y en RSI.
+  - Orden determinista: (barra de confirmacion, prioridad de v4).
+  - Defaults de paridad: strength=2, rsi_period=14.
+  - No hay aritmetica Decimal propia: solo compara Decimals de fuentes ya
+    bloqueadas (rsi.*, swing.*).
+
+Verificacion:
+  - Referente EXACTO independiente (RSI con fractions.Fraction + reglas y
+    orden reimplementados aparte); test diferencial detect_divergences ==
+    referente sobre serie LCG de 400 barras (15 divergencias, cubre las 4
+    clases: regular_bear 5, regular_bull 5, hidden_bear 4, hidden_bull 1).
+  - Clasificador de par probado a mano para las 4 reglas + estrictitud.
+  - Guard DIVERGENCE_FORMULA_VERSION = 1.
+  - Reproducibilidad: salida independiente del contexto Decimal ambiente.
+  - 14 tests verdes; ci_local completa 24/24 verde.
+
+Nota golden: la "prueba de oro" de esta fuente toma forma DIFERENCIAL
+(referente independiente) en vez de literal congelado, por ser salida
+estructural (lista de eventos). Pendiente de decision de Central si se
+quiere ADEMAS un literal congelado.
+
+Fix aplicado durante la entrega: B905 (zip con strict=False explicito) en
+divergence.py y test_divergence.py, 1 por fichero, dentro del limite de 2.
+
+PENDIENTE (no en esta tanda): integracion = declaracion + materializador +
+p08b_declarations(), condicionada al merge de la capa de materializacion de
+P08c.
