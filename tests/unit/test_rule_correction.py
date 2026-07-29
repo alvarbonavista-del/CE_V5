@@ -6,7 +6,7 @@ intacto en caliente), T12 (atomicidad), T14 (tenant de la ventanilla) y T19 (end
 -- viven en tools/validate_rules_correction.py.
 
 El eje de todo: v5.0 SOLO propaga correcciones a fuentes POINT_LOCAL. Una fuente
-RECURSIVE o INTEGRATOR no se aproxima ni se cuarentena: se SALTA con motivo.
+RECURSIVE, INTEGRATOR o WINDOWED no se aproxima ni se cuarentena: se SALTA con motivo.
 """
 
 from decimal import Decimal
@@ -66,6 +66,7 @@ from source.rules.vocab import (
 _TF_MS = 3_600_000  # 1h
 _EMA_SOURCE_ID = "market.ema"
 _CVD_SOURCE_ID = "market.cvd"
+_SMA_SOURCE_ID = "market.sma"
 
 
 def _declaration(source_id: str, memory_model: MemoryModel) -> DataSourceDeclaration:
@@ -89,6 +90,7 @@ def _catalog() -> DataSourceCatalog:
     catalog.register(market_close_declaration())
     catalog.register(_declaration(_EMA_SOURCE_ID, MemoryModel.RECURSIVE))
     catalog.register(_declaration(_CVD_SOURCE_ID, MemoryModel.INTEGRATOR))
+    catalog.register(_declaration(_SMA_SOURCE_ID, MemoryModel.WINDOWED))
     catalog.validate()
     return catalog
 
@@ -193,8 +195,16 @@ def test_t2_declaraciones_recursive_e_integrator_quedan_tipadas() -> None:
     )
 
 
-def test_t2_los_tres_valores_del_enum_estan_cerrados() -> None:
-    assert {m.value for m in MemoryModel} == {"point_local", "recursive", "integrator"}
+def test_t2_el_conjunto_del_enum_es_exacto_y_coordinado() -> None:
+    # Igualdad de conjunto EXACTA, no "contiene": cualquier adicion futura al enum
+    # ROMPE este test y fuerza coordinacion/elevacion. WINDOWED entro por extension
+    # ADITIVA coordinada (P08b/P08c); supera la premisa "enum de 3, cerrado".
+    assert {m.value for m in MemoryModel} == {
+        "point_local",
+        "recursive",
+        "integrator",
+        "windowed",
+    }
 
 
 # --- T4: h = max history_bars de las fuentes point-local ----------------------
@@ -291,6 +301,21 @@ def test_t16_fuente_integrator_no_es_conformante() -> None:
     assert not scope.conformant
     assert scope.blocking_source_id == _CVD_SOURCE_ID
     assert scope.blocking_memory_model is MemoryModel.INTEGRATOR
+
+
+def test_fuente_windowed_no_es_conformante_para_correccion() -> None:
+    """Espejo de t15/t16 para WINDOWED (extension aditiva coordinada P08b/P08c).
+
+    ALCANCE v5.0, no invariante permanente: hoy el motor SOLO propaga a POINT_LOCAL,
+    asi que WINDOWED (SMA real, volume profile, l2.* por ventana) queda NO-CONFORME
+    para correccion, como RECURSIVE/INTEGRATOR. Su correccion por ventana interna
+    queda DIFERIDA al cableado vivo (D-VP-4 a); cuando ese cableado la anada, este
+    test se actualiza.
+    """
+    scope = correction_scope(compile(_rule(_condition(_SMA_SOURCE_ID)), _catalog()))
+    assert not scope.conformant
+    assert scope.blocking_source_id == _SMA_SOURCE_ID
+    assert scope.blocking_memory_model is MemoryModel.WINDOWED
 
 
 def test_t17_regla_mixta_queda_descalificada_entera() -> None:

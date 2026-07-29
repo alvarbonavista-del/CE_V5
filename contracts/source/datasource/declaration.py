@@ -74,16 +74,28 @@ class MemoryModel(StrEnum):
     INTEGRATOR: el valor acumula desde un origen (CVD y demas integradores). Misma
     conclusion que RECURSIVE por otra razon: el acumulado arrastra el error sin fin.
 
-    En v5.0 el motor SOLO propaga correcciones a fuentes POINT_LOCAL; RECURSIVE e
-    INTEGRATOR quedan declaradas y NO-CONFORMES para correccion (a P08b/P08c). El enum
-    se cierra entero AHORA -- no solo el valor que v5.0 usa -- porque una fuente
-    recursiva declarada point-local por omision propagaria correcciones mal: el valor
-    tiene que ser EXPLICITO y por eso el campo no lleva default.
+    WINDOWED: el valor de la barra T depende de una VENTANA ACOTADA de barras
+    [T-w+1, T] (SMA real, volume profile, observables l2.* por ventana), pero NO de su
+    propio valor anterior. Corregir la barra k afecta un conjunto ACOTADO de valores --
+    los de [k, k+w-1], cuya ventana la incluye --, asi que es RECOMPUTABLE por ventana
+    acotada, a diferencia de RECURSIVE/INTEGRATOR. En v5.0, sin embargo, el motor de
+    correccion solo propaga a POINT_LOCAL, asi que WINDOWED queda NO-CONFORME para
+    correccion como las otras dos; propagar por su ventana interna es una mejora
+    COORDINADA posterior (no reabre este enum).
+
+    En v5.0 el motor SOLO propaga correcciones a fuentes POINT_LOCAL; RECURSIVE,
+    INTEGRATOR y WINDOWED quedan declaradas NO-CONFORMES para correccion (a P08b/P08c).
+    WINDOWED se ANADE por decision COORDINADA de Central (construccion paralela
+    P08b/P08c: SMA, volume profile y l2.* la necesitan): extension ADITIVA append-only
+    del enum, no reabre ADR. La nota anterior "el enum se cierra entero" queda SUPERADA
+    por esa extension; su principio sigue vigente -- el memory_model es EXPLICITO, sin
+    default, para que una fuente mal clasificada no propague correcciones mal.
     """
 
     POINT_LOCAL = "point_local"
     RECURSIVE = "recursive"
     INTEGRATOR = "integrator"
+    WINDOWED = "windowed"
 
 
 class HistoryUnit(StrEnum):
