@@ -181,3 +181,33 @@ Verificacion:
 Nota Actions: los push a wip/p08b no disparan el workflow (configurado para main/PR); el veredicto de Actions llegara en el PR de integracion a main. Gate vigente en la rama = ci_local (5.30), verde.
 
 PENDIENTE (no en esta tanda): integracion (declaracion + materializador + p08b_declarations()), condicionada al merge de la capa de materializacion de P08c.
+
+---
+
+## volume.* -- COMPLETADA (commit 8bca564, certificado sobre pila de BD limpia)
+
+Familia de fuentes descriptivas deterministas sobre el volumen (dictamen P08b-11).
+
+Fuentes:
+  - volume.ratio_vs_avg: escalar Decimal exacto; volumen actual / media de las N barras anteriores; barra 0 -> None; avg<=0 -> 1 (fail-safe v4).
+  - volume.direction: categorica UP/DOWN; actual vs barra anterior; empate -> UP; barra 0 -> None.
+  - volume.is_increasing: booleana; media de la 2a mitad vs la 1a de las N barras anteriores; requiere >=4 (si no, False).
+
+Decisiones aplicadas (P08b-11):
+  - volume.avg INTERNO (denominador de ratio), NO fuente, hasta que una Rule lo consuma de forma independiente (CE-8).
+  - pct_above OMITIDO (transformada monotona trivial de ratio; deriva una Rule).
+  - above_avg NO existe: el umbral (20%) es de DECISION -> vive en la Rule/factor (principio general de Central: umbral definitorio -> fuente; umbral de decision -> rule). candle.volume_confirm se resuelve como Rule (ratio > umbral), con el 20% como semilla de paridad.
+  - Volumen crudo = market.volume (basico servible de P07); volume.* solo deriva.
+  - Decimal pinned (prec 34, HALF_EVEN); sin AHP (descriptivas, no predictivas).
+
+Verificacion:
+  - ratio_vs_avg: golden exacto + edge avg<=0 -> 1 + diferencial contra Fraction exacta (tol 1e-30) + independencia del contexto Decimal.
+  - direction: casos a mano (incluye empate -> UP).
+  - is_increasing: hand (creciente / decreciente / insuficiente) + diferencial contra Fraction.
+  - Guard VOLUME_FORMULA_VERSION = 1.
+  - test ajustado para mypy strict (narrowing de None en el referente Fraction).
+  - 10 tests unitarios verdes; ci_local COMPLETA 24/24 verde sobre pila de BD LIMPIA.
+
+Nota de proceso (para revision de hito): el primer push de 8bca564 se hizo con la bateria en 22/24 (dos tests de integracion de tenancy/rate-limit en rojo) y con salida RESUMIDA, invocando mal la 5.31. Los dos fallos eran estado sucio de los contenedores Docker persistentes, NO de volume.py (funciones puras). Correccion: se recreo la pila de BD limpia (docker compose down/up en infra/compose/docker-compose.yml) y se re-corrio la bateria completa -> 24/24 verde con salida cruda verbatim. 8bca564 CERTIFICADO. Recordatorio operativo: recrear los contenedores antes de cada ci_local para evitar FK/estado acumulado (evita repetir el falso rojo).
+
+PENDIENTE (no en esta tanda): integracion (declaracion + materializador + p08b_declarations()), condicionada al merge de la capa de materializacion de P08c.
