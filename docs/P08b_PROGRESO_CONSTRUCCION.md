@@ -211,3 +211,36 @@ Verificacion:
 Nota de proceso (para revision de hito): el primer push de 8bca564 se hizo con la bateria en 22/24 (dos tests de integracion de tenancy/rate-limit en rojo) y con salida RESUMIDA, invocando mal la 5.31. Los dos fallos eran estado sucio de los contenedores Docker persistentes, NO de volume.py (funciones puras). Correccion: se recreo la pila de BD limpia (docker compose down/up en infra/compose/docker-compose.yml) y se re-corrio la bateria completa -> 24/24 verde con salida cruda verbatim. 8bca564 CERTIFICADO. Recordatorio operativo: recrear los contenedores antes de cada ci_local para evitar FK/estado acumulado (evita repetir el falso rojo).
 
 PENDIENTE (no en esta tanda): integracion (declaracion + materializador + p08b_declarations()), condicionada al merge de la capa de materializacion de P08c.
+
+---
+
+## vwap.* -- COMPLETADA (commit b82b2bc, certificado 24/24 sobre pila de BD limpia)
+
+Familia de fuentes sobre el VWAP de ventana movil (dictamen P08b-12, D1..D6 + A/B/C).
+
+Fuentes:
+  - vwap.value: escalar Decimal; VWAP movil de N velas = SUM(HLC3*vol)/SUM(vol); vol_total=0 -> None. param n_candles=20.
+  - vwap.distance_pct: escalar Decimal; |close-vwap|/vwap*100; vwap None -> None; vwap<=0 -> 0.
+  - vwap.side: categorica ABOVE/BELOW; close vs vwap; empate -> ABOVE; vwap None -> None.
+  - vwap.direction: categorica UP/DOWN; vwap[i] vs vwap[i-1]; empate -> DOWN; sin previo / None -> None.
+
+Paridad fijada (A/B/C):
+  - A: ventana MOVIL de N velas, NO anclado a sesion (un VWAP de sesion seria otra fuente).
+  - B: precio tipico = HLC3 = (H+L+C)/3.
+  - C: Decimal exacto; los round() de v4 eran presentacion.
+
+Decisiones (P08b-12):
+  - near_vwap NO existe: umbral 0.5% de DECISION -> Rule de pullback-a-VWAP (DEC-UMBRAL-LOCUS). Fuente = distance_pct exacto.
+  - distance_pct es fuente (tiene consumidor: la Rule de pullback); pasa CE-8.
+  - H/L/C/V basicos servibles de P07; current_price = candle.close.
+  - Decimal pinned (prec 34, HALF_EVEN); sin AHP (descriptivas, no predictivas).
+
+Verificacion:
+  - value: golden exacto (ventana movil, HLC3) + diferencial contra Fraction (tol 1e-28) + edge vol=0 -> None + independencia del contexto Decimal.
+  - distance_pct / side / direction: diferencial contra referente Fraction (incluye empate side -> ABOVE, empate direction -> DOWN, edges None).
+  - Guard VWAP_FORMULA_VERSION = 1.
+  - 9 tests unitarios verdes; ci_local COMPLETA 24/24 verde sobre pila de BD recreada desde cero (aplicado el recordatorio operativo: recrear contenedores antes de la bateria -> sin falso rojo).
+
+Nota tecnica: mypy strict exigio narrowing de valores indexados X | None (patron ya visto en volume.*); corregido asignando variables locales antes de comparar, en vwap.py::direction y en el test. Sin cambio de semantica (certificado por golden + diferencial verdes).
+
+PENDIENTE (no en esta tanda): integracion (declaracion + materializador + p08b_declarations()), condicionada al merge de la capa de materializacion de P08c.
