@@ -21,6 +21,8 @@ from ce_v5.platform.rules.rawfootprint import (
     market_footprint_declaration,
 )
 from ce_v5.platform.rules.volume_profile import (
+    VP_HVN_SOURCE_ID,
+    VP_LVN_SOURCE_ID,
     VP_POC_SOURCE_ID,
     VP_VAH_SOURCE_ID,
     VP_VAL_SOURCE_ID,
@@ -28,6 +30,8 @@ from ce_v5.platform.rules.volume_profile import (
     VolumeProfileError,
     compute_volume_nodes,
     compute_volume_profile,
+    vp_hvn_declaration,
+    vp_lvn_declaration,
     vp_poc_declaration,
     vp_vah_declaration,
     vp_val_declaration,
@@ -235,3 +239,47 @@ class TestNodos:
         params = VolumeNodeParams(hvn_multiplier=Decimal("5.0"))
         nodes = compute_volume_nodes(self._WINDOW, bin_count=10, params=params)
         assert nodes.hvn == ()
+
+
+class TestNodosDeclaraciones:
+    def test_vp_hvn_lvn_son_non_servible_windowed_de_footprint(self) -> None:
+        for declaration in (vp_hvn_declaration(), vp_lvn_declaration()):
+            assert declaration.source_type is SourceType.OBSERVABLE
+            assert declaration.servibility is Servibility.NON_SERVIBLE
+            assert declaration.memory_model is MemoryModel.WINDOWED
+            assert declaration.value_type is ScalarType.DECIMAL
+            assert declaration.consumes == (MARKET_FOOTPRINT_SOURCE_ID,)
+
+    def test_source_ids(self) -> None:
+        assert vp_hvn_declaration().source_id == VP_HVN_SOURCE_ID
+        assert vp_lvn_declaration().source_id == VP_LVN_SOURCE_ID
+
+    def test_hvn_declara_solo_sus_parametros_en_la_cache_key(self) -> None:
+        declaration = vp_hvn_declaration()
+        names = {param.name for param in declaration.params}
+        assert names == {"bin_count", "hvn_multiplier", "adjacency_bins", "hvn_max"}
+        for name in names:
+            assert name in declaration.cache_key_schema
+        # El umbral de LVN no interviene en HVN: no debe ensuciar su cache_key.
+        assert "lvn_multiplier" not in declaration.cache_key_schema
+
+    def test_lvn_declara_solo_sus_parametros_en_la_cache_key(self) -> None:
+        declaration = vp_lvn_declaration()
+        names = {param.name for param in declaration.params}
+        assert names == {"bin_count", "lvn_multiplier", "adjacency_bins", "lvn_max"}
+        for name in names:
+            assert name in declaration.cache_key_schema
+        assert "hvn_multiplier" not in declaration.cache_key_schema
+
+    def test_dag_valida_con_market_footprint(self) -> None:
+        catalog = DataSourceCatalog()
+        catalog.register(market_footprint_declaration())
+        catalog.register(vp_hvn_declaration())
+        catalog.register(vp_lvn_declaration())
+        catalog.validate()  # completa y aciclica.
+
+    def test_vp_hvn_sin_footprint_falla_el_dag(self) -> None:
+        catalog = DataSourceCatalog()
+        catalog.register(vp_hvn_declaration())
+        with pytest.raises(MissingDependencyError):
+            catalog.validate()

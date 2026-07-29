@@ -337,6 +337,103 @@ ADJACENCY_BINS = 3
 HVN_MAX = 5
 LVN_MAX = 5
 
+VP_HVN_SOURCE_ID = "vp.hvn"
+VP_LVN_SOURCE_ID = "vp.lvn"
+
+
+def _int_param(name: str, default: int) -> ParamSpec:
+    """ParamSpec entero con su default (parametro de nodo)."""
+    return ParamSpec(
+        name=name,
+        value_type=ScalarType.INTEGER,
+        default=ScalarValue(scalar_type=ScalarType.INTEGER, integer_value=default),
+    )
+
+
+def _decimal_param(name: str, default: Decimal) -> ParamSpec:
+    """ParamSpec decimal con su default (parametro de nodo)."""
+    return ParamSpec(
+        name=name,
+        value_type=ScalarType.DECIMAL,
+        default=ScalarValue(scalar_type=ScalarType.DECIMAL, decimal_value=default),
+    )
+
+
+def vp_hvn_declaration() -> DataSourceDeclaration:
+    """vp.hvn: nodos de ALTO volumen (NON_SERVIBLE; conjunto de niveles). Contexto F6.
+
+    NON_SERVIBLE porque es un CONJUNTO de precios, no un escalar (como el footprint);
+    F6 lo consume por DISTANCIA del extremo al nodo. WINDOWED (deriva de una ventana de
+    footprint). En la cache_key entran SOLO los parametros que afectan a HVN (CSA): un
+    cambio de bin_count/umbral/adyacencia/tope cambia la clave; lvn_multiplier NO
+    (no interviene en HVN).
+    """
+    return DataSourceDeclaration(
+        source_id=VP_HVN_SOURCE_ID,
+        source_type=SourceType.OBSERVABLE,
+        servibility=Servibility.NON_SERVIBLE,
+        memory_model=MemoryModel.WINDOWED,
+        value_type=ScalarType.DECIMAL,
+        evaluation_contexts=tuple(tf.value for tf in Timeframe),
+        history_units=(HistoryUnit.BARS,),
+        params=(
+            _int_param("bin_count", DEFAULT_BIN_COUNT),
+            _decimal_param("hvn_multiplier", HVN_VOLUME_MULTIPLIER),
+            _int_param("adjacency_bins", ADJACENCY_BINS),
+            _int_param("hvn_max", HVN_MAX),
+        ),
+        shared_evaluation=True,
+        sharing_scope=SharingScope.PUBLIC_CROSS_TENANT,
+        cache_key_schema=(
+            "exchange",
+            "symbol",
+            "market_type",
+            "timeframe",
+            "bin_count",
+            "hvn_multiplier",
+            "adjacency_bins",
+            "hvn_max",
+        ),
+        consumes=(MARKET_FOOTPRINT_SOURCE_ID,),
+    )
+
+
+def vp_lvn_declaration() -> DataSourceDeclaration:
+    """vp.lvn: nodos de BAJO volumen / vacios (NON_SERVIBLE; conjunto). Contexto F6.
+
+    Igual que vp.hvn pero para los vacios; en la cache_key entran los parametros que
+    afectan a LVN (bin_count, lvn_multiplier, adyacencia, tope). El area de valor que
+    acota los LVN sale del mismo perfil (value_area_pct es definicion fija, no param).
+    """
+    return DataSourceDeclaration(
+        source_id=VP_LVN_SOURCE_ID,
+        source_type=SourceType.OBSERVABLE,
+        servibility=Servibility.NON_SERVIBLE,
+        memory_model=MemoryModel.WINDOWED,
+        value_type=ScalarType.DECIMAL,
+        evaluation_contexts=tuple(tf.value for tf in Timeframe),
+        history_units=(HistoryUnit.BARS,),
+        params=(
+            _int_param("bin_count", DEFAULT_BIN_COUNT),
+            _decimal_param("lvn_multiplier", LVN_VOLUME_MULTIPLIER),
+            _int_param("adjacency_bins", ADJACENCY_BINS),
+            _int_param("lvn_max", LVN_MAX),
+        ),
+        shared_evaluation=True,
+        sharing_scope=SharingScope.PUBLIC_CROSS_TENANT,
+        cache_key_schema=(
+            "exchange",
+            "symbol",
+            "market_type",
+            "timeframe",
+            "bin_count",
+            "lvn_multiplier",
+            "adjacency_bins",
+            "lvn_max",
+        ),
+        consumes=(MARKET_FOOTPRINT_SOURCE_ID,),
+    )
+
 
 @dataclass(frozen=True, slots=True)
 class VolumeNodes:
