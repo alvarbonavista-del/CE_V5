@@ -3,10 +3,11 @@
 Fuente DERIVADA de market.footprint (DEC-VP-INPUT-01): usa el volumen EXACTO por nivel
 de precio del footprint (no la aproximacion OHLC de v4) y BINA el perfil en bins de
 ancho declarado para robustez de POC/VA (paridad SEMANTICA de v4: el binado era diseno,
-no limitacion). Esta tanda entrega las DECLARACIONES ADR-008 de las salidas servibles
-(vp.poc, vp.vah, vp.val) y el nucleo DETERMINISTA que las calcula -- POC, Value Area
-70%, VAH, VAL --, verificable por fixture numerico. HVN y LVN (detectores con umbral,
-DEC-AHP-01) llegan aparte, tras su pre-registro AHP.
+no limitacion). Entrega las DECLARACIONES ADR-008 de las salidas servibles
+(vp.poc, vp.vah, vp.val), el nucleo DETERMINISTA que las calcula -- POC, Value Area
+70%, VAH, VAL -- y los NODOS de volumen HVN/LVN (detectores con umbral, pre-registro
+AHP firmado). POC/VA y HVN/LVN salen del MISMO perfil binado (_build_bins): no se
+perfila dos veces (precision del CSA).
 
 LAS DECLARACIONES NO SE CABLEAN AUN EN EL CATALOGO VIVO. Como market.footprint
 (rawfootprint.py), solo se ANADEN aqui: su registro en el catalogo del worker y su
@@ -145,19 +146,39 @@ class VolumeProfile:
     val: Decimal
 
 
-def compute_volume_profile(
+@dataclass(frozen=True, slots=True)
+class _Bins:
+    """Perfil binado intermedio COMPARTIDO por vp.poc/vah/val y vp.hvn/lvn.
+
+    Existe para que NO haya dos perfiles distintos de la misma familia (precision del
+    CSA): se bina una sola vez y ambos consumidores leen de aqui. volume_by_bin lleva
+    SOLO los bins ocupados (con volumen). degenerate_price es no-None cuando todo el
+    volumen cae en un unico precio (rango nulo): no hay bins reales, ni VA, ni nodos.
+    """
+
+    min_price: Decimal
+    bin_width: Decimal
+    bin_count: int
+    volume_by_bin: dict[int, Decimal]
+    total_volume: Decimal
+    poc_index: int
+    lo_index: int
+    hi_index: int
+    degenerate_price: Decimal | None
+
+
+def _build_bins(
     window: Sequence[FootprintPayload],
     *,
-    bin_count: int = DEFAULT_BIN_COUNT,
-    value_area_pct: Decimal = DEFAULT_VALUE_AREA_PCT,
-) -> VolumeProfile:
-    """POC / Value Area / VAH / VAL de una ventana de footprints del MISMO flujo.
+    bin_count: int,
+    value_area_pct: Decimal,
+) -> _Bins:
+    """Agrega, bina y localiza POC + bordes de Value Area. Perfil base unico.
 
-    Agrega el volumen EXACTO (buy+sell) de cada celda por su precio sobre toda la
-    ventana, bina en bin_count bins uniformes sobre [min_price, max_price], y calcula
-    POC (centro del bin de mayor volumen), la Value Area (expansion desde el POC al
-    vecino de mayor volumen hasta cubrir value_area_pct del total) y VAH/VAL (centros
-    de los bins extremos de la VA).
+    Agrega el volumen EXACTO (buy+sell) por precio sobre la ventana, bina en bin_count
+    bins uniformes sobre [min_price, max_price], y calcula POC (bin de mayor volumen) y
+    la Value Area (expansion desde el POC al vecino de mayor volumen hasta cubrir
+    value_area_pct). Rango nulo -> degenerate_price con ese unico precio.
     """
     if bin_count <= 0:
         msg = f"bin_count debe ser > 0, llego {bin_count}."
@@ -184,26 +205,62 @@ def compute_volume_profile(
     max_price = max(volume_by_price)
     # Rango nulo (todo el volumen a un solo precio): POC=VAH=VAL, sin binar ni dividir.
     if min_price == max_price:
-        return VolumeProfile(poc=min_price, vah=min_price, val=min_price)
+        return _Bins(
+            min_price=min_price,
+            bin_width=Decimal(0),
+            bin_count=bin_count,
+            volume_by_bin={0: total_volume},
+            total_volume=total_volume,
+            poc_index=0,
+            lo_index=0,
+            hi_index=0,
+            degenerate_price=min_price,
+        )
 
     bin_width = (max_price - min_price) / Decimal(bin_count)
     last_index = bin_count - 1
-    volume_by_bin: defaultdict[int, Decimal] = defaultdict(lambda: Decimal(0))
+    volume_by_bin: dict[int, Decimal] = {}
     for price, volume in volume_by_price.items():
         # int() de un Decimal no negativo trunca = floor; el max cae en el ultimo bin.
         index = int((price - min_price) / bin_width)
         if index > last_index:
             index = last_index
-        volume_by_bin[index] += volume
+        volume_by_bin[index] = volume_by_bin.get(index, Decimal(0)) + volume
 
     poc_index = _max_volume_index(volume_by_bin)
     lo_index, hi_index = _value_area_bounds(
         volume_by_bin, poc_index, total_volume, value_area_pct
     )
+    return _Bins(
+        min_price=min_price,
+        bin_width=bin_width,
+        bin_count=bin_count,
+        volume_by_bin=volume_by_bin,
+        total_volume=total_volume,
+        poc_index=poc_index,
+        lo_index=lo_index,
+        hi_index=hi_index,
+        degenerate_price=None,
+    )
+
+
+def compute_volume_profile(
+    window: Sequence[FootprintPayload],
+    *,
+    bin_count: int = DEFAULT_BIN_COUNT,
+    value_area_pct: Decimal = DEFAULT_VALUE_AREA_PCT,
+) -> VolumeProfile:
+    """POC / Value Area / VAH / VAL de una ventana de footprints del MISMO flujo.
+
+    Sobre el perfil binado unico (_build_bins): POC = centro del bin de mayor volumen;
+    VAH/VAL = centros de los bins extremos de la Value Area. En rango nulo (un solo
+    precio) los tres son ese precio (bin_width=0 -> el centro es el propio precio).
+    """
+    bins = _build_bins(window, bin_count=bin_count, value_area_pct=value_area_pct)
     return VolumeProfile(
-        poc=_bin_center(min_price, poc_index, bin_width),
-        vah=_bin_center(min_price, hi_index, bin_width),
-        val=_bin_center(min_price, lo_index, bin_width),
+        poc=_bin_center(bins.min_price, bins.poc_index, bins.bin_width),
+        vah=_bin_center(bins.min_price, bins.hi_index, bins.bin_width),
+        val=_bin_center(bins.min_price, bins.lo_index, bins.bin_width),
     )
 
 
@@ -267,3 +324,113 @@ def _value_area_bounds(
 def _bin_center(min_price: Decimal, index: int, bin_width: Decimal) -> Decimal:
     """Precio representativo de un bin: su centro (convencion fijada del modulo)."""
     return min_price + (Decimal(index) + Decimal("0.5")) * bin_width
+
+
+# --- Nodos de volumen (vp.hvn / vp.lvn), F6 -----------------------------------------
+# Semillas [PARIDAD v4] del detector (engines/l1/volume_profile_engine.py; pre-registro
+# AHP FIRMADO). Parametros, no verdades: la calibracion (diferida) los sustituye.
+HVN_VOLUME_MULTIPLIER = Decimal("1.5")  # HVN: volumen de bin > media * 1.5
+LVN_VOLUME_MULTIPLIER = Decimal("0.3")  # LVN: volumen de bin < media * 0.3
+# ADYACENCIA en INDICES de bin (no precio ni ticks de exchange): v4 uso 3 ticks, y en el
+# espacio binado de v5.0 eso son 3 bins (precision de unidades del CSA).
+ADJACENCY_BINS = 3
+HVN_MAX = 5
+LVN_MAX = 5
+
+
+@dataclass(frozen=True, slots=True)
+class VolumeNodes:
+    """Nodos de volumen del perfil (vp.hvn / vp.lvn). Precios = centro de bin.
+
+    hvn: nodos de ALTO volumen (iman / soporte-resistencia), SIN el POC. lvn: nodos de
+    BAJO volumen (vacios), SOLO dentro de la Value Area. Tuplas ordenadas por precio y
+    DETERMINISTAS (reproducibles bit a bit). Vacias si no hay nodos.
+    """
+
+    hvn: tuple[Decimal, ...]
+    lvn: tuple[Decimal, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class VolumeNodeParams:
+    """Umbrales del detector de nodos como PARAMETRO (semillas [PARIDAD v4]).
+
+    La calibracion (AHP, diferida) los sustituye sin tocar la logica.
+    """
+
+    hvn_multiplier: Decimal = HVN_VOLUME_MULTIPLIER
+    lvn_multiplier: Decimal = LVN_VOLUME_MULTIPLIER
+    adjacency_bins: int = ADJACENCY_BINS
+    hvn_max: int = HVN_MAX
+    lvn_max: int = LVN_MAX
+
+
+# Singleton por defecto (evita construir en el default de la firma, B008).
+_DEFAULT_NODE_PARAMS = VolumeNodeParams()
+
+
+def compute_volume_nodes(
+    window: Sequence[FootprintPayload],
+    *,
+    bin_count: int = DEFAULT_BIN_COUNT,
+    value_area_pct: Decimal = DEFAULT_VALUE_AREA_PCT,
+    params: VolumeNodeParams = _DEFAULT_NODE_PARAMS,
+) -> VolumeNodes:
+    """HVN/LVN sobre el MISMO perfil binado que vp.poc/vah/val. [PARIDAD v4].
+
+    media = volumen_total / bins OCUPADOS (NO se promedia sobre bins vacios). HVN: bins
+    ocupados con volumen > media*hvn_mult, excluido el POC y sus adyacentes (por INDICE
+    de bin), ordenados por volumen DESCENDENTE (desempate por indice ascendente), dedup
+    por adyacencia, tope hvn_max. LVN: TODOS los bins de [val_index, vah_index] --
+    incluidos los VACIOS, que valen 0 y empatan -- con volumen < media*lvn_mult,
+    ordenados por volumen ASCENDENTE y desempate por indice ASCENDENTE (reproducible bit
+    a bit), dedup por adyacencia, tope lvn_max. Rango nulo -> sin nodos.
+    """
+    bins = _build_bins(window, bin_count=bin_count, value_area_pct=value_area_pct)
+    if bins.degenerate_price is not None:
+        return VolumeNodes(hvn=(), lvn=())
+
+    occupied = bins.volume_by_bin
+    mean_bin_volume = bins.total_volume / Decimal(len(occupied))
+
+    hvn_min = mean_bin_volume * params.hvn_multiplier
+    hvn_candidates = [
+        index
+        for index, volume in occupied.items()
+        if volume > hvn_min and abs(index - bins.poc_index) > params.adjacency_bins
+    ]
+    hvn_candidates.sort(key=lambda index: (-occupied[index], index))
+    hvn_indices = _dedup_adjacent(hvn_candidates, params.adjacency_bins, params.hvn_max)
+
+    lvn_max_volume = mean_bin_volume * params.lvn_multiplier
+    lvn_candidates = [
+        index
+        for index in range(bins.lo_index, bins.hi_index + 1)
+        if occupied.get(index, Decimal(0)) < lvn_max_volume
+    ]
+    lvn_candidates.sort(key=lambda index: (occupied.get(index, Decimal(0)), index))
+    lvn_indices = _dedup_adjacent(lvn_candidates, params.adjacency_bins, params.lvn_max)
+
+    return VolumeNodes(
+        hvn=tuple(
+            _bin_center(bins.min_price, index, bins.bin_width)
+            for index in sorted(hvn_indices)
+        ),
+        lvn=tuple(
+            _bin_center(bins.min_price, index, bins.bin_width)
+            for index in sorted(lvn_indices)
+        ),
+    )
+
+
+def _dedup_adjacent(ordered_indices: list[int], adjacency: int, cap: int) -> list[int]:
+    """Conserva indices en el ORDEN dado, saltando los que disten <= adjacency de uno ya
+    conservado, y corta en cap. Determinista: depende solo del orden de entrada.
+    """
+    kept: list[int] = []
+    for index in ordered_indices:
+        if all(abs(index - other) > adjacency for other in kept):
+            kept.append(index)
+        if len(kept) >= cap:
+            break
+    return kept

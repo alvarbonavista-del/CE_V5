@@ -24,7 +24,9 @@ from ce_v5.platform.rules.volume_profile import (
     VP_POC_SOURCE_ID,
     VP_VAH_SOURCE_ID,
     VP_VAL_SOURCE_ID,
+    VolumeNodeParams,
     VolumeProfileError,
+    compute_volume_nodes,
     compute_volume_profile,
     vp_poc_declaration,
     vp_vah_declaration,
@@ -196,3 +198,40 @@ class TestBordes:
                 ],
                 bin_count=5,
             )
+
+
+class TestNodos:
+    # Perfil de 10 bins (bin_width=1.0: min=100, max=110). Volumen por precio -> bin:
+    # 100->b0=80, 103->b3=10, 105->b5=100 (POC), 107->b7=10, 110->b9=10. total=210,
+    # ocupados=5, media=42. HVN si vol>media*1.5=63 y a >3 bins del POC: b0(80) a 5 del
+    # POC -> HVN (centro 100.5); b5 es POC (excluido). VA cubre todo el rango [b0,b9].
+    # LVN si vol<media*0.3=12.6 dentro de la VA: bins vacios (0) y b3/b7 (10). Orden por
+    # volumen asc + indice asc, dedup a >3 bins: quedan b1 (centro 101.5) y b6 (106.5).
+    _WINDOW = [
+        _footprint(
+            [
+                ("100", "80", "0"),
+                ("103", "10", "0"),
+                ("105", "100", "0"),
+                ("107", "10", "0"),
+                ("110", "10", "0"),
+            ]
+        )
+    ]
+
+    def test_hvn_y_lvn_sobre_perfil_conocido(self) -> None:
+        nodes = compute_volume_nodes(self._WINDOW, bin_count=10)
+        assert nodes.hvn == (Decimal("100.5"),)
+        assert nodes.lvn == (Decimal("101.5"), Decimal("106.5"))
+
+    def test_precio_unico_no_da_nodos(self) -> None:
+        # Rango nulo: sin distribucion, no hay HVN ni LVN.
+        nodes = compute_volume_nodes([_footprint([("100", "10", "0")])], bin_count=10)
+        assert nodes.hvn == ()
+        assert nodes.lvn == ()
+
+    def test_subir_el_umbral_hvn_por_parametro_lo_vacia(self) -> None:
+        # Con hvn_multiplier alto (5.0), ningun bin supera media*5=210 -> sin HVN.
+        params = VolumeNodeParams(hvn_multiplier=Decimal("5.0"))
+        nodes = compute_volume_nodes(self._WINDOW, bin_count=10, params=params)
+        assert nodes.hvn == ()
