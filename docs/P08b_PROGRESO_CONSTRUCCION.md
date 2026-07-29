@@ -244,3 +244,33 @@ Verificacion:
 Nota tecnica: mypy strict exigio narrowing de valores indexados X | None (patron ya visto en volume.*); corregido asignando variables locales antes de comparar, en vwap.py::direction y en el test. Sin cambio de semantica (certificado por golden + diferencial verdes).
 
 PENDIENTE (no en esta tanda): integracion (declaracion + materializador + p08b_declarations()), condicionada al merge de la capa de materializacion de P08c.
+
+---
+
+## fib.* (nucleo puro) -- COMPLETADA (commit 7612a39, certificado 24/24 sobre pila de BD limpia)
+
+Nucleo PURO de niveles Fibonacci parametrizado por rango explicito (dictamen P08b-13). El proveedor del rango queda DIFERIDO (DEC-FIB-RANGO-DIFERIDO).
+
+Fuentes (nucleo puro):
+  - fib.levels: grid de 17 niveles (7 retrazados dentro + 5 extensiones arriba + 5 abajo) dado (pivot_high, pivot_low); Decimal exacto; ordered_levels/ordered_pcts de abajo a arriba.
+  - fib.nearest_level: nivel mas cercano al precio (empate -> indice menor, como v4).
+  - fib.level_pct: pct del nivel mas cercano (0=low, 100=high; <0 o >100 en extensiones).
+  - fib.direction: ABOVE/BELOW respecto al nivel cercano (empate -> ABOVE).
+
+Constantes definitorias (paridad v4): retrazados [0, 23.6, 38.2, 50, 61.8, 78.6, 100]; extensiones arriba [127.2, 141.4, 161.8, 200, 261.8]; abajo [-27.2, -41.4, -61.8, -100, -161.8]. Decimal exacto; round() de v4 = presentacion.
+
+Decisiones (P08b-13):
+  - DEC-FIB-RANGO-DIFERIDO: el proveedor del rango (stateless swing.* vs recursive con histeresis L2) se decide cuando el materializador recursivo este integrado; hasta entonces fib.* toma el rango como parametro explicito.
+  - price_in_level (touch_pct 0.3%) y bounce_confirmed -> Rule (DEC-UMBRAL-LOCUS); no son fuentes.
+  - Pivotes = swing.* + fallback max/min (D4, dentro del proveedor diferido).
+  - DrawingStore (UI) fuera (D5). Restriccion 1D = wiring. Sin AHP.
+
+Verificacion:
+  - Golden exacto (rango 0..100: niveles, nearest, pct, direction).
+  - Diferencial contra referente Fraction sobre 300-400 casos: niveles exactos; nearest exacto; level_pct verificado contra la formula geometrica (nearest-low)/rango*100 (NO contra la constante hardcodeada); empate nearest -> indice menor; empate direction -> ABOVE.
+  - Independencia del contexto Decimal; validacion de rango invalido (<=0).
+  - Guard FIB_FORMULA_VERSION = 1.
+  - 9 tests unitarios verdes; ci_local COMPLETA 24/24 verde sobre pila de BD recreada desde cero.
+  - Nota tecnica: 3 fixes ruff B905 (zip strict=) dentro del limite; sin cambio de semantica.
+
+PENDIENTE: (1) proveedor del rango (DEC-FIB-RANGO-DIFERIDO); (2) integracion de las 5 familias (declaracion + materializador + p08b_declarations()), gateada al merge de la capa de materializacion de P08c.
