@@ -274,3 +274,22 @@ Verificacion:
   - Nota tecnica: 3 fixes ruff B905 (zip strict=) dentro del limite; sin cambio de semantica.
 
 PENDIENTE: (1) proveedor del rango (DEC-FIB-RANGO-DIFERIDO); (2) integracion de las 5 familias (declaracion + materializador + p08b_declarations()), gateada al merge de la capa de materializacion de P08c.
+
+---
+
+## P08b -- CHECKLIST DE CIERRE (pendiente; retomar tras el merge de la materializacion de P08c)
+
+Estado: las 5 familias de fuentes candle-derived estan CONSTRUIDAS y verificadas en frio (ci_local 24/24) en wip/p08b. La pieza NO esta ENTREGADA todavia: faltan puntos del DoD (ficha ROADMAP A-1.4).
+
+Fuentes construidas (commits): divergence.* da80d66 ; candle.* 603e0a0 ; volume.* 8bca564 ; vwap.* b82b2bc ; fib.* nucleo puro 7612a39. (RSI / EMA / MACD / SMA / swing.* previos, ya en la rama.)
+
+PENDIENTE PARA ENTREGA (DoD ficha P08b, en orden):
+  1. Declaraciones DataSource (ADR-008): cache_key_schema COMPLETO (datasource_id, exchange, symbol, timeframe, price_source, bucket_offset, formula_version, parametros, ventana, as_of) + memory_model + servibility; y p08b_declarations() en el catalogo real. Gateado al merge de la capa de materializacion de P08c.
+  2. Materializador por familia (POINT_LOCAL / ventana / recursivo segun la fuente). Mismo gate (P08c).
+  3. swing.* cableado como primitiva UNICA tambien para pivotes de RSI y de CVD (DA-I03-4), no solo de precio.
+  4. Proveedor del rango de fib.* (DEC-FIB-RANGO-DIFERIDO): stateless swing.* vs recursive con histeresis L2; se decide cuando este el materializador recursivo.
+  5. Validacion en caliente OBLIGATORIA: series sobre datos reales comparadas con TradingView (+ verificacion TradingView como DoD auxiliar). No rebajable.
+  6. Actions verde 3/3, cero skips (llega en el PR de integracion a main; los push a wip/p08b no disparan el workflow).
+  7. Con 1-6 en verde: informe de entrega P08b -> doble revision (Central + CSA) -> firma Alvaro -> tanda de cierre que actualiza los 4 archivos de contexto (5.5 / 5.9 / 5.17).
+
+Retomar cuando P08c haya mergeado su capa de materializacion.
