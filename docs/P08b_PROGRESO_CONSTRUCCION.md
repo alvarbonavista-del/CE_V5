@@ -293,3 +293,19 @@ PENDIENTE PARA ENTREGA (DoD ficha P08b, en orden):
   7. Con 1-6 en verde: informe de entrega P08b -> doble revision (Central + CSA) -> firma Alvaro -> tanda de cierre que actualiza los 4 archivos de contexto (5.5 / 5.9 / 5.17).
 
 Retomar cuando P08c haya mergeado su capa de materializacion.
+
+---
+
+## P08b -- PLAN DE CABLEADO (dictamen Central P08b-INT-01, 2026-07-30)
+
+Interfaz de materializacion de P08c consumida (handoff commit 7c56472). Cableado aprobado en 5 lotes:
+  LOTE 1: read_candle_window (lo ANADE P08b en infra/db, consume market_candle de P07 -GRANT 0016-, ADITIVO; pluma de P08b por turno 5.34) + declaraciones/specs de las Decimal directas: candle.body_pct / upper_shadow_pct / lower_shadow_pct (POINT_LOCAL) + vwap.value / vwap.distance_pct / volume.ratio_vs_avg (WINDOWED).
+  LOTE 2: EMA (RECURSIVE, snapshot Decimal unico, mecanismo materialize_recursive actual).
+  LOTE 3: RSI / MACD (RECURSIVE multi-estado; spec por-fuente que snapshotea el estado completo -avg_gain/avg_loss en RSI; 3 estados EMA en MACD-; COORDINADO con P08c: toca el plumbing de snapshot; P08b propone diseno, P08c dictamina o eleva).
+  LOTE 4: fib (cuando llegue el proveedor de rango, DEC-FIB-RANGO-DIFERIDO).
+  LOTE 5: DIFERIDAS hasta que el contrato de Serie soporte no-Decimal (o su primer consumidor real las abra): categoricas (candle.direction/shadow_signal/pullback_moment, vwap.side/direction, volume.direction), booleanas (candle.new_high/new_low), de-lista (swing.*, divergence.*), grid (fib.levels). NO se codifican a Decimal (no se ensucia el contrato).
+
+Decisiones: D1 diferir no-escalares (opcion c); D2 EMA ya / RSI-MACD spec enriquecido coordinado con P08c; D3 read_candle_window lo anade P08b; D4 swing/divergence diferidas.
+Convenciones vinculantes: materializar con DEFAULTS (guarda del compilador rechaza ref.params no vacio); NOT_EVALUABLE sin inventar barras (menos valores o ()); UnwiredSourceError si no hay materializador; sin correccion WINDOWED/RECURSIVE/INTEGRATOR en v5.0; aditividad; ADR-008 + fixture bit-a-bit + ci_local 24/24; fixes max 2; ASCII-safe.
+
+SECUENCIA REAL: preparar declaraciones/specs/lector se DISENA ahora; el CABLEADO (registro en discovery.py + SOURCE_MATERIALIZERS en el worker + read_candle_window en infra/db) y el ci_local requieren wip/p08b REBASADO sobre main con la materializacion mergeada (pendiente PR + Actions + cierre de P08c). Hasta el rebase: solo diseno/borrador + verificacion de envoltorios puros (que solo dependen de las funciones puras ya commiteadas).
