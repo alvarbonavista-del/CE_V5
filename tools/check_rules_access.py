@@ -111,6 +111,11 @@ _WRITE_PRIVILEGES: tuple[str, ...] = ("INSERT", "UPDATE", "DELETE", "TRUNCATE")
 # cualquier otra tabla, el check ROMPE EL BUILD.
 MARKET_CANDLE_TABLE = "market_candle"
 
+# El FOOTPRINT publico (P08c CE-14, 0021): el motor lo LEE para materializar
+# vp.*/orderflow/cvd sobre su ventana. Lectura PERMITIDA, escritura NEGADA, igual
+# que market_candle.
+MARKET_FOOTPRINT_TABLE = "market_footprint"
+
 # La ventanilla de DEMANDA de suscripcion: es del INGESTOR (0012). El motor no decide
 # que flujos se suscriben, asi que no la ejecuta.
 MARKET_DEMAND_FUNCTION = "market_public_demand"
@@ -138,7 +143,9 @@ MARKET_ORDERBOOK_TABLES: tuple[str, ...] = (
 # Tablas de mercado sobre las que el motor NO puede ESCRIBIR (market_candle incluida:
 # el historico es append-only tambien para el motor).
 MARKET_TABLES: tuple[str, ...] = (
-    (MARKET_CANDLE_TABLE,) + MARKET_TABLES_FORBIDDEN + MARKET_ORDERBOOK_TABLES
+    (MARKET_CANDLE_TABLE, MARKET_FOOTPRINT_TABLE)
+    + MARKET_TABLES_FORBIDDEN
+    + MARKET_ORDERBOOK_TABLES
 )
 IDENTITY_TABLES: tuple[str, ...] = ("app_user", "user_credential", "user_session")
 POLICY_TABLES: tuple[str, ...] = (
@@ -319,6 +326,21 @@ def _market_read_violations(
                 f"{MARKET_CANDLE_TABLE}: el rol {RULES_ROLE_NAME} tiene {privilege} "
                 "(P08 D1, 0016): el motor LEE el mercado, no lo escribe. Nadie "
                 "reescribe la historia del mercado, tampoco el motor."
+            )
+
+    # Prueba D1-footprint (POSITIVO, P08c CE-14, 0021): el motor materializa
+    # vp.*/orderflow/cvd sobre la ventana de footprints; sin SELECT no puede.
+    if not privileges.get((RULES_ROLE_NAME, MARKET_FOOTPRINT_TABLE, "SELECT"), False):
+        out.append(
+            f"{MARKET_FOOTPRINT_TABLE}: el rol {RULES_ROLE_NAME} NO tiene SELECT "
+            "(P08c CE-14, 0021): materializa vp.*/orderflow/cvd sobre la ventana de "
+            "footprints; sin esa lectura no puede materializar."
+        )
+    for privilege in _WRITE_PRIVILEGES:
+        if privileges.get((RULES_ROLE_NAME, MARKET_FOOTPRINT_TABLE, privilege), False):
+            out.append(
+                f"{MARKET_FOOTPRINT_TABLE}: el rol {RULES_ROLE_NAME} tiene {privilege} "
+                "(P08c CE-14): el motor LEE el footprint, no lo escribe."
             )
 
     # Pruebas 2 y 7 (NEGATIVOS): ninguna otra tabla de mercado, ni para leer.

@@ -50,13 +50,18 @@ def _check(privileges: dict[tuple[str, str, str], bool] | None = None) -> list[s
     return check_rules(
         _funcion(),
         True,  # el motor SI tiene EXECUTE sobre su ventanilla.
-        {(RULES, "market_candle", "SELECT"): True} | (privileges or {}),
+        {
+            (RULES, "market_candle", "SELECT"): True,
+            (RULES, "market_footprint", "SELECT"): True,
+        }
+        | (privileges or {}),
         _outbox(),
     )
 
 
 def test_el_caso_conforme_no_produce_violaciones() -> None:
-    # Sin falsos rojos: con la rendija de lectura de velas y nada mas, verde.
+    # Sin falsos rojos: con las DOS rendijas de lectura que la postura autorizada
+    # concede -- velas (0016) y footprint (0021, MAT-04) -- y nada mas, verde.
     assert _check() == []
 
 
@@ -65,6 +70,21 @@ def test_sin_select_sobre_market_candle_el_motor_no_puede_evaluar() -> None:
     # en produccion. Aqui rompe el build.
     problems = check_rules(_funcion(), True, {}, _outbox())
     assert any("NO tiene SELECT" in p for p in problems)
+
+
+def test_sin_select_sobre_market_footprint_el_motor_no_puede_materializar() -> None:
+    # El POSITIVO de footprint (P08c CE-14, 0021): la materializacion de
+    # vp.*/orderflow/cvd lee la VENTANA de footprints; si ese grant desaparece, el motor
+    # no puede materializar. Se deja el SELECT de velas puesto a proposito, para que lo
+    # que muerda sea el positivo de FOOTPRINT y no el de market_candle.
+    problems = check_rules(
+        _funcion(), True, {(RULES, "market_candle", "SELECT"): True}, _outbox()
+    )
+    assert any(
+        p.startswith(f"{check_rules_access.MARKET_FOOTPRINT_TABLE}: ")
+        and "NO tiene SELECT" in p
+        for p in problems
+    )
 
 
 def test_el_motor_no_escribe_el_libro_l2() -> None:
