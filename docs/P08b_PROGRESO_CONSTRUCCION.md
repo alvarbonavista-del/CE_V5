@@ -309,3 +309,28 @@ Decisiones: D1 diferir no-escalares (opcion c); D2 EMA ya / RSI-MACD spec enriqu
 Convenciones vinculantes: materializar con DEFAULTS (guarda del compilador rechaza ref.params no vacio); NOT_EVALUABLE sin inventar barras (menos valores o ()); UnwiredSourceError si no hay materializador; sin correccion WINDOWED/RECURSIVE/INTEGRATOR en v5.0; aditividad; ADR-008 + fixture bit-a-bit + ci_local 24/24; fixes max 2; ASCII-safe.
 
 SECUENCIA REAL: preparar declaraciones/specs/lector se DISENA ahora; el CABLEADO (registro en discovery.py + SOURCE_MATERIALIZERS en el worker + read_candle_window en infra/db) y el ci_local requieren wip/p08b REBASADO sobre main con la materializacion mergeada (pendiente PR + Actions + cierre de P08c). Hasta el rebase: solo diseno/borrador + verificacion de envoltorios puros (que solo dependen de las funciones puras ya commiteadas).
+
+---
+
+## P08b -- LOTE 1 RATIFICADO (dictamen Central P08b-INT-02, 2026-07-30) -- LISTO PARA EJECUTAR POST-MERGE
+
+Decisiones ratificadas:
+- D-A (A): N (n_candles / lookback) es PARAM declarado, va en cache_key. VWAP-20 != VWAP-50 (hechos distintos). El materializador usa el DEFAULT (guarda del compilador); ese default produce la clave canonica.
+- D-B (A): las candle-derived son HOJAS, consumes=(). Leen market_candle crudo via read_candle_window (identico a market.close / read_close_window). NO se declara market.candle (seria no-escalar + DAG de 2o nivel no cableado).
+- D-C: P08c cierra SIN deuda hacia P08b. El mecanismo entregado (materialize_windowed + materialize_recursive + Protocol + registro + dispatch por SOURCE_ID) es suficiente. P08b anade TODO su cableado en su turno post-merge (aditivo); orden P08c-mergea -> P08b-rebasa-y-anade.
+
+ESPECIFICACION DE CABLEADO LOTE 1 (ejecutar en el turno post-merge, tras rebase de wip/p08b sobre main con la materializacion mergeada):
+  1. read_candle_window(session, exchange, symbol, timeframe, open_time, count) -> Sequence[CandleClosedPayload], en ce_v5/infra/db/market_candle.py. Calca read_footprint_window: oldest->newest, `count` velas cerradas terminando en open_time, un solo flujo. Lee la tabla market_candle de P07 (GRANT SELECT a ce_v5_rules via 0016).
+  2. Specs nuevos en entrypoints/worker_rules/materializers.py (aditivo, mismo patron que los de footprint):
+     - CandlePointLocalSpec(extract: (CandleClosedPayload) -> Decimal): lee read_candle_window(..., history_bars) y proyecta extract por barra.
+     - CandleWindowedSpec(transform: (Sequence[CandleClosedPayload]) -> Decimal, window_bars): lee history_bars + window_bars - 1 y aplica materialize_windowed.
+  3. Declaraciones (source_type=OBSERVABLE, servibility=CONTINUOUS, value_type=DECIMAL, history_units=(BARS,), shared_evaluation=True, sharing_scope=PUBLIC_CROSS_TENANT, consumes=()):
+     - candle.body_pct / candle.upper_shadow_pct / candle.lower_shadow_pct: POINT_LOCAL, params=(), cache_key=(exchange, symbol, timeframe); spec CandlePointLocalSpec(extract=<pct de la vela T>).
+     - vwap.value / vwap.distance_pct: WINDOWED, params=(n_candles INT def 20), cache_key=(exchange, symbol, timeframe, n_candles); spec CandleWindowedSpec(transform=<value/distance de la ventana>[-1], window_bars=20).
+     - volume.ratio_vs_avg: WINDOWED, params=(lookback INT def 20), cache_key=(exchange, symbol, timeframe, lookback); spec CandleWindowedSpec(transform=ratio_vs_avg(ventana)[-1], window_bars=lookback+1).
+     transform/extract = envoltorios finos sobre las funciones puras ya commiteadas (extraen O/H/L/C/V y toman el ultimo valor de la serie). vwap.distance_pct recomputa el VWAP internamente (hoja; DAG de 2o nivel no cableado).
+  4. Alta de cada spec en SOURCE_MATERIALIZERS (registro compartido) + declaraciones publicadas via el modulo productor y registradas en discovery.py (bundle P08b).
+  5. Al codificar read_candle_window: confirmar columnas contra el DDL de market_candle y los campos de CandleClosedPayload (open/high/low/close/volume/open_time/exchange/symbol/timeframe).
+  6. Verificacion: fixture bit-a-bit por fuente (misma base + misma funcion pura -> misma serie) + ci_local 24/24 sobre pila de BD LIMPIA (recrear contenedores antes).
+
+GATE: ejecutar cuando P08c mergee a main (Actions verde + cierre de contexto) y wip/p08b rebase sobre main. Disparo de vuelta: HANDOFF_P08c_MATERIALIZACION seccion 12 (aviso a Alvaro).
