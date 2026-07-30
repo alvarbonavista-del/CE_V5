@@ -40,9 +40,8 @@ from ce_v5.core.bus import BusMessage, EventBus
 from ce_v5.core.observability import log_event
 from ce_v5.entrypoints.worker_rules.cycle import process_rule_cycle
 from ce_v5.entrypoints.worker_rules.materializers import (
-    FOOTPRINT_MATERIALIZERS,
+    SOURCE_MATERIALIZERS,
     UnwiredSourceError,
-    materialize_footprint_windowed,
 )
 from ce_v5.infra.bus_redis import RedisBusConfig, RedisEventBus, create_client
 from ce_v5.infra.db.config import DbConfig, RulesDbConfig
@@ -203,12 +202,13 @@ def _materialize(
     open_time: int,
     source: ResolvedSource,
 ) -> tuple[Decimal, ...]:
-    """La serie de UNA fuente resuelta, elegida por SOURCE_ID (MAT-06).
+    """La serie de UNA fuente resuelta, elegida por SOURCE_ID (MAT-06/07).
 
     market.close (unica POINT_LOCAL sobre velas de v5.0) se lee con read_close_window.
-    vp.poc/vah/val (WINDOWED sobre footprint) pasan por su FootprintWindowedSpec. Toda
-    otra fuente servible sin spec cableado -> UnwiredSourceError: no se sirve una serie
-    por defecto (serviria un hecho falso, la deriva que mato a v4).
+    Las demas fuentes cableadas (vp.* WINDOWED, orderflow.delta POINT_LOCAL, ambas
+    sobre footprint) pasan por su SourceMaterializer del registro. Toda otra fuente
+    servible sin materializador -> UnwiredSourceError: no se sirve una serie por
+    defecto (serviria un hecho falso, la deriva que mato a v4).
     """
     source_id = source.source_id
     if source_id == MARKET_CLOSE_SOURCE_ID:
@@ -220,11 +220,10 @@ def _materialize(
             open_time,
             source.history_bars,
         )
-    spec = FOOTPRINT_MATERIALIZERS.get(source_id)
-    if spec is not None:
-        return materialize_footprint_windowed(
+    materializer = SOURCE_MATERIALIZERS.get(source_id)
+    if materializer is not None:
+        return materializer.materialize(
             session,
-            spec,
             plan.exchange,
             plan.symbol,
             timeframe,

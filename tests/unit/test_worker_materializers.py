@@ -16,15 +16,15 @@ import pytest
 
 from ce_v5.entrypoints.worker_rules.composition import _materialize
 from ce_v5.entrypoints.worker_rules.materializers import (
-    FOOTPRINT_MATERIALIZERS,
     PROFILE_WINDOW_BARS,
+    SOURCE_MATERIALIZERS,
+    FootprintPointLocalSpec,
+    FootprintWindowedSpec,
     UnwiredSourceError,
 )
 from ce_v5.platform.rules.compiler import ExecutionPlan, ResolvedSource
-from ce_v5.platform.rules.orderflow import (
-    ORDERFLOW_DELTA_SOURCE_ID,
-    orderflow_delta_declaration,
-)
+from ce_v5.platform.rules.cvd import CVD_SOURCE_ID, cvd_declaration
+from ce_v5.platform.rules.orderflow import ORDERFLOW_DELTA_SOURCE_ID
 from ce_v5.platform.rules.volume_profile import (
     DEFAULT_BIN_COUNT,
     VP_POC_SOURCE_ID,
@@ -46,15 +46,17 @@ _OPEN = 1_784_073_600_000
 def _footprint(open_time: int, offset: Decimal) -> FootprintClosedPayload:
     """Un footprint de juguete con dos niveles, desplazado por offset.
 
-    offset hace cada barra DISTINGUIBLE: si el materializador usara la ventana
-    equivocada, el perfil saldria de otros precios y la igualdad Decimal fallaria.
+    offset hace cada barra DISTINGUIBLE en PRECIO y en DELTA: si el materializador usara
+    la ventana equivocada, el perfil saldria de otros precios y la igualdad Decimal
+    fallaria; y como el bar_delta tambien varia, una serie POINT_LOCAL desplazada
+    tampoco puede coincidir por casualidad.
     """
     cells = (
         FootprintCell(
             price=Decimal("100") + offset,
-            buy_volume=Decimal("2"),
+            buy_volume=Decimal("2") + offset,
             sell_volume=Decimal("1"),
-            delta=Decimal("1"),
+            delta=Decimal("2") + offset - Decimal("1"),
         ),
         FootprintCell(
             price=Decimal("101") + offset,
@@ -88,14 +90,29 @@ def _ventana(cuantas: int = 4) -> tuple[FootprintPayload, ...]:
     )
 
 
+def _windowed(source_id: str) -> FootprintWindowedSpec:
+    """El spec WINDOWED de una fuente. El isinstance NARROWS y a la vez ASEGURA el tipo.
+
+    El registro esta tipado como el Protocol SourceMaterializer, que no expone transform
+    ni window_bars: si un dia vp.poc pasara a otra clase de materializador, esto falla
+    aqui en vez de dar un AttributeError en produccion.
+    """
+    spec = SOURCE_MATERIALIZERS[source_id]
+    assert isinstance(spec, FootprintWindowedSpec)
+    return spec
+
+
 class TestRegistroPorSourceId:
     """4.1: el binding source_id -> funcion pura es el correcto, y la ventana es 100."""
 
-    def test_las_tres_fuentes_vp_estan_cableadas(self) -> None:
-        assert set(FOOTPRINT_MATERIALIZERS) == {
+    def test_el_registro_tiene_exactamente_las_fuentes_cableadas(self) -> None:
+        # Exacto, no "al menos": una fuente que aparezca sin dictamen (o desaparezca en
+        # un refactor) cambia lo que el motor sabe servir, y eso se ve aqui.
+        assert set(SOURCE_MATERIALIZERS) == {
             VP_POC_SOURCE_ID,
             VP_VAH_SOURCE_ID,
             VP_VAL_SOURCE_ID,
+            ORDERFLOW_DELTA_SOURCE_ID,
         }
 
     @pytest.mark.parametrize(
@@ -106,23 +123,23 @@ class TestRegistroPorSourceId:
         # [PARIDAD v4 _WINDOW] = 100 barras. Es constante FIJA de materializacion
         # (MAT-05 Q3), no parametro por regla: si alguien la moviera, el perfil dejaria
         # de ser el de v4 sin que ninguna declaracion cambiase.
-        assert FOOTPRINT_MATERIALIZERS[source_id].window_bars == 100
-        assert FOOTPRINT_MATERIALIZERS[source_id].window_bars == PROFILE_WINDOW_BARS
+        assert _windowed(source_id).window_bars == 100
+        assert _windowed(source_id).window_bars == PROFILE_WINDOW_BARS
 
     def test_el_transform_de_poc_es_el_poc_del_perfil(self) -> None:
         ventana = _ventana()
         esperado = compute_volume_profile(ventana, bin_count=DEFAULT_BIN_COUNT).poc
-        assert FOOTPRINT_MATERIALIZERS[VP_POC_SOURCE_ID].transform(ventana) == esperado
+        assert _windowed(VP_POC_SOURCE_ID).transform(ventana) == esperado
 
     def test_el_transform_de_vah_es_el_vah_del_perfil(self) -> None:
         ventana = _ventana()
         esperado = compute_volume_profile(ventana, bin_count=DEFAULT_BIN_COUNT).vah
-        assert FOOTPRINT_MATERIALIZERS[VP_VAH_SOURCE_ID].transform(ventana) == esperado
+        assert _windowed(VP_VAH_SOURCE_ID).transform(ventana) == esperado
 
     def test_el_transform_de_val_es_el_val_del_perfil(self) -> None:
         ventana = _ventana()
         esperado = compute_volume_profile(ventana, bin_count=DEFAULT_BIN_COUNT).val
-        assert FOOTPRINT_MATERIALIZERS[VP_VAL_SOURCE_ID].transform(ventana) == esperado
+        assert _windowed(VP_VAL_SOURCE_ID).transform(ventana) == esperado
 
     def test_cada_transform_lee_su_propia_salida(self) -> None:
         # Los tres NO son el mismo numero en esta ventana: si el registro cruzara los
@@ -163,17 +180,51 @@ def _plan() -> ExecutionPlan:
     )
 
 
-class TestDispatchFalloRuidoso:
-    """4.2: una servible sin materializador LANZA, no recibe una serie por defecto."""
+class TestOrderflowDeltaPointLocal:
+    """5.1: orderflow.delta esta cableada como POINT_LOCAL sobre footprint (MAT-07).
 
-    def test_orderflow_delta_sin_cablear_lanza_unwired(self) -> None:
-        # orderflow.delta es SERVIBLE y esta en el catalogo vivo, pero en v5.0 no tiene
+    El valor de la barra T es el bar_delta del footprint de T: ni ventana acotada ni
+    recurrencia. Es la BASE que cvd.value acumulara en T5b-2, asi que el DAG se cablea
+    bottom-up: si esta serie fuera la equivocada, el CVD entero mentiria.
+    """
+
+    def test_esta_cableada_con_un_spec_point_local(self) -> None:
+        spec = SOURCE_MATERIALIZERS[ORDERFLOW_DELTA_SOURCE_ID]
+        assert isinstance(spec, FootprintPointLocalSpec)
+
+    def test_el_extract_es_el_bar_delta_de_la_barra(self) -> None:
+        spec = SOURCE_MATERIALIZERS[ORDERFLOW_DELTA_SOURCE_ID]
+        assert isinstance(spec, FootprintPointLocalSpec)
+        footprint = _footprint(_OPEN, Decimal(3))
+        assert spec.extract(footprint) == footprint.bar_delta
+
+    def test_el_extract_no_es_una_constante(self) -> None:
+        # Dos barras con delta DISTINTO dan valores distintos: si extract devolviera un
+        # cero fijo (o el volumen en vez del delta), esto lo caza.
+        spec = SOURCE_MATERIALIZERS[ORDERFLOW_DELTA_SOURCE_ID]
+        assert isinstance(spec, FootprintPointLocalSpec)
+        uno = _footprint(_OPEN, Decimal(1))
+        otro = _footprint(_OPEN, Decimal(9))
+        assert uno.bar_delta != otro.bar_delta
+        assert spec.extract(uno) != spec.extract(otro)
+
+
+class TestDispatchFalloRuidoso:
+    """4.2: una servible sin materializador LANZA, no recibe una serie por defecto.
+
+    La fuente-ejemplo es cvd.value: SERVIBLE y en el catalogo vivo, pero sin cablear
+    hasta T5b-2. (Hasta MAT-07 el ejemplo era orderflow.delta; ahora esa YA esta
+    cableada, asi que dejaria de probar nada.)
+    """
+
+    def test_cvd_sin_cablear_lanza_unwired(self) -> None:
+        # cvd.value es SERVIBLE y esta en el catalogo vivo, pero en v5.0 no tiene
         # materializador. Servirle la ventana de cierres (el comportamiento viejo de
         # _series_for, que leia read_close_window para TODA fuente) le daria PRECIOS
-        # donde espera DELTAS: un hecho falso con aspecto de correcto.
+        # donde espera un ACUMULADO de delta: un hecho falso con aspecto de correcto.
         source = ResolvedSource(
-            source_id=ORDERFLOW_DELTA_SOURCE_ID,
-            declaration=orderflow_delta_declaration(),
+            source_id=CVD_SOURCE_ID,
+            declaration=cvd_declaration(),
             history_bars=5,
         )
         with pytest.raises(UnwiredSourceError, match="no tiene materializador"):
@@ -188,11 +239,11 @@ class TestDispatchFalloRuidoso:
     def test_el_mensaje_nombra_la_fuente(self) -> None:
         # El fallo tiene que decir QUE fuente falta, o el operador no sabe que cablear.
         source = ResolvedSource(
-            source_id=ORDERFLOW_DELTA_SOURCE_ID,
-            declaration=orderflow_delta_declaration(),
+            source_id=CVD_SOURCE_ID,
+            declaration=cvd_declaration(),
             history_bars=5,
         )
-        with pytest.raises(UnwiredSourceError, match=ORDERFLOW_DELTA_SOURCE_ID):
+        with pytest.raises(UnwiredSourceError, match=CVD_SOURCE_ID):
             _materialize(
                 _SesionQueFalla(),
                 _plan(),

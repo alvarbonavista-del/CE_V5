@@ -30,8 +30,8 @@ import pytest
 import redis
 
 from ce_v5.entrypoints.worker_rules.materializers import (
+    SOURCE_MATERIALIZERS,
     FootprintWindowedSpec,
-    materialize_footprint_windowed,
 )
 from ce_v5.infra.bus_redis import RedisBusConfig, RedisEventBus, create_client
 from ce_v5.infra.db.market_footprint import (
@@ -40,6 +40,7 @@ from ce_v5.infra.db.market_footprint import (
 )
 from ce_v5.infra.db.outbox_publisher import OutboxPublisher, topic_for
 from ce_v5.infra.db.psycopg_adapter import PsycopgDatabase
+from ce_v5.platform.rules.orderflow import ORDERFLOW_DELTA_SOURCE_ID
 from ce_v5.platform.rules.volume_profile import (
     DEFAULT_BIN_COUNT,
     compute_volume_profile,
@@ -616,8 +617,8 @@ class TestMaterializacionWindowedSobreLaVentanaReal:
         )
 
         with rules_db.transaction() as session:
-            serie = materialize_footprint_windowed(
-                session, spec, "binance", "BTC-USDT", _TF.value, ultimo, 5
+            serie = spec.materialize(
+                session, "binance", "BTC-USDT", _TF.value, ultimo, 5
             )
 
         # Con 5 barras y ventana 3 solo hay 3 valores computables (las barras 3, 4 y 5);
@@ -648,9 +649,8 @@ class TestMaterializacionWindowedSobreLaVentanaReal:
         )
 
         with rules_db.transaction() as session:
-            serie = materialize_footprint_windowed(
+            serie = spec.materialize(
                 session,
-                spec,
                 "binance",
                 "BTC-USDT",
                 _TF.value,
@@ -659,6 +659,64 @@ class TestMaterializacionWindowedSobreLaVentanaReal:
             )
 
         assert serie == ()
+
+
+class TestMaterializacionPointLocalDeOrderflowDelta:
+    """orderflow.delta materializada del REGISTRO REAL contra PostgreSQL (MAT-07).
+
+    Se usa el spec del registro (SOURCE_MATERIALIZERS), no uno de prueba: lo que se
+    valida es el cableado que correra en produccion. POINT_LOCAL = un valor por barra,
+    el bar_delta de esa barra, sin ventana ni acumulacion. Es la BASE de cvd.value
+    (T5b-2): si esta serie estuviera desalineada, el acumulado heredaria el error.
+    """
+
+    def test_la_serie_es_el_bar_delta_de_cada_barra(
+        self,
+        rules_db: PsycopgDatabase,
+        persistir_footprint: Persistir,
+        limpiar_footprint: None,
+    ) -> None:
+        # Cada barra lleva un offset distinto, asi que su bar_delta tambien: una serie
+        # desordenada o desplazada no podria coincidir por casualidad.
+        escritas = _escribir_barras(persistir_footprint, 4)
+        deltas = [barra.bar_delta for barra in escritas]
+        assert len(set(deltas)) == 4  # los cuatro deltas son distintos.
+        spec = SOURCE_MATERIALIZERS[ORDERFLOW_DELTA_SOURCE_ID]
+
+        with rules_db.transaction() as session:
+            serie = spec.materialize(
+                session,
+                "binance",
+                "BTC-USDT",
+                _TF.value,
+                escritas[-1].open_time,
+                4,
+            )
+
+        assert serie == tuple(deltas)
+
+    def test_bars_menor_que_la_historia_da_los_mas_recientes(
+        self,
+        rules_db: PsycopgDatabase,
+        persistir_footprint: Persistir,
+        limpiar_footprint: None,
+    ) -> None:
+        # POINT_LOCAL no necesita historia extra: history_bars=2 sobre 4 barras da los
+        # DOS deltas mas recientes, recortados por el extremo antiguo.
+        escritas = _escribir_barras(persistir_footprint, 4)
+        spec = SOURCE_MATERIALIZERS[ORDERFLOW_DELTA_SOURCE_ID]
+
+        with rules_db.transaction() as session:
+            serie = spec.materialize(
+                session,
+                "binance",
+                "BTC-USDT",
+                _TF.value,
+                escritas[-1].open_time,
+                2,
+            )
+
+        assert serie == (escritas[2].bar_delta, escritas[3].bar_delta)
 
 
 class TestElEventoEncoladoEsPublicable:
