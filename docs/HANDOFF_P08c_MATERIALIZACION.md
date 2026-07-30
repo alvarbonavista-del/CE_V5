@@ -1,13 +1,14 @@
 # HANDOFF -- SUB-PIEZA MATERIALIZACION P08c (CE-14)
 
 Estado: construccion completa; pendiente doble revision + merge. Rama wip/p08c,
-commits 6c3b63b..HEAD: 11 commits, de 873453f (T1 discovery) a 38d6096 (T5b-2b-ii
-cvd INTEGRATOR). 6c3b63b es el tip actual de main (el merge de la sub-pieza F7
-anterior), por lo que ese rango son EXACTAMENTE los commits de esta sub-pieza y
-equivale a main..HEAD.
+commits 6c3b63b..HEAD: 13 commits en total. Los 11 de CONSTRUCCION van de 873453f
+(T1 discovery) a 38d6096 (T5b-2b-ii cvd INTEGRATOR); los dos ultimos son de DOC: el
+handoff inicial (7c56472) y este mismo commit, que cierra la seccion 10 con R1-R3.
+6c3b63b es el tip actual de main (el merge de la sub-pieza F7 anterior), por lo que
+ese rango son EXACTAMENTE los commits de esta sub-pieza y equivale a main..HEAD.
 Tag: sin tag, se cita por commit (el repo no tiene ningun tag creado).
 
-Commits de la sub-pieza, en orden:
+Commits de CONSTRUCCION, en orden:
 
     873453f  T1   discovery explicito del catalogo vivo
     4782f62  T2   materializador WINDOWED (mecanismo puro)
@@ -115,21 +116,19 @@ cablear orderflow.delta y luego cvd.value; fixture 5.20 al abrir la categoria de
 estado).
 
 ## 10. INVARIANTES DE CONSUMIDOR (D6, requerimiento P08b-R1)
-PENDIENTE DE APORTE EXTERNO -- NO RESOLUBLE EN DISCO. El requerimiento P08b-R1 NO
-existe en este repositorio: la cadena "P08b-R1" no aparece en ningun fichero
-(.md/.py/.txt), y las menciones de P08b en docs/ (DOC_ROADMAP_V5.md y los cuatro
-ficheros de contexto) no enuncian ningun R1/R2/R3. Por tanto el CRUCE uno a uno
-contra R1-R3 no se ha podido hacer y queda como accion para Alvaro/Central: aportar
-el texto EXACTO de R1-R3 para confirmarlos o marcar el hueco.
-
-Garantias OFRECIDAS por esta sub-pieza (lo que el consumidor puede dar por cierto):
-- Determinismo: misma entrada -> misma serie, bit a bit.
-- Reproducibilidad del INTEGRATOR desde snapshot (ADR-007), verificada con el GATE
-  de dos anclas distintas (seccion 8).
-- NOT_EVALUABLE por historia corta: se devuelven menos valores o (), nunca se
-  inventa una barra.
-- Dispatch por convencion (source_id) + fallo ruidoso (UnwiredSourceError) ante una
-  fuente servible sin materializador: nunca una serie por defecto.
+R1-R3 enunciados por Central (orden T6). SATISFECHOS; evidencia cruda en el INFORME
+DE ENTREGA (seccion D6, separada).
+- R1 (hook de registro con cache_key completo): una fuente nueva se registra via
+  declarations() y su cache_key se valida en build_catalog. Evidencia: vp.poc en el
+  catalogo vivo (discover_declarations) + cache_key_validator pasando (MAT-03).
+- R2 (materializadores POINT_LOCAL/WINDOWED/RECURSIVE en main): los tres tipos
+  materializan de extremo a extremo: market.close (POINT_LOCAL), vp.poc (WINDOWED),
+  cvd.value (INTEGRATOR/RECURSIVE, replay desde snapshot).
+- R3 (aditividad del shared-contract): market.close y las reglas existentes NO
+  cambian de comportamiento. Evidencia: ci_local 24/24 + regresion de market.close.
+Garantias que sostienen R1-R3: determinismo bit a bit; reproducibilidad del
+INTEGRATOR desde cualquier snapshot (ADR-007, GATE de dos anclas); NOT_EVALUABLE por
+historia corta sin inventar barras; fallo ruidoso ante fuente sin materializador.
 
 ## 11. PENDIENTE / DIFERIDO
 - orderflow.delta_momentum (WINDOWED sobre delta): su tanda cablea el DAG de 2o
@@ -137,8 +136,6 @@ Garantias OFRECIDAS por esta sub-pieza (lo que el consumidor puede dar por ciert
 - session_utc de cvd (tras propagacion de params).
 - Retirada de la guarda del compilador (opcion 1).
 - Correccion de fuentes no-point-local (mejora coordinada posterior).
-- Cruce de las garantias de la seccion 10 contra R1-R3 de P08b-R1 (texto no
-  disponible en el repo).
 
 ## 12. AVISO PARA ALVARO
 Tras merge a main con Actions verde y cierre de contexto, DISPARAR la vuelta de P08b
