@@ -87,6 +87,20 @@ TABLAS_SIN_TENANT_PERMITIDAS: dict[str, str] = {
     # lo verifica tools/check_market_access.py.
     "market_orderbook_snapshot": "public_market",
     "market_orderbook_discontinuity": "public_market",
+    # ESTADO DE TRABAJO DEL MOTOR DE REGLAS (P08c CE-14, MAT-07, migracion 0022). No es
+    # market data (el motor no fabrica hechos publicos) ni superficie de tenant: es el
+    # ancla de VALOR desde la que se hace replay determinista de cvd.value, que es
+    # INTEGRATOR. Por eso 'system', como outbox/inbox, y no 'public_market'.
+    # Sin tenant_id A PROPOSITO: cvd.value se declara shared_evaluation con
+    # sharing_scope=public_cross_tenant, asi que su snapshot es un artefacto de
+    # evaluacion COMPARTIDO; darle tenant_id duplicaria el MISMO acumulado del MISMO
+    # flujo por cada tenant -- la explosion N x M que ADR-014 evita.
+    # Compensacion (regla 5.20): es la UNICA tabla que ce_v5_rules escribe fuera de su
+    # outbox, y su escritura esta acotada a INSERT (append-only: UPDATE/DELETE/TRUNCATE
+    # revocados). Lo verifica el check bloqueante tools/check_rules_access.py en los DOS
+    # sentidos: sin SELECT+INSERT no puede hacer replay; con los destructivos podria
+    # reescribir un ancla ya tomada y el replay dejaria de ser reproducible (ADR-007).
+    "cvd_snapshot": "system",
 }
 
 # Roles de RUNTIME: los que se conectan con una credencial en un proceso vivo.

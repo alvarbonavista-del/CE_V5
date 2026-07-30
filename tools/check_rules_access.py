@@ -17,6 +17,12 @@ documento. Con el, es un hecho verificado en cada build. FALLA si:
   no ingiere velas, no toca credenciales y no publica politica;
 - la outbox de ce_v5_rules deja de estar acotada a las familias rule./signal./alert.,
   o el motor gana DELETE/TRUNCATE sobre la outbox;
+- (P08c CE-14, 0022) ce_v5_rules PIERDE el SELECT o el INSERT sobre su ESTADO PROPIO
+  (cvd_snapshot) -- sin ellos no puede anclar ni avanzar el replay del CVD --, o GANA
+  UPDATE/DELETE/TRUNCATE sobre el: el estado de replay es append-only, y mutar un
+  snapshot ya tomado romperia su reproducibilidad (ADR-007). Es la UNICA familia de
+  tablas donde el motor escribe algo que no es su outbox, y por eso su escritura se
+  acota a INSERT;
 - (D1, 0016) ce_v5_rules PIERDE el SELECT sobre market_candle -- sin el no puede leer la
   ventana de cierres y NO PUEDE EVALUAR --, o GANA cualquier otro acceso a mercado:
   escritura del historico, market_instrument (no imprescindible en v5.0: el motor no
@@ -164,6 +170,31 @@ FORBIDDEN_TABLES: tuple[str, ...] = (
 )
 
 OUTBOX_TABLE = "outbox"
+
+# --- ESTADO PROPIO DEL MOTOR (0022, P08c CE-14 / MAT-07) ----------------------
+# La TERCERA categoria de tabla del motor, distinta de las dos anteriores:
+#   - FORBIDDEN_TABLES: el motor no escribe (y en varias, ni lee).
+#   - OUTBOX_TABLE: el motor INSERTA lo que el mismo produce y marca published_at.
+#   - RULES_STATE_TABLES (aqui): el motor LEE y ESCRIBE su propio estado de trabajo.
+#
+# POR QUE ESTE ROL SI ESCRIBE AQUI. cvd_snapshot no es dato de MERCADO, es el estado de
+# REPLAY de cvd.value (INTEGRATOR): el ancla de valor desde la que el materializador
+# reproduce la serie sin recorrer la historia entera. Que el motor escriba un hecho
+# PUBLICO (una vela, un footprint) esta prohibido porque alimentaria sus propias reglas
+# con dato que el mismo fabrico -- eso es lo que 0016/0021 cierran --; que escriba su
+# PROPIO estado no cruza ninguna frontera: nadie mas lo lee.
+#
+# La escritura se acota a INSERT: append-only real. Un snapshot ya tomado NO se
+# reescribe (una correccion es un snapshot NUEVO en su barra), asi que
+# UPDATE/DELETE/TRUNCATE son NEGATIVOS que rompen el build igual que los de mercado.
+RULES_STATE_TABLES: tuple[str, ...] = ("cvd_snapshot",)
+
+# Privilegios que el motor SI necesita sobre su estado propio (positivos de la 0022).
+_STATE_REQUIRED_PRIVILEGES: tuple[str, ...] = ("SELECT", "INSERT")
+
+# Privilegios DESTRUCTIVOS sobre el estado propio: negados. INSERT NO esta aqui (es un
+# positivo), a diferencia de _WRITE_PRIVILEGES, que se usa contra las tablas de mercado.
+_STATE_FORBIDDEN_PRIVILEGES: tuple[str, ...] = ("UPDATE", "DELETE", "TRUNCATE")
 
 # Las TRES familias que el motor puede encolar. Familia = prefijo con el punto.
 RULES_EVENT_FAMILIES: tuple[str, ...] = ("rule.", "signal.", "alert.")
@@ -367,6 +398,36 @@ def _market_read_violations(
     return out
 
 
+def _state_violations(privileges: Mapping[tuple[str, str, str], bool]) -> list[str]:
+    """El estado PROPIO del motor (0022): LEE y ESCRIBE, pero append-only.
+
+    Muerde en los DOS sentidos, como la rendija de mercado:
+    - POSITIVO: sin SELECT no puede anclar el replay del CVD, y sin INSERT no puede
+      avanzar el snapshot -- volveria a recorrer la historia entera en cada tick.
+    - NEGATIVO: con UPDATE/DELETE/TRUNCATE podria reescribir un snapshot ya tomado, y
+      entonces el replay dejaria de ser reproducible (ADR-007): el mismo tick daria
+      valores distintos segun quien hubiera mutado el ancla.
+    """
+    out: list[str] = []
+    for table in RULES_STATE_TABLES:
+        for privilege in _STATE_REQUIRED_PRIVILEGES:
+            if not privileges.get((RULES_ROLE_NAME, table, privilege), False):
+                out.append(
+                    f"{table}: el rol {RULES_ROLE_NAME} NO tiene {privilege} (P08c "
+                    "CE-14, 0022): es el estado de replay del motor; sin SELECT no "
+                    "puede anclar el acumulado y sin INSERT no puede avanzarlo."
+                )
+        for privilege in _STATE_FORBIDDEN_PRIVILEGES:
+            if privileges.get((RULES_ROLE_NAME, table, privilege), False):
+                out.append(
+                    f"{table}: el rol {RULES_ROLE_NAME} tiene {privilege} (P08c "
+                    "CE-14, 0022): el estado de replay es APPEND-ONLY. Una correccion "
+                    "es un snapshot NUEVO, no una mutacion; mutar el ancla romperia la "
+                    "reproducibilidad del replay (ADR-007)."
+                )
+    return out
+
+
 def _outbox_violations(
     outbox_policies: Mapping[str, str],
     privileges: Mapping[tuple[str, str, str], bool],
@@ -422,6 +483,7 @@ def check_rules(
     problems.extend(_function_violations(function, execute_for_rules))
     problems.extend(_privilege_violations(privileges))
     problems.extend(_market_read_violations(privileges, demand_execute_for_rules))
+    problems.extend(_state_violations(privileges))
     problems.extend(_outbox_violations(outbox_policies, privileges))
     return problems
 
@@ -477,7 +539,7 @@ def load_rules_facts(
     FunctionFacts | None, bool, dict[tuple[str, str, str], bool], dict[str, str], bool
 ]:
     """Lee del catalogo la ventanilla, su EXECUTE por rol, privilegios y outbox."""
-    tables_to_probe = list(FORBIDDEN_TABLES) + [OUTBOX_TABLE]
+    tables_to_probe = list(FORBIDDEN_TABLES) + [OUTBOX_TABLE, *RULES_STATE_TABLES]
     with database.transaction() as session:
         function_row = session.fetchone(
             _FUNCTION_SQL,
@@ -580,7 +642,9 @@ def main() -> int:
         f"(0016): {RULES_ROLE_NAME} SI lee {MARKET_CANDLE_TABLE} y NADA MAS de "
         "mercado -- sin escritura del historico, sin market_instrument (no "
         "imprescindible en v5.0), sin market_subscription_intent y sin la ventanilla "
-        f"{MARKET_DEMAND_FUNCTION} (esa es del ingestor). Las de comportamiento "
+        f"{MARKET_DEMAND_FUNCTION} (esa es del ingestor). Estado propio (0022): "
+        f"{RULES_ROLE_NAME} SI lee y ESCRIBE {', '.join(RULES_STATE_TABLES)} con "
+        "INSERT y NADA destructivo (append-only del replay). Las de comportamiento "
         "(7/9/10/11/12/16) cierran en la 4.3 y el test 22 en validate_rules_worker."
     )
     return 0
