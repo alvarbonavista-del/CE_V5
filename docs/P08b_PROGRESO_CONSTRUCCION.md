@@ -356,3 +356,20 @@ Verificacion:
   - 1 fix ruff (docstring >88), dentro del limite. ci_local COMPLETA 24/24 verde sobre pila recreada.
 
 PENDIENTE: LOTE 1b (vwap.value / vwap.distance_pct), gateado por el tratamiento del hueco de volumen-cero (elevacion P08b-INT-04). Luego LOTE 2 (EMA), LOTE 3 (RSI/MACD), LOTE 5 (categoricas / booleanas / listas).
+
+---
+
+## P08b -- LOTE 1b CABLEADO (commit 6ab840a) -- LOTE 1 COMPLETO
+
+vwap.value y vwap.distance_pct materializados (WINDOWED, param n_candles def 20, window_bars=n_candles) sobre read_ohlcv_window. Con esto las 6 fuentes candle-derived siempre-Decimal quedan EN VIVO.
+
+Fallback de volumen cero (dictamen P08b-INT-04, opcion B):
+  - La funcion pura vwap.* se queda FIEL: None si el volumen total de la ventana es 0 (VWAP indefinido).
+  - La POLITICA del degenerado vive en el CABLEADO (transform): si vol total = 0, VWAP := media NO PONDERADA de HLC3 de la ventana (limite del VWAP con pesos uniformes; coincide con el precio plano real). distance_pct mide contra ese VWAP de fallback.
+  - Fixture bit-a-bit del degenerado: (a) la pura devuelve None; (b) el materializador devuelve el fallback HLC3 (valor 10, distancia 40); (c) muerde (10 != close 6, != 0). Caso normal: transform == funcion pura bit-a-bit.
+
+Nota de proceso: la tanda importaba vwap_distance_pct en materializers.py sin usarlo (el transform de distancia recomputa desde el VWAP efectivo); ruff --fix lo limpio. Sin efecto funcional; la equivalencia con la pura la garantiza el test del caso normal. ci_local 24/24 verde sobre pila limpia.
+
+FUENTES EN VIVO (LOTE 1 completo): candle.body_pct / candle.upper_shadow_pct / candle.lower_shadow_pct (POINT_LOCAL); volume.ratio_vs_avg / vwap.value / vwap.distance_pct (WINDOWED). Todas hoja (consumes=()), sobre read_ohlcv_window.
+
+PENDIENTE: LOTE 2 (EMA, RECURSIVE -- requiere plumbing de snapshot: elevacion de diseno + coordinacion con P08c). LOTE 3 (RSI/MACD, recursive multi-estado). LOTE 4 (fib, gateado al proveedor de rango). LOTE 5 (categoricas / booleanas / listas / grid, gateado al contrato no-Decimal).
