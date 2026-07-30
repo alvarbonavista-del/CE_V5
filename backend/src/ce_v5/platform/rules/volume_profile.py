@@ -435,6 +435,17 @@ def vp_lvn_declaration() -> DataSourceDeclaration:
     )
 
 
+def declarations() -> tuple[DataSourceDeclaration, ...]:
+    """Declaraciones que este modulo publica al catalogo vivo (discovery, MAT-02)."""
+    return (
+        vp_poc_declaration(),
+        vp_vah_declaration(),
+        vp_val_declaration(),
+        vp_hvn_declaration(),
+        vp_lvn_declaration(),
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class VolumeNodes:
     """Nodos de volumen del perfil (vp.hvn / vp.lvn). Precios = centro de bin.

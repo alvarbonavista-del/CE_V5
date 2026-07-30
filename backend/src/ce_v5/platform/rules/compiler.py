@@ -143,6 +143,21 @@ def compile(rule: AnyRule, catalog: DataSourceCatalog) -> ExecutionPlan:
                 "de una regla, el plan no es recomputable (fail-loud)."
             )
             raise CompilationError(msg)
+        # GUARDA MAT-05 Q4 / MAT-06: v5.0 NO materializa overrides de parametro de
+        # fuente. El compilador descarta ref.params y la materializacion usa el default
+        # de la declaracion; pero la cache_key SI incluye el param (p.ej. vp.* con
+        # bin_count). Servir el default ante un override pedido reproduciria la deuda
+        # D-E2.1 de v4 (pedir 7 y ejecutar 50 sin aviso) y mentiria la cache_key.
+        # Se RECHAZA en compilacion (rule -> cuarentena) hasta que el compilador
+        # propague params con su propio dictamen (MAT-05 Q2, diferido).
+        if source_term.ref.params:
+            nombres = tuple(param.name for param in source_term.ref.params)
+            msg = (
+                f"el DataSource {source_id!r} recibe parametros de fuente {nombres!r}, "
+                "pero v5.0 no materializa overrides de parametro: se rechaza en "
+                "compilacion en vez de servir el default en silencio (MAT-05 Q4)."
+            )
+            raise CompilationError(msg)
         bars = history_bars_needed(source_term.function, source_term.offset)
         history_by_source[source_id] = max(history_by_source.get(source_id, 0), bars)
         declaration_by_source[source_id] = declaration

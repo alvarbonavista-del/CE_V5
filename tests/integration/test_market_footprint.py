@@ -29,10 +29,25 @@ from decimal import Decimal
 import pytest
 import redis
 
+from ce_v5.entrypoints.worker_rules.materializers import (
+    SOURCE_MATERIALIZERS,
+    FootprintWindowedSpec,
+)
 from ce_v5.infra.bus_redis import RedisBusConfig, RedisEventBus, create_client
-from ce_v5.infra.db.market_footprint import PostgresFootprintWriter
+from ce_v5.infra.db.cvd_snapshot import read_cvd_snapshot_before, write_cvd_snapshot
+from ce_v5.infra.db.market_footprint import (
+    PostgresFootprintWriter,
+    read_footprint_delta_range,
+    read_footprint_window,
+)
 from ce_v5.infra.db.outbox_publisher import OutboxPublisher, topic_for
 from ce_v5.infra.db.psycopg_adapter import PsycopgDatabase
+from ce_v5.platform.rules.cvd import CVD_SOURCE_ID, ResetPolicy
+from ce_v5.platform.rules.orderflow import ORDERFLOW_DELTA_SOURCE_ID
+from ce_v5.platform.rules.volume_profile import (
+    DEFAULT_BIN_COUNT,
+    compute_volume_profile,
+)
 from source.envelope import Envelope
 from source.envelope.enums import Scope
 from source.families.footprint import (
@@ -75,18 +90,23 @@ def limpiar_footprint(migrator_db: PsycopgDatabase) -> Iterator[None]:
     _wipe()
 
 
-def _cells() -> tuple[FootprintCell, ...]:
+def _cells(offset: Decimal = Decimal(0)) -> tuple[FootprintCell, ...]:
     # Dos niveles de precio con Decimal de muchos digitos: la prueba de que el jsonb no
     # los redondea. Ordenadas por precio ascendente (lo exige el contrato).
+    #
+    # offset DESPLAZA el nivel y el volumen comprador para que cada barra de una VENTANA
+    # sea DISTINGUIBLE de las demas: con celdas identicas, un test de ventana no podria
+    # detectar que el lector mezcla o reordena barras. offset=0 reproduce EXACTAMENTE
+    # las celdas originales, asi que los tests que ya existian ven lo mismo que antes.
     return (
         FootprintCell(
-            price=Decimal("100.12345678"),
-            buy_volume=Decimal("1.5"),
+            price=Decimal("100.12345678") + offset,
+            buy_volume=Decimal("1.5") + offset,
             sell_volume=Decimal("0.25"),
-            delta=Decimal("1.25"),
+            delta=Decimal("1.5") + offset - Decimal("0.25"),
         ),
         FootprintCell(
-            price=Decimal("100.99999999"),
+            price=Decimal("100.99999999") + offset,
             buy_volume=Decimal("0"),
             sell_volume=Decimal("3.0"),
             delta=Decimal("-3.0"),
@@ -94,8 +114,12 @@ def _cells() -> tuple[FootprintCell, ...]:
     )
 
 
-def _closed(is_complete: bool = True) -> FootprintClosedPayload:  # noqa: FBT001, FBT002
-    cells = _cells()
+def _closed(
+    is_complete: bool = True,  # noqa: FBT001, FBT002
+    open_time: int = _OPEN,
+    offset: Decimal = Decimal(0),
+) -> FootprintClosedPayload:
+    cells = _cells(offset)
     buy = sum((c.buy_volume for c in cells), Decimal(0))
     sell = sum((c.sell_volume for c in cells), Decimal(0))
     return FootprintClosedPayload(
@@ -104,8 +128,8 @@ def _closed(is_complete: bool = True) -> FootprintClosedPayload:  # noqa: FBT001
         market_type=MarketType.SPOT,
         symbol="BTC-USDT",
         timeframe=_TF,
-        open_time=_OPEN,
-        close_time=_CLOSE,
+        open_time=open_time,
+        close_time=open_time + _TF.duration_ms,
         cells=cells,
         bar_buy_volume=buy,
         bar_sell_volume=sell,
@@ -115,8 +139,13 @@ def _closed(is_complete: bool = True) -> FootprintClosedPayload:  # noqa: FBT001
     )
 
 
-def _corrected(revision: int, corrige: str) -> FootprintCorrectedPayload:
-    cells = _cells()
+def _corrected(
+    revision: int,
+    corrige: str,
+    open_time: int = _OPEN,
+    offset: Decimal = Decimal(0),
+) -> FootprintCorrectedPayload:
+    cells = _cells(offset)
     buy = sum((c.buy_volume for c in cells), Decimal(0))
     sell = sum((c.sell_volume for c in cells), Decimal(0))
     return FootprintCorrectedPayload(
@@ -127,8 +156,8 @@ def _corrected(revision: int, corrige: str) -> FootprintCorrectedPayload:
         market_type=MarketType.SPOT,
         symbol="BTC-USDT",
         timeframe=_TF,
-        open_time=_OPEN,
-        close_time=_CLOSE,
+        open_time=open_time,
+        close_time=open_time + _TF.duration_ms,
         cells=cells,
         bar_buy_volume=buy,
         bar_sell_volume=sell,
@@ -383,6 +412,316 @@ class TestCorreccionAppendOnly:
         assert envelope["payload"]["corrects_idempotency_key"] == clave_cerrado
 
 
+def _escribir_barras(
+    persistir: Persistir, cuantas: int
+) -> list[FootprintClosedPayload]:
+    """Escribe `cuantas` barras CERRADAS consecutivas, cada una distinguible."""
+    escritas: list[FootprintClosedPayload] = []
+    for indice in range(cuantas):
+        payload = _closed(
+            open_time=_OPEN + indice * _TF.duration_ms,
+            offset=Decimal(indice),
+        )
+        assert (
+            persistir(payload, MarketFootprintEventType.FOOTPRINT_CLOSED, _EVENT_TIME)
+            is True
+        )
+        escritas.append(payload)
+    return escritas
+
+
+def _leer_ventana(
+    rules_db: PsycopgDatabase, up_to_open_time: int, bars: int
+) -> tuple[FootprintPayload, ...]:
+    """La ventana LEIDA CON EL ROL DE REGLAS (GRANT SELECT de la 0021)."""
+    with rules_db.transaction() as session:
+        return read_footprint_window(
+            session, "binance", "BTC-USDT", _TF.value, up_to_open_time, bars
+        )
+
+
+def _assert_misma_barra(
+    obtenida: FootprintPayload, esperada: FootprintClosedPayload
+) -> None:
+    """Igualdad campo a campo de una barra: totales, contador, celdas y madurez."""
+    assert obtenida.open_time == esperada.open_time
+    assert obtenida.close_time == esperada.close_time
+    assert obtenida.exchange == esperada.exchange
+    assert obtenida.symbol == esperada.symbol
+    assert obtenida.timeframe == esperada.timeframe
+    assert obtenida.market_type == esperada.market_type
+    assert obtenida.bar_buy_volume == esperada.bar_buy_volume
+    assert obtenida.bar_sell_volume == esperada.bar_sell_volume
+    assert obtenida.bar_delta == esperada.bar_delta
+    assert obtenida.trade_count == esperada.trade_count
+    assert obtenida.is_complete == esperada.is_complete
+    assert len(obtenida.cells) == len(esperada.cells)
+    for celda, celda_esperada in zip(obtenida.cells, esperada.cells, strict=True):
+        assert celda.price == celda_esperada.price
+        assert celda.buy_volume == celda_esperada.buy_volume
+        assert celda.sell_volume == celda_esperada.sell_volume
+        assert celda.delta == celda_esperada.delta
+
+
+class TestVentanaDeFootprintParaLaMaterializacion:
+    """read_footprint_window: la BASE que consume la materializacion WINDOWED (CE-14).
+
+    Se ESCRIBE con el rol de INGESTA y se LEE con el rol de REGLAS, que es el reparto
+    real de poder (5.20): el GRANT SELECT de la 0021 es lo que hace posible esta
+    lectura, y la escritura le sigue estando NEGADA. Un doble no probaria ni el dedup
+    por revision (lo hace el DISTINCT ON del motor) ni que el Decimal del jsonb vuelve
+    exacto tras el model_validate.
+    """
+
+    def test_round_trip_de_la_ventana_oldest_to_newest(
+        self,
+        rules_db: PsycopgDatabase,
+        persistir_footprint: Persistir,
+        limpiar_footprint: None,
+    ) -> None:
+        # (3.1) N barras cerradas consecutivas vuelven COMPLETAS y EN ORDEN: celdas
+        # (precio/buy/sell/delta), totales de barra, trade_count e is_complete identicos
+        # a lo escrito. El perfil de volumen se calcula sobre esto: si el lector
+        # reordenara o mezclara barras, el POC saldria de una historia que no existio.
+        escritas = _escribir_barras(persistir_footprint, 3)
+        ultimo = escritas[-1].open_time
+
+        ventana = _leer_ventana(rules_db, ultimo, 10)
+
+        assert len(ventana) == 3
+        tiempos = [barra.open_time for barra in ventana]
+        assert tiempos == sorted(tiempos)  # oldest->newest, explicito.
+        for obtenida, esperada in zip(ventana, escritas, strict=True):
+            _assert_misma_barra(obtenida, esperada)
+
+    def test_bars_menor_que_la_historia_da_las_mas_recientes(
+        self,
+        rules_db: PsycopgDatabase,
+        persistir_footprint: Persistir,
+        limpiar_footprint: None,
+    ) -> None:
+        # (3.2) El recorte es por el extremo ANTIGUO: con bars=2 sobre 3 barras se
+        # devuelven las DOS MAS RECIENTES, no las dos primeras.
+        escritas = _escribir_barras(persistir_footprint, 3)
+        ultimo = escritas[-1].open_time
+
+        ventana = _leer_ventana(rules_db, ultimo, 2)
+
+        assert len(ventana) == 2
+        _assert_misma_barra(ventana[0], escritas[1])
+        _assert_misma_barra(ventana[1], escritas[2])
+
+    def test_up_to_open_time_excluye_las_barras_posteriores(
+        self,
+        rules_db: PsycopgDatabase,
+        persistir_footprint: Persistir,
+        limpiar_footprint: None,
+    ) -> None:
+        # (3.3) La ventana se ancla en la barra que se evalua: nada con open_time MAYOR
+        # entra. Mirar el futuro seria exactamente el look-ahead que invalida un
+        # backtest.
+        escritas = _escribir_barras(persistir_footprint, 3)
+
+        ventana = _leer_ventana(rules_db, escritas[1].open_time, 10)
+
+        assert len(ventana) == 2
+        assert [barra.open_time for barra in ventana] == [
+            escritas[0].open_time,
+            escritas[1].open_time,
+        ]
+        assert escritas[2].open_time not in [barra.open_time for barra in ventana]
+
+    def test_dedup_por_revision_devuelve_la_vigente(
+        self,
+        rules_db: PsycopgDatabase,
+        persistir_footprint: Persistir,
+        limpiar_footprint: None,
+    ) -> None:
+        # (3.4) Append-only (ADR-007): el cerrado y su correccion CONVIVEN en la tabla,
+        # pero la ventana sirve UNA fila por open_time y es la VIGENTE (la revision mas
+        # alta). Sin el DISTINCT ON, esa barra saldria DOS veces y desplazaria toda la
+        # serie: las funciones que operan por posicion contarian una historia falsa.
+        cerrado = _closed()
+        clave_cerrado = cerrado.idempotency_key(
+            MarketFootprintEventType.FOOTPRINT_CLOSED
+        )
+        persistir_footprint(
+            cerrado, MarketFootprintEventType.FOOTPRINT_CLOSED, _EVENT_TIME
+        )
+        # offset distinto: la correccion trae OTROS numeros, asi que se puede comprobar
+        # que lo servido es la correccion y no el cerrado original.
+        correccion = _corrected(1, clave_cerrado, offset=Decimal(7))
+        persistir_footprint(
+            correccion, MarketFootprintEventType.FOOTPRINT_CORRECTED, _EVENT_TIME
+        )
+
+        ventana = _leer_ventana(rules_db, _OPEN, 10)
+
+        assert len(ventana) == 1  # UNA sola fila para ese open_time.
+        vigente = ventana[0]
+        assert vigente.maturity_state is MaturityState.CORRECTION
+        assert vigente.correction_revision == 1
+        assert vigente.corrects_idempotency_key == clave_cerrado
+        # Los numeros son los de la CORRECCION, no los del cerrado que reemplaza.
+        assert vigente.bar_buy_volume == correccion.bar_buy_volume
+        assert vigente.bar_delta == correccion.bar_delta
+        assert vigente.cells[0].price == correccion.cells[0].price
+        assert vigente.bar_buy_volume != cerrado.bar_buy_volume
+
+    def test_sin_historia_suficiente_o_sin_coincidencia_devuelve_vacio(
+        self,
+        rules_db: PsycopgDatabase,
+        persistir_footprint: Persistir,
+        limpiar_footprint: None,
+    ) -> None:
+        # (3.5) Un hueco es un hecho AUSENTE: el lector no rellena nada. La tupla vacia
+        # es lo que el evaluador traduce a NOT_EVALUABLE (K3), que NO es FALSE.
+        assert _leer_ventana(rules_db, _OPEN, 10) == ()  # tabla vacia.
+
+        escritas = _escribir_barras(persistir_footprint, 2)
+        # Ancla ANTERIOR a toda la historia: ninguna barra califica.
+        assert _leer_ventana(rules_db, escritas[0].open_time - 1, 10) == ()
+        # Otro flujo (symbol que no existe): sin coincidencia, sin invencion.
+        ultimo = escritas[-1].open_time
+        with rules_db.transaction() as session:
+            assert (
+                read_footprint_window(
+                    session, "binance", "ETH-USDT", _TF.value, ultimo, 10
+                )
+                == ()
+            )
+
+
+class TestMaterializacionWindowedSobreLaVentanaReal:
+    """La composicion lector + materializador contra PostgreSQL REAL (CE-14, MAT-06).
+
+    Cierra el circuito que ni el test puro del materializador ni el del lector cubren
+    por separado: que la BASE leida de la BD, pasada por materialize_windowed, produce
+    EXACTAMENTE la misma serie que aplicar la funcion pura a cada ventana rodante de los
+    footprints que se escribieron. Misma base -> misma serie, bit a bit.
+
+    window_bars=3 (no el 100 de produccion) para no escribir 100 barras: la constante
+    real la fija el test unitario del registro. Lo que se prueba aqui es el MECANISMO.
+    """
+
+    def test_la_serie_es_el_perfil_de_cada_ventana_rodante(
+        self,
+        rules_db: PsycopgDatabase,
+        persistir_footprint: Persistir,
+        limpiar_footprint: None,
+    ) -> None:
+        escritas = _escribir_barras(persistir_footprint, 5)
+        ultimo = escritas[-1].open_time
+        spec = FootprintWindowedSpec(
+            transform=lambda ventana: (
+                compute_volume_profile(ventana, bin_count=DEFAULT_BIN_COUNT).poc
+            ),
+            window_bars=3,
+        )
+
+        with rules_db.transaction() as session:
+            serie = spec.materialize(
+                session, "binance", "BTC-USDT", _TF.value, ultimo, 5
+            )
+
+        # Con 5 barras y ventana 3 solo hay 3 valores computables (las barras 3, 4 y 5);
+        # las dos primeras no tienen ventana completa detras y NO se inventan.
+        esperados = tuple(
+            compute_volume_profile(
+                escritas[inicio : inicio + 3], bin_count=DEFAULT_BIN_COUNT
+            ).poc
+            for inicio in range(3)
+        )
+        assert serie == esperados
+        assert len(serie) == 3
+
+    def test_historia_mas_corta_que_la_ventana_no_emite_valor(
+        self,
+        rules_db: PsycopgDatabase,
+        persistir_footprint: Persistir,
+        limpiar_footprint: None,
+    ) -> None:
+        # Dos barras y ventana de 3: NINGUN valor es computable. La serie vacia es lo
+        # que el evaluador lee como NOT_EVALUABLE (K3); rellenar seria inventar.
+        escritas = _escribir_barras(persistir_footprint, 2)
+        spec = FootprintWindowedSpec(
+            transform=lambda ventana: (
+                compute_volume_profile(ventana, bin_count=DEFAULT_BIN_COUNT).poc
+            ),
+            window_bars=3,
+        )
+
+        with rules_db.transaction() as session:
+            serie = spec.materialize(
+                session,
+                "binance",
+                "BTC-USDT",
+                _TF.value,
+                escritas[-1].open_time,
+                5,
+            )
+
+        assert serie == ()
+
+
+class TestMaterializacionPointLocalDeOrderflowDelta:
+    """orderflow.delta materializada del REGISTRO REAL contra PostgreSQL (MAT-07).
+
+    Se usa el spec del registro (SOURCE_MATERIALIZERS), no uno de prueba: lo que se
+    valida es el cableado que correra en produccion. POINT_LOCAL = un valor por barra,
+    el bar_delta de esa barra, sin ventana ni acumulacion. Es la BASE de cvd.value
+    (T5b-2): si esta serie estuviera desalineada, el acumulado heredaria el error.
+    """
+
+    def test_la_serie_es_el_bar_delta_de_cada_barra(
+        self,
+        rules_db: PsycopgDatabase,
+        persistir_footprint: Persistir,
+        limpiar_footprint: None,
+    ) -> None:
+        # Cada barra lleva un offset distinto, asi que su bar_delta tambien: una serie
+        # desordenada o desplazada no podria coincidir por casualidad.
+        escritas = _escribir_barras(persistir_footprint, 4)
+        deltas = [barra.bar_delta for barra in escritas]
+        assert len(set(deltas)) == 4  # los cuatro deltas son distintos.
+        spec = SOURCE_MATERIALIZERS[ORDERFLOW_DELTA_SOURCE_ID]
+
+        with rules_db.transaction() as session:
+            serie = spec.materialize(
+                session,
+                "binance",
+                "BTC-USDT",
+                _TF.value,
+                escritas[-1].open_time,
+                4,
+            )
+
+        assert serie == tuple(deltas)
+
+    def test_bars_menor_que_la_historia_da_los_mas_recientes(
+        self,
+        rules_db: PsycopgDatabase,
+        persistir_footprint: Persistir,
+        limpiar_footprint: None,
+    ) -> None:
+        # POINT_LOCAL no necesita historia extra: history_bars=2 sobre 4 barras da los
+        # DOS deltas mas recientes, recortados por el extremo antiguo.
+        escritas = _escribir_barras(persistir_footprint, 4)
+        spec = SOURCE_MATERIALIZERS[ORDERFLOW_DELTA_SOURCE_ID]
+
+        with rules_db.transaction() as session:
+            serie = spec.materialize(
+                session,
+                "binance",
+                "BTC-USDT",
+                _TF.value,
+                escritas[-1].open_time,
+                2,
+            )
+
+        assert serie == (escritas[2].bar_delta, escritas[3].bar_delta)
+
+
 class TestElEventoEncoladoEsPublicable:
     def test_el_publisher_lo_valida_y_lo_saca_al_bus(
         self,
@@ -431,3 +770,372 @@ class TestElEventoEncoladoEsPublicable:
             for key in client.scan_iter(match=f"{config.namespace}:*"):
                 client.delete(key)
             client.close()
+
+
+@pytest.fixture
+def limpiar_cvd_snapshot(migrator_db: PsycopgDatabase) -> Iterator[None]:
+    """cvd_snapshot: sin FK a nadie, se acumularia entre ejecuciones (como footprint).
+
+    Se limpia con el rol de MIGRACIONES a proposito: el rol de reglas NO tiene DELETE
+    sobre su propio estado (append-only, 0022), asi que no podria hacerlo ni para un
+    test -- y eso es exactamente lo que el check 5.20 garantiza.
+    """
+
+    def _wipe() -> None:
+        with migrator_db.transaction() as session:
+            session.execute("DELETE FROM cvd_snapshot")
+
+    _wipe()
+    yield
+    _wipe()
+
+
+_ROLLING = ResetPolicy.ROLLING.value
+
+
+def _escribir_snapshot(
+    rules_db: PsycopgDatabase, open_time: int, value: Decimal
+) -> None:
+    """Escribe un snapshot con el rol de REGLAS (el INSERT que le dio la 0022)."""
+    with rules_db.transaction() as session:
+        write_cvd_snapshot(
+            session, "binance", "BTC-USDT", _TF.value, _ROLLING, open_time, value
+        )
+
+
+def _leer_ancla(
+    rules_db: PsycopgDatabase, before_open_time: int
+) -> tuple[int, Decimal] | None:
+    with rules_db.transaction() as session:
+        return read_cvd_snapshot_before(
+            session, "binance", "BTC-USDT", _TF.value, _ROLLING, before_open_time
+        )
+
+
+class TestStoreDelSnapshotDeCvd:
+    """3.1: el estado de replay del INTEGRATOR, escrito y leido por el ROL DE REGLAS.
+
+    Es el primer caso en que ce_v5_rules ESCRIBE (0022, MAT-07): lo que se prueba aqui
+    contra PostgreSQL real es que ese grant funciona de verdad, que el ancla elegida es
+    la correcta (la mas reciente ANTERIOR a la ventana) y que el Decimal vuelve exacto.
+    """
+
+    def test_el_ancla_es_el_snapshot_mas_reciente_anterior(
+        self,
+        rules_db: PsycopgDatabase,
+        limpiar_cvd_snapshot: None,
+    ) -> None:
+        # Tres barras con valores distintos. El ancla de una ventana que empieza en la
+        # tercera es la SEGUNDA: la mas reciente ESTRICTAMENTE anterior.
+        primera = _OPEN
+        segunda = _OPEN + _TF.duration_ms
+        tercera = _OPEN + 2 * _TF.duration_ms
+        _escribir_snapshot(rules_db, primera, Decimal("10.5"))
+        _escribir_snapshot(rules_db, segunda, Decimal("-3.25"))
+        _escribir_snapshot(rules_db, tercera, Decimal("100.125"))
+
+        assert _leer_ancla(rules_db, tercera) == (segunda, Decimal("-3.25"))
+        assert _leer_ancla(rules_db, segunda) == (primera, Decimal("10.5"))
+
+    def test_el_limite_es_estricto_no_devuelve_la_propia_barra(
+        self,
+        rules_db: PsycopgDatabase,
+        limpiar_cvd_snapshot: None,
+    ) -> None:
+        # open_time < before, ESTRICTO: si devolviera la barra igual al limite, el
+        # replay sumaria su delta DOS veces (el ancla ya lo lleva) y el CVD derivaria.
+        _escribir_snapshot(rules_db, _OPEN, Decimal("7"))
+        assert _leer_ancla(rules_db, _OPEN) is None
+        assert _leer_ancla(rules_db, _OPEN + 1) == (_OPEN, Decimal("7"))
+
+    def test_sin_ancla_anterior_devuelve_none(
+        self,
+        rules_db: PsycopgDatabase,
+        limpiar_cvd_snapshot: None,
+    ) -> None:
+        # None NO es un cero: significa "no hay ancla", y el materializador arranca el
+        # acumulado en el inicio de la ventana (bootstrap). Confundirlo con 0 seria
+        # afirmar un acumulado que nadie calculo.
+        assert _leer_ancla(rules_db, _OPEN) is None
+        _escribir_snapshot(rules_db, _OPEN + 10 * _TF.duration_ms, Decimal("1"))
+        assert _leer_ancla(rules_db, _OPEN) is None
+
+    def test_reinsertar_la_misma_barra_es_idempotente(
+        self,
+        rules_db: PsycopgDatabase,
+        limpiar_cvd_snapshot: None,
+    ) -> None:
+        # Reevaluar la misma barra recomputa el MISMO valor (el fold es determinista),
+        # asi que el segundo INSERT es un duplicado exacto: ON CONFLICT DO NOTHING lo
+        # absorbe sin fallar y sin duplicar. Si lanzara, un redelivery del bus tumbaria
+        # el tick; si duplicara, la PK no seria identidad.
+        _escribir_snapshot(rules_db, _OPEN, Decimal("42.75"))
+        _escribir_snapshot(rules_db, _OPEN, Decimal("42.75"))
+
+        assert (
+            _contar(
+                rules_db,
+                "SELECT count(*) FROM cvd_snapshot WHERE open_time = %s",
+                (_OPEN,),
+            )
+            == 1
+        )
+        assert _leer_ancla(rules_db, _OPEN + 1) == (_OPEN, Decimal("42.75"))
+
+    def test_el_valor_decimal_vuelve_exacto(
+        self,
+        rules_db: PsycopgDatabase,
+        limpiar_cvd_snapshot: None,
+    ) -> None:
+        # numeric, no float: el CVD es una suma de deltas trade a trade, y un binario
+        # perderia digitos en silencio a lo largo del acumulado.
+        valor = Decimal("-12345.6789012345")
+        _escribir_snapshot(rules_db, _OPEN, valor)
+        ancla = _leer_ancla(rules_db, _OPEN + 1)
+        assert ancla is not None
+        assert ancla[1] == valor
+
+
+class TestLectorDeRangoDeBarDelta:
+    """3.2: los deltas POSTERIORES al ancla, leidos por RANGO con el rol de reglas.
+
+    (after, up_to]: inferior ABIERTO porque el ancla ya aporta su valor -- incluir su
+    barra sumaria ese delta dos veces --, superior CERRADO porque la barra pedida SI
+    entra. Mismo dedup por revision que read_footprint_window.
+    """
+
+    def test_devuelve_las_barras_del_rango_oldest_to_newest(
+        self,
+        rules_db: PsycopgDatabase,
+        persistir_footprint: Persistir,
+        limpiar_footprint: None,
+    ) -> None:
+        escritas = _escribir_barras(persistir_footprint, 4)
+        deltas = [barra.bar_delta for barra in escritas]
+        assert len(set(deltas)) == 4  # cada barra es distinguible por su delta.
+
+        with rules_db.transaction() as session:
+            rango = read_footprint_delta_range(
+                session,
+                "binance",
+                "BTC-USDT",
+                _TF.value,
+                escritas[0].open_time,
+                escritas[3].open_time,
+            )
+
+        # Inferior ABIERTO: la barra 0 (== after) NO entra. Superior CERRADO: la 3 SI.
+        assert rango == (
+            (escritas[1].open_time, escritas[1].bar_delta),
+            (escritas[2].open_time, escritas[2].bar_delta),
+            (escritas[3].open_time, escritas[3].bar_delta),
+        )
+
+    def test_el_limite_inferior_es_abierto_y_el_superior_cerrado(
+        self,
+        rules_db: PsycopgDatabase,
+        persistir_footprint: Persistir,
+        limpiar_footprint: None,
+    ) -> None:
+        escritas = _escribir_barras(persistir_footprint, 4)
+
+        with rules_db.transaction() as session:
+            rango = read_footprint_delta_range(
+                session,
+                "binance",
+                "BTC-USDT",
+                _TF.value,
+                escritas[1].open_time,
+                escritas[2].open_time,
+            )
+
+        tiempos = [open_time for open_time, _ in rango]
+        assert escritas[1].open_time not in tiempos  # after EXCLUIDO.
+        assert escritas[2].open_time in tiempos  # up_to INCLUIDO.
+        assert tiempos == [escritas[2].open_time]
+
+    def test_rango_vacio_da_tupla_vacia(
+        self,
+        rules_db: PsycopgDatabase,
+        persistir_footprint: Persistir,
+        limpiar_footprint: None,
+    ) -> None:
+        # after == up_to deja el rango (X, X] vacio: no hay barra que acumular, y el
+        # materializador se queda con el valor del ancla tal cual.
+        escritas = _escribir_barras(persistir_footprint, 3)
+        ultimo = escritas[-1].open_time
+
+        with rules_db.transaction() as session:
+            vacio = read_footprint_delta_range(
+                session, "binance", "BTC-USDT", _TF.value, ultimo, ultimo
+            )
+            sin_coincidencia = read_footprint_delta_range(
+                session, "binance", "ETH-USDT", _TF.value, 0, ultimo
+            )
+
+        assert vacio == ()
+        assert sin_coincidencia == ()
+
+    def test_dedup_por_revision_sirve_el_delta_de_la_correccion(
+        self,
+        rules_db: PsycopgDatabase,
+        persistir_footprint: Persistir,
+        limpiar_footprint: None,
+    ) -> None:
+        # Append-only (ADR-007): el cerrado y su correccion CONVIVEN, pero el rango debe
+        # servir UNA fila por barra con el delta VIGENTE. Si sirviera las dos, el CVD
+        # acumularia esa barra dos veces; si sirviera la vieja, ignoraria la correccion.
+        cerrado = _closed()
+        clave = cerrado.idempotency_key(MarketFootprintEventType.FOOTPRINT_CLOSED)
+        persistir_footprint(
+            cerrado, MarketFootprintEventType.FOOTPRINT_CLOSED, _EVENT_TIME
+        )
+        correccion = _corrected(1, clave, offset=Decimal(11))
+        persistir_footprint(
+            correccion, MarketFootprintEventType.FOOTPRINT_CORRECTED, _EVENT_TIME
+        )
+        assert correccion.bar_delta != cerrado.bar_delta
+
+        with rules_db.transaction() as session:
+            rango = read_footprint_delta_range(
+                session, "binance", "BTC-USDT", _TF.value, _OPEN - 1, _OPEN
+            )
+
+        assert rango == ((_OPEN, correccion.bar_delta),)
+
+
+def _borrar_snapshots(migrator_db: PsycopgDatabase) -> None:
+    """Borra los snapshots con el rol de MIGRACIONES (el de reglas no tiene DELETE)."""
+    with migrator_db.transaction() as session:
+        session.execute("DELETE FROM cvd_snapshot")
+
+
+def _cumsum(deltas: list[Decimal]) -> list[Decimal]:
+    """Acumulado desde el ORIGEN: la verdad contra la que se mide todo replay."""
+    total = Decimal(0)
+    salida: list[Decimal] = []
+    for delta in deltas:
+        total += delta
+        salida.append(total)
+    return salida
+
+
+def _materializar_cvd(
+    rules_db: PsycopgDatabase, open_time: int, history_bars: int
+) -> tuple[Decimal, ...]:
+    """cvd.value materializado con el spec REAL del registro, con el rol de reglas."""
+    spec = SOURCE_MATERIALIZERS[CVD_SOURCE_ID]
+    with rules_db.transaction() as session:
+        return spec.materialize(
+            session, "binance", "BTC-USDT", _TF.value, open_time, history_bars
+        )
+
+
+class TestCvdIntegratorReplayDesdeSnapshot:
+    """cvd.value INTEGRATOR: replay ACOTADO desde snapshot contra PostgreSQL (MAT-07).
+
+    Se usa el spec del REGISTRO (SOURCE_MATERIALIZERS), no uno de prueba: lo que se
+    valida es el cableado de produccion, componiendo los cuatro piezas -- ventana de
+    footprint, ancla de snapshot, rango de deltas y materialize_recursive -- mas la
+    PERSISTENCIA del snapshot de la barra vigente. Es el unico materializador CON
+    ESTADO: el snapshot ES su memoria de replay.
+    """
+
+    def test_bootstrap_sin_ancla_acumula_desde_el_inicio_de_la_ventana(
+        self,
+        rules_db: PsycopgDatabase,
+        persistir_footprint: Persistir,
+        limpiar_footprint: None,
+        limpiar_cvd_snapshot: None,
+    ) -> None:
+        # 4.1 Sin snapshot previo el acumulado arranca en 0 en la primera barra de la
+        # ventana. El valor ABSOLUTO del rolling es anchor-dependiente (cvd.py); lo que
+        # NO depende del ancla es la forma de la serie, y eso es lo que F3 usa.
+        escritas = _escribir_barras(persistir_footprint, 5)
+        deltas = [barra.bar_delta for barra in escritas]
+        assert len(set(deltas)) == 5  # cada barra es distinguible por su delta.
+        ultimo = escritas[-1].open_time
+
+        serie = _materializar_cvd(rules_db, ultimo, 5)
+
+        assert serie == tuple(_cumsum(deltas))
+
+    def test_bootstrap_persiste_el_snapshot_de_la_barra_vigente(
+        self,
+        rules_db: PsycopgDatabase,
+        persistir_footprint: Persistir,
+        limpiar_footprint: None,
+        limpiar_cvd_snapshot: None,
+    ) -> None:
+        # 4.1 (segunda mitad): materializar DEJA el ancla para la ventana siguiente. Sin
+        # esta escritura, cada tick volveria a acumular desde el inicio de su ventana y
+        # el replay acotado no existiria.
+        escritas = _escribir_barras(persistir_footprint, 5)
+        deltas = [barra.bar_delta for barra in escritas]
+        ultimo = escritas[-1].open_time
+
+        _materializar_cvd(rules_db, ultimo, 5)
+
+        assert _leer_ancla(rules_db, ultimo + 1) == (ultimo, _cumsum(deltas)[-1])
+
+    def test_con_ancla_el_replay_reproduce_la_cola_del_acumulado_de_origen(
+        self,
+        rules_db: PsycopgDatabase,
+        migrator_db: PsycopgDatabase,
+        persistir_footprint: Persistir,
+        limpiar_footprint: None,
+        limpiar_cvd_snapshot: None,
+    ) -> None:
+        # 4.2 Sembrado desde un snapshot CONSISTENTE con el origen, la ventana corta
+        # reproduce EXACTAMENTE los valores que tendria acumulando desde el origen. Esa
+        # es la razon de ser del snapshot: mismo resultado, replay acotado.
+        escritas = _escribir_barras(persistir_footprint, 5)
+        acumulado = _cumsum([barra.bar_delta for barra in escritas])
+        _borrar_snapshots(migrator_db)
+        # Ancla en la barra 1; la ventana pedida (M=2) son las barras 3 y 4.
+        _escribir_snapshot(rules_db, escritas[1].open_time, acumulado[1])
+
+        serie = _materializar_cvd(rules_db, escritas[-1].open_time, 2)
+
+        assert serie == (acumulado[3], acumulado[4])
+
+    def test_gate_bit_exacto_dos_anclas_distintas_dan_la_misma_cola(
+        self,
+        rules_db: PsycopgDatabase,
+        migrator_db: PsycopgDatabase,
+        persistir_footprint: Persistir,
+        limpiar_footprint: None,
+        limpiar_cvd_snapshot: None,
+    ) -> None:
+        # 4.3 EL GATE de ADR-007. El replay desde CUALQUIER snapshot valido reproduce la
+        # MISMA cola, bit a bit: el fold es determinista sobre Decimal. Si esto fallara,
+        # el CVD daria valores distintos segun donde se hubiera cortado el snapshot, y
+        # entonces el snapshot seria una fuente de deriva, no una optimizacion.
+        escritas = _escribir_barras(persistir_footprint, 5)
+        acumulado = _cumsum([barra.bar_delta for barra in escritas])
+        ultimo = escritas[-1].open_time
+        # Dos anclas distintas, ambas ANTERIORES al inicio de la ventana (barra 3).
+        k1, k2 = 2, 0
+
+        _borrar_snapshots(migrator_db)
+        _escribir_snapshot(rules_db, escritas[k1].open_time, acumulado[k1])
+        serie_1 = _materializar_cvd(rules_db, ultimo, 2)
+
+        _borrar_snapshots(migrator_db)
+        _escribir_snapshot(rules_db, escritas[k2].open_time, acumulado[k2])
+        serie_2 = _materializar_cvd(rules_db, ultimo, 2)
+
+        assert serie_1 == serie_2
+        assert serie_1 == (acumulado[3], acumulado[4])
+
+    def test_sin_footprint_no_inventa_serie_ni_snapshot(
+        self,
+        rules_db: PsycopgDatabase,
+        limpiar_footprint: None,
+        limpiar_cvd_snapshot: None,
+    ) -> None:
+        # Sin base no hay acumulado: tupla vacia (NOT_EVALUABLE, K3) y NINGUN snapshot
+        # escrito. Persistir un snapshot de una barra que no existe plantaria un ancla
+        # falsa que envenenaria todos los replays posteriores.
+        assert _materializar_cvd(rules_db, _OPEN, 5) == ()
+        assert _leer_ancla(rules_db, _OPEN + 10 * _TF.duration_ms) is None

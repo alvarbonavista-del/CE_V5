@@ -33,11 +33,16 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass
+from decimal import Decimal
 from uuid import UUID
 
 from ce_v5.core.bus import BusMessage, EventBus
 from ce_v5.core.observability import log_event
 from ce_v5.entrypoints.worker_rules.cycle import process_rule_cycle
+from ce_v5.entrypoints.worker_rules.materializers import (
+    SOURCE_MATERIALIZERS,
+    UnwiredSourceError,
+)
 from ce_v5.infra.bus_redis import RedisBusConfig, RedisEventBus, create_client
 from ce_v5.infra.db.config import DbConfig, RulesDbConfig
 from ce_v5.infra.db.inbox_consumer import ConsumeResult, Handler, InboxConsumer
@@ -55,15 +60,22 @@ from ce_v5.infra.db.rules import (
     read_state,
 )
 from ce_v5.infra.db.tenancy import SystemScopedDatabase
+from ce_v5.platform.rules.cache_key_validator import validate_cache_keys
 from ce_v5.platform.rules.catalog import DataSourceCatalog
-from ce_v5.platform.rules.compiler import CompilationError, ExecutionPlan, compile
+from ce_v5.platform.rules.compiler import (
+    CompilationError,
+    ExecutionPlan,
+    ResolvedSource,
+    compile,
+)
 from ce_v5.platform.rules.correction import (
     affected_window,
     correction_scope,
     is_within_window,
 )
+from ce_v5.platform.rules.discovery import discover_declarations
 from ce_v5.platform.rules.evaluator import Series
-from ce_v5.platform.rules.rawclose import market_close_declaration
+from ce_v5.platform.rules.rawclose import MARKET_CLOSE_SOURCE_ID
 from ce_v5.platform.rules.runtime import EvalOutcome, RuntimeState, StaleReason
 from source.families.market import (
     CandleClosedPayload,
@@ -117,15 +129,22 @@ class RulesContext:
 
 
 def build_catalog() -> DataSourceCatalog:
-    """El catalogo de DataSources del motor: en v5.0, market.close (ADR-008).
+    """El catalogo vivo de DataSources (ADR-008, CE-14, sub-pieza materializacion).
 
-    Los cuatro indicadores y el catalogo de paridad-v4 NO son P08 (los disena I-02):
-    market.close es la demostracion del marco. validate() comprueba que el grafo de
-    derivacion esta completo y es aciclico ANTES de compilar nada.
+    Discovery EXPLICITO (dictamen P08c-MAT-02): recoge las declaraciones de los
+    modulos productores (discovery.discover_declarations) y las registra. Aditivo:
+    market.close sigue registrada; se anaden las derivadas deterministas (footprint,
+    vp.*, orderflow.*, cvd.value); las diferidas (candle.*/l2.*) no exponen
+    declaracion aun. validate() comprueba que el grafo esta completo y es aciclico;
+    validate_cache_keys comprueba el cache_key por naturaleza (MAT-03) ANTES de
+    compilar nada.
     """
+    declarations = discover_declarations()
     catalog = DataSourceCatalog()
-    catalog.register(market_close_declaration())
+    for declaration in declarations:
+        catalog.register(declaration)
     catalog.validate()
+    validate_cache_keys(declarations)
     return catalog
 
 
@@ -163,14 +182,37 @@ def _decode_corrected(
 def _series_for(
     session: Session, plan: ExecutionPlan, timeframe: str, open_time: int
 ) -> Series:
-    """Materializa la serie de cada fuente del plan desde el historico de velas.
+    """Materializa la serie de cada fuente resuelta del plan (dispatch MAT-06).
 
-    El plan dimensiona la historia POR FUENTE (ResolvedSource.history_bars: el maximo de
-    barras que pide entre todos sus usos en la regla). En v5.0 la unica fuente servible
-    es market.close, y su serie es la ventana de cierres del flujo de la regla.
+    El dispatch es por SOURCE_ID (no por memory_model, que es solo metadata de la
+    declaracion): market.close se lee directa; vp.* pasan por su MaterializerSpec;
+    cualquier otra fuente servible sin materializador cableado lanza UnwiredSourceError
+    en vez de recibir una serie equivocada por defecto.
     """
     return {
-        source.source_id: read_close_window(
+        source.source_id: _materialize(session, plan, timeframe, open_time, source)
+        for source in plan.resolved_sources
+    }
+
+
+def _materialize(
+    session: Session,
+    plan: ExecutionPlan,
+    timeframe: str,
+    open_time: int,
+    source: ResolvedSource,
+) -> tuple[Decimal, ...]:
+    """La serie de UNA fuente resuelta, elegida por SOURCE_ID (MAT-06/07).
+
+    market.close (unica POINT_LOCAL sobre velas de v5.0) se lee con read_close_window.
+    Las demas fuentes cableadas (vp.* WINDOWED, orderflow.delta POINT_LOCAL, ambas
+    sobre footprint) pasan por su SourceMaterializer del registro. Toda otra fuente
+    servible sin materializador -> UnwiredSourceError: no se sirve una serie por
+    defecto (serviria un hecho falso, la deriva que mato a v4).
+    """
+    source_id = source.source_id
+    if source_id == MARKET_CLOSE_SOURCE_ID:
+        return read_close_window(
             session,
             plan.exchange,
             plan.symbol,
@@ -178,8 +220,21 @@ def _series_for(
             open_time,
             source.history_bars,
         )
-        for source in plan.resolved_sources
-    }
+    materializer = SOURCE_MATERIALIZERS.get(source_id)
+    if materializer is not None:
+        return materializer.materialize(
+            session,
+            plan.exchange,
+            plan.symbol,
+            timeframe,
+            open_time,
+            source.history_bars,
+        )
+    msg = (
+        f"la fuente servible {source_id!r} no tiene materializador cableado en v5.0: "
+        f"no se sirve una serie por defecto (MAT-06)."
+    )
+    raise UnwiredSourceError(msg)
 
 
 def _previous_state(session: Session, rule_id: UUID) -> RuntimeState:

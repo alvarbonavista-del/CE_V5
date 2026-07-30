@@ -71,3 +71,8 @@ def market_footprint_declaration() -> DataSourceDeclaration:
         sharing_scope=SharingScope.PUBLIC_CROSS_TENANT,
         cache_key_schema=MARKET_FOOTPRINT_CACHE_KEY_SCHEMA,
     )
+
+
+def declarations() -> tuple[DataSourceDeclaration, ...]:
+    """Declaraciones que este modulo publica al catalogo vivo (discovery, MAT-02)."""
+    return (market_footprint_declaration(),)

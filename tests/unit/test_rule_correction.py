@@ -22,16 +22,18 @@ from ce_v5.infra.db.rules import (
     build_resolved_event,
 )
 from ce_v5.platform.rules.catalog import DataSourceCatalog
-from ce_v5.platform.rules.compiler import compile
+from ce_v5.platform.rules.compiler import CompilationError, compile
 from ce_v5.platform.rules.correction import (
     affected_window,
     correction_scope,
     is_within_window,
 )
+from ce_v5.platform.rules.discovery import discover_declarations
 from ce_v5.platform.rules.rawclose import (
     MARKET_CLOSE_SOURCE_ID,
     market_close_declaration,
 )
+from ce_v5.platform.rules.volume_profile import VP_POC_SOURCE_ID
 from source.datasource import (
     DataSourceDeclaration,
     HistoryUnit,
@@ -51,7 +53,7 @@ from source.rules.condition import Condition
 from source.rules.feature import Feature
 from source.rules.group import Group
 from source.rules.market_rules import AlertRule, AnyRule, MarketScope, RuleProduct
-from source.rules.reference import DataSourceRef
+from source.rules.reference import DataSourceParam, DataSourceRef
 from source.rules.rule import BindingKind, TargetBinding
 from source.rules.scalar import ScalarType, ScalarValue
 from source.rules.term import SourceTerm, Term, TermKind
@@ -100,13 +102,14 @@ def _condition(
     *,
     function: CanonicalFunction | None = None,
     offset: int | None = None,
+    params: tuple[DataSourceParam, ...] = (),
 ) -> Condition:
     return Condition(
         node_id=uuid4(),
         left=Term(
             term_kind=TermKind.SOURCE,
             source=SourceTerm(
-                ref=DataSourceRef(source_id=source_id),
+                ref=DataSourceRef(source_id=source_id, params=params),
                 function=function,
                 offset=offset,
             ),
@@ -461,3 +464,40 @@ def test_t13_decimal_no_interviene_en_la_decision_de_flanco() -> None:
 def test_uuid_del_causation_es_un_uuid_valido() -> None:
     """El ancla causal es una identidad de evento real, no una cadena cualquiera."""
     UUID(_mark().causation_event_id)
+
+
+def _catalogo_vivo() -> DataSourceCatalog:
+    """El catalogo VIVO del worker (discovery real): trae vp.* y market.footprint."""
+    catalog = DataSourceCatalog()
+    for declaration in discover_declarations():
+        catalog.register(declaration)
+    catalog.validate()
+    return catalog
+
+
+def test_compile_rechaza_params_de_fuente_mat05_q4() -> None:
+    """GUARDA MAT-05 Q4: un override de parametro se RECHAZA, no se sirve por defecto.
+
+    El contrato SI admite params en la referencia (DataSourceRef.params) y el validador
+    semantico los acepta como legitimos, pero el compilador los DESCARTA y la
+    materializacion usa el default de la declaracion. Servir 50 a quien pidio 7 seria la
+    deuda D-E2.1 de v4 ("pedir rsi(period=7) ejecutaba rsi(14) SIN AVISO"), y mentiria
+    la cache_key, que SI discrimina por bin_count. Se rechaza en compilacion.
+    """
+    condicion = _condition(
+        VP_POC_SOURCE_ID,
+        params=(
+            DataSourceParam(
+                name="bin_count",
+                value=ScalarValue(scalar_type=ScalarType.INTEGER, integer_value=7),
+            ),
+        ),
+    )
+    with pytest.raises(CompilationError, match="parametros de fuente"):
+        compile(_rule(condicion), _catalogo_vivo())
+
+
+def test_compile_admite_la_misma_fuente_sin_params() -> None:
+    """La guarda es QUIRURGICA: sin override, vp.poc compila con su default."""
+    plan = compile(_rule(_condition(VP_POC_SOURCE_ID)), _catalogo_vivo())
+    assert VP_POC_SOURCE_ID in {s.source_id for s in plan.resolved_sources}

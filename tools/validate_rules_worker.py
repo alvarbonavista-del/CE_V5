@@ -62,7 +62,10 @@ from ce_v5.platform.rules.canonical import canonical_rule_hash  # noqa: E402
 from ce_v5.platform.rules.rawclose import MARKET_CLOSE_SOURCE_ID  # noqa: E402
 from check_rules_access import (  # noqa: E402
     MARKET_CANDLE_TABLE,
+    MARKET_FOOTPRINT_TABLE,
+    OUTBOX_TABLE,
     RULE_DEFINITION_TABLE,
+    RULES_STATE_TABLES,
     check_rules,
 )
 from source.families.market import (  # noqa: E402
@@ -205,8 +208,9 @@ def _message(event_type: str, payload: dict[str, object]) -> BusMessage:
 def _mordida_del_check() -> list[tuple[str, bool]]:
     """Tests 26/27/28: el check ROMPE si se concede de mas. Logica pura, sin DB.
 
-    Se parte de un mapa de privilegios SANO (el que la 0016 deja) y se muta UNA cosa
-    cada vez. Si el check siguiera verde con la mutacion, no estaria protegiendo nada.
+    Se parte de un mapa de privilegios SANO -- el espejo de los grants que las
+    migraciones dejan REALMENTE al rol (0013/0016/0021/0022) -- y se muta UNA cosa cada
+    vez. Si el check siguiera verde con la mutacion, no estaria protegiendo nada.
     """
     from check_identity_access import FunctionFacts
 
@@ -230,8 +234,31 @@ def _mordida_del_check() -> list[tuple[str, bool]]:
         "outbox_rules_read": "event_type like 'rule.%' or 'signal.' or 'alert.'",
         "outbox_rules_update": "event_type like 'rule.%' or 'signal.' or 'alert.'",
     }
+    # ESPEJO EXACTO de los grants REALES del rol de reglas: ni de mas, ni de menos.
+    # Si aqui faltara uno que la base SI concede, el POSITIVO del check morderia sobre
+    # un mapa incompleto y el caso base daria un rojo falso (que es justo lo que paso
+    # entre la 0021 y esta correccion).
+    #
+    # SI ANADES UNA MIGRACION QUE TOQUE LOS GRANTS DE ce_v5_rules, ACTUALIZA ESTO.
+    # Las fuentes de verdad, tabla a tabla:
+    #   0013 -> rule_lifecycle_state y outbox (SELECT, INSERT, UPDATE): el motor
+    #           escribe su estado de regla y encola lo que produce.
+    #   0016 -> market_candle (SELECT): la ventana de cierres que evalua.
+    #   0021 -> market_footprint (SELECT): la ventana que materializa vp.*/orderflow.
+    #   0022 -> cvd_snapshot (SELECT, INSERT): su estado de replay del INTEGRATOR.
+    # Las tablas de estado se toman de RULES_STATE_TABLES para que sigan al check y no
+    # se queden atras cuando entre la siguiente.
+    grants_reales: dict[str, tuple[str, ...]] = {
+        MARKET_CANDLE_TABLE: ("SELECT",),
+        MARKET_FOOTPRINT_TABLE: ("SELECT",),
+        OUTBOX_TABLE: ("SELECT", "INSERT", "UPDATE"),
+        "rule_lifecycle_state": ("SELECT", "INSERT", "UPDATE"),
+        **{tabla: ("SELECT", "INSERT") for tabla in RULES_STATE_TABLES},
+    }
     sano: dict[tuple[str, str, str], bool] = {
-        ("ce_v5_rules", MARKET_CANDLE_TABLE, "SELECT"): True,
+        ("ce_v5_rules", tabla, privilegio): True
+        for tabla, privilegios in grants_reales.items()
+        for privilegio in privilegios
     }
 
     def corre(privs: dict[tuple[str, str, str], bool], demand: bool = False) -> bool:
