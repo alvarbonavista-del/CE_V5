@@ -22,8 +22,9 @@ from __future__ import annotations
 import json
 import uuid
 
-from ce_v5.infra.db.ports import Database
+from ce_v5.infra.db.ports import Database, Session
 from source.families.footprint import FootprintPayload
+from source.families.market import MarketType
 
 # ON CONFLICT DO NOTHING ... RETURNING: si la clave ya existe no se duplica ni falla, y
 # el RETURNING delata si la fila entro DE VERDAD (dedup honesto), como en las velas.
@@ -123,3 +124,103 @@ class PostgresFootprintWriter:
                 ),
             )
         return True
+
+
+_FOOTPRINT_WINDOW_SQL = """
+SELECT
+    w.exchange, w.market_type, w.symbol, w.timeframe,
+    w.open_time, w.close_time, w.cells,
+    w.bar_buy_volume, w.bar_sell_volume, w.bar_delta,
+    w.trade_count, w.is_complete, w.maturity_state,
+    w.correction_revision, w.corrects_idempotency_key
+FROM (
+    SELECT DISTINCT ON (open_time)
+        exchange, market_type, symbol, timeframe,
+        open_time, close_time, cells,
+        bar_buy_volume, bar_sell_volume, bar_delta,
+        trade_count, is_complete, maturity_state,
+        correction_revision, corrects_idempotency_key
+    FROM market_footprint
+    WHERE exchange = %s
+      AND market_type = %s
+      AND symbol = %s
+      AND timeframe = %s
+      AND maturity_state IN ('closed', 'correction')
+      AND open_time <= %s
+    ORDER BY open_time DESC, correction_revision DESC NULLS LAST
+    LIMIT %s
+) AS w
+ORDER BY w.open_time
+"""
+
+_FOOTPRINT_COLUMNS = (
+    "exchange",
+    "market_type",
+    "symbol",
+    "timeframe",
+    "open_time",
+    "close_time",
+    "cells",
+    "bar_buy_volume",
+    "bar_sell_volume",
+    "bar_delta",
+    "trade_count",
+    "is_complete",
+    "maturity_state",
+    "correction_revision",
+    "corrects_idempotency_key",
+)
+
+
+def read_footprint_window(
+    session: Session,
+    exchange: str,
+    symbol: str,
+    timeframe: str,
+    up_to_open_time: int,
+    bars: int,
+) -> tuple[FootprintPayload, ...]:
+    """La ventana de footprints de un flujo hasta una barra, oldest->newest.
+
+    Es la BASE que consume la materializacion WINDOWED (vp.* en CE-14): las `bars`
+    barras de footprint mas recientes del (exchange, symbol, timeframe) con
+    open_time <= up_to_open_time, UNA por ventana (la revision VIGENTE si hubo
+    correcciones, por el DISTINCT ON + correction_revision DESC NULLS LAST) y en
+    orden creciente de open_time. Hermana de read_ohlcv_window: MISMO esqueleto de
+    dedup y recorte, solo cambian la tabla y las columnas.
+
+    Devuelve FootprintPayload (la BASE del contrato), no un tipo de lectura propio,
+    porque las funciones PURAS de vp.* (compute_volume_profile / compute_volume_nodes)
+    consumen Sequence[FootprintPayload]: reconstruir a otra forma obligaria a
+    reescribir ese nucleo ya cerrado. La reconstruccion pasa por model_validate, igual
+    que composition.py rehidrata CandleClosedPayload del sobre: pydantic COACCIONA los
+    tipos (Decimal desde el texto de las celdas jsonb, enums desde su value, EpochMillis
+    desde el entero) y RE-EJECUTA los validadores del contrato -- una fila corrupta
+    (celdas desordenadas, totales que no cuadran) LANZA aqui, en vez de servir un
+    footprint mentiroso al perfil.
+
+    IMPORTANTE sobre el tamano: `bars` es el numero de footprints BASE devueltos, no el
+    de valores de salida del perfil. Quien materializa un WINDOWED (composition, MAT-02
+    punto 3) pide history_bars + window_bars - 1 footprints para producir history_bars
+    valores; ese dimensionado es del caller, no de este lector.
+
+    Devuelve menos de `bars` (hasta la tupla VACIA) si el historico no da para mas,
+    y NO rellena nada: un hueco es un hecho ausente y el evaluador ya lo distingue como
+    NOT_EVALUABLE (K3), distinto de FALSE. market_type esta FIJADO a spot (v5.0 solo
+    tiene spot), igual que en read_close_window.
+    """
+    rows = session.fetchall(
+        _FOOTPRINT_WINDOW_SQL,
+        (
+            exchange,
+            MarketType.SPOT.value,
+            symbol,
+            timeframe,
+            up_to_open_time,
+            bars,
+        ),
+    )
+    return tuple(
+        FootprintPayload.model_validate(dict(zip(_FOOTPRINT_COLUMNS, row, strict=True)))
+        for row in rows
+    )

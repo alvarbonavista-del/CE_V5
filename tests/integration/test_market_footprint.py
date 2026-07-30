@@ -30,7 +30,10 @@ import pytest
 import redis
 
 from ce_v5.infra.bus_redis import RedisBusConfig, RedisEventBus, create_client
-from ce_v5.infra.db.market_footprint import PostgresFootprintWriter
+from ce_v5.infra.db.market_footprint import (
+    PostgresFootprintWriter,
+    read_footprint_window,
+)
 from ce_v5.infra.db.outbox_publisher import OutboxPublisher, topic_for
 from ce_v5.infra.db.psycopg_adapter import PsycopgDatabase
 from source.envelope import Envelope
@@ -75,18 +78,23 @@ def limpiar_footprint(migrator_db: PsycopgDatabase) -> Iterator[None]:
     _wipe()
 
 
-def _cells() -> tuple[FootprintCell, ...]:
+def _cells(offset: Decimal = Decimal(0)) -> tuple[FootprintCell, ...]:
     # Dos niveles de precio con Decimal de muchos digitos: la prueba de que el jsonb no
     # los redondea. Ordenadas por precio ascendente (lo exige el contrato).
+    #
+    # offset DESPLAZA el nivel y el volumen comprador para que cada barra de una VENTANA
+    # sea DISTINGUIBLE de las demas: con celdas identicas, un test de ventana no podria
+    # detectar que el lector mezcla o reordena barras. offset=0 reproduce EXACTAMENTE
+    # las celdas originales, asi que los tests que ya existian ven lo mismo que antes.
     return (
         FootprintCell(
-            price=Decimal("100.12345678"),
-            buy_volume=Decimal("1.5"),
+            price=Decimal("100.12345678") + offset,
+            buy_volume=Decimal("1.5") + offset,
             sell_volume=Decimal("0.25"),
-            delta=Decimal("1.25"),
+            delta=Decimal("1.5") + offset - Decimal("0.25"),
         ),
         FootprintCell(
-            price=Decimal("100.99999999"),
+            price=Decimal("100.99999999") + offset,
             buy_volume=Decimal("0"),
             sell_volume=Decimal("3.0"),
             delta=Decimal("-3.0"),
@@ -94,8 +102,12 @@ def _cells() -> tuple[FootprintCell, ...]:
     )
 
 
-def _closed(is_complete: bool = True) -> FootprintClosedPayload:  # noqa: FBT001, FBT002
-    cells = _cells()
+def _closed(
+    is_complete: bool = True,  # noqa: FBT001, FBT002
+    open_time: int = _OPEN,
+    offset: Decimal = Decimal(0),
+) -> FootprintClosedPayload:
+    cells = _cells(offset)
     buy = sum((c.buy_volume for c in cells), Decimal(0))
     sell = sum((c.sell_volume for c in cells), Decimal(0))
     return FootprintClosedPayload(
@@ -104,8 +116,8 @@ def _closed(is_complete: bool = True) -> FootprintClosedPayload:  # noqa: FBT001
         market_type=MarketType.SPOT,
         symbol="BTC-USDT",
         timeframe=_TF,
-        open_time=_OPEN,
-        close_time=_CLOSE,
+        open_time=open_time,
+        close_time=open_time + _TF.duration_ms,
         cells=cells,
         bar_buy_volume=buy,
         bar_sell_volume=sell,
@@ -115,8 +127,13 @@ def _closed(is_complete: bool = True) -> FootprintClosedPayload:  # noqa: FBT001
     )
 
 
-def _corrected(revision: int, corrige: str) -> FootprintCorrectedPayload:
-    cells = _cells()
+def _corrected(
+    revision: int,
+    corrige: str,
+    open_time: int = _OPEN,
+    offset: Decimal = Decimal(0),
+) -> FootprintCorrectedPayload:
+    cells = _cells(offset)
     buy = sum((c.buy_volume for c in cells), Decimal(0))
     sell = sum((c.sell_volume for c in cells), Decimal(0))
     return FootprintCorrectedPayload(
@@ -127,8 +144,8 @@ def _corrected(revision: int, corrige: str) -> FootprintCorrectedPayload:
         market_type=MarketType.SPOT,
         symbol="BTC-USDT",
         timeframe=_TF,
-        open_time=_OPEN,
-        close_time=_CLOSE,
+        open_time=open_time,
+        close_time=open_time + _TF.duration_ms,
         cells=cells,
         bar_buy_volume=buy,
         bar_sell_volume=sell,
@@ -381,6 +398,186 @@ class TestCorreccionAppendOnly:
         assert envelope["payload"]["maturity_state"] == "correction"
         assert envelope["payload"]["correction_revision"] == 1
         assert envelope["payload"]["corrects_idempotency_key"] == clave_cerrado
+
+
+def _escribir_barras(
+    persistir: Persistir, cuantas: int
+) -> list[FootprintClosedPayload]:
+    """Escribe `cuantas` barras CERRADAS consecutivas, cada una distinguible."""
+    escritas: list[FootprintClosedPayload] = []
+    for indice in range(cuantas):
+        payload = _closed(
+            open_time=_OPEN + indice * _TF.duration_ms,
+            offset=Decimal(indice),
+        )
+        assert (
+            persistir(payload, MarketFootprintEventType.FOOTPRINT_CLOSED, _EVENT_TIME)
+            is True
+        )
+        escritas.append(payload)
+    return escritas
+
+
+def _leer_ventana(
+    rules_db: PsycopgDatabase, up_to_open_time: int, bars: int
+) -> tuple[FootprintPayload, ...]:
+    """La ventana LEIDA CON EL ROL DE REGLAS (GRANT SELECT de la 0021)."""
+    with rules_db.transaction() as session:
+        return read_footprint_window(
+            session, "binance", "BTC-USDT", _TF.value, up_to_open_time, bars
+        )
+
+
+def _assert_misma_barra(
+    obtenida: FootprintPayload, esperada: FootprintClosedPayload
+) -> None:
+    """Igualdad campo a campo de una barra: totales, contador, celdas y madurez."""
+    assert obtenida.open_time == esperada.open_time
+    assert obtenida.close_time == esperada.close_time
+    assert obtenida.exchange == esperada.exchange
+    assert obtenida.symbol == esperada.symbol
+    assert obtenida.timeframe == esperada.timeframe
+    assert obtenida.market_type == esperada.market_type
+    assert obtenida.bar_buy_volume == esperada.bar_buy_volume
+    assert obtenida.bar_sell_volume == esperada.bar_sell_volume
+    assert obtenida.bar_delta == esperada.bar_delta
+    assert obtenida.trade_count == esperada.trade_count
+    assert obtenida.is_complete == esperada.is_complete
+    assert len(obtenida.cells) == len(esperada.cells)
+    for celda, celda_esperada in zip(obtenida.cells, esperada.cells, strict=True):
+        assert celda.price == celda_esperada.price
+        assert celda.buy_volume == celda_esperada.buy_volume
+        assert celda.sell_volume == celda_esperada.sell_volume
+        assert celda.delta == celda_esperada.delta
+
+
+class TestVentanaDeFootprintParaLaMaterializacion:
+    """read_footprint_window: la BASE que consume la materializacion WINDOWED (CE-14).
+
+    Se ESCRIBE con el rol de INGESTA y se LEE con el rol de REGLAS, que es el reparto
+    real de poder (5.20): el GRANT SELECT de la 0021 es lo que hace posible esta
+    lectura, y la escritura le sigue estando NEGADA. Un doble no probaria ni el dedup
+    por revision (lo hace el DISTINCT ON del motor) ni que el Decimal del jsonb vuelve
+    exacto tras el model_validate.
+    """
+
+    def test_round_trip_de_la_ventana_oldest_to_newest(
+        self,
+        rules_db: PsycopgDatabase,
+        persistir_footprint: Persistir,
+        limpiar_footprint: None,
+    ) -> None:
+        # (3.1) N barras cerradas consecutivas vuelven COMPLETAS y EN ORDEN: celdas
+        # (precio/buy/sell/delta), totales de barra, trade_count e is_complete identicos
+        # a lo escrito. El perfil de volumen se calcula sobre esto: si el lector
+        # reordenara o mezclara barras, el POC saldria de una historia que no existio.
+        escritas = _escribir_barras(persistir_footprint, 3)
+        ultimo = escritas[-1].open_time
+
+        ventana = _leer_ventana(rules_db, ultimo, 10)
+
+        assert len(ventana) == 3
+        tiempos = [barra.open_time for barra in ventana]
+        assert tiempos == sorted(tiempos)  # oldest->newest, explicito.
+        for obtenida, esperada in zip(ventana, escritas, strict=True):
+            _assert_misma_barra(obtenida, esperada)
+
+    def test_bars_menor_que_la_historia_da_las_mas_recientes(
+        self,
+        rules_db: PsycopgDatabase,
+        persistir_footprint: Persistir,
+        limpiar_footprint: None,
+    ) -> None:
+        # (3.2) El recorte es por el extremo ANTIGUO: con bars=2 sobre 3 barras se
+        # devuelven las DOS MAS RECIENTES, no las dos primeras.
+        escritas = _escribir_barras(persistir_footprint, 3)
+        ultimo = escritas[-1].open_time
+
+        ventana = _leer_ventana(rules_db, ultimo, 2)
+
+        assert len(ventana) == 2
+        _assert_misma_barra(ventana[0], escritas[1])
+        _assert_misma_barra(ventana[1], escritas[2])
+
+    def test_up_to_open_time_excluye_las_barras_posteriores(
+        self,
+        rules_db: PsycopgDatabase,
+        persistir_footprint: Persistir,
+        limpiar_footprint: None,
+    ) -> None:
+        # (3.3) La ventana se ancla en la barra que se evalua: nada con open_time MAYOR
+        # entra. Mirar el futuro seria exactamente el look-ahead que invalida un
+        # backtest.
+        escritas = _escribir_barras(persistir_footprint, 3)
+
+        ventana = _leer_ventana(rules_db, escritas[1].open_time, 10)
+
+        assert len(ventana) == 2
+        assert [barra.open_time for barra in ventana] == [
+            escritas[0].open_time,
+            escritas[1].open_time,
+        ]
+        assert escritas[2].open_time not in [barra.open_time for barra in ventana]
+
+    def test_dedup_por_revision_devuelve_la_vigente(
+        self,
+        rules_db: PsycopgDatabase,
+        persistir_footprint: Persistir,
+        limpiar_footprint: None,
+    ) -> None:
+        # (3.4) Append-only (ADR-007): el cerrado y su correccion CONVIVEN en la tabla,
+        # pero la ventana sirve UNA fila por open_time y es la VIGENTE (la revision mas
+        # alta). Sin el DISTINCT ON, esa barra saldria DOS veces y desplazaria toda la
+        # serie: las funciones que operan por posicion contarian una historia falsa.
+        cerrado = _closed()
+        clave_cerrado = cerrado.idempotency_key(
+            MarketFootprintEventType.FOOTPRINT_CLOSED
+        )
+        persistir_footprint(
+            cerrado, MarketFootprintEventType.FOOTPRINT_CLOSED, _EVENT_TIME
+        )
+        # offset distinto: la correccion trae OTROS numeros, asi que se puede comprobar
+        # que lo servido es la correccion y no el cerrado original.
+        correccion = _corrected(1, clave_cerrado, offset=Decimal(7))
+        persistir_footprint(
+            correccion, MarketFootprintEventType.FOOTPRINT_CORRECTED, _EVENT_TIME
+        )
+
+        ventana = _leer_ventana(rules_db, _OPEN, 10)
+
+        assert len(ventana) == 1  # UNA sola fila para ese open_time.
+        vigente = ventana[0]
+        assert vigente.maturity_state is MaturityState.CORRECTION
+        assert vigente.correction_revision == 1
+        assert vigente.corrects_idempotency_key == clave_cerrado
+        # Los numeros son los de la CORRECCION, no los del cerrado que reemplaza.
+        assert vigente.bar_buy_volume == correccion.bar_buy_volume
+        assert vigente.bar_delta == correccion.bar_delta
+        assert vigente.cells[0].price == correccion.cells[0].price
+        assert vigente.bar_buy_volume != cerrado.bar_buy_volume
+
+    def test_sin_historia_suficiente_o_sin_coincidencia_devuelve_vacio(
+        self,
+        rules_db: PsycopgDatabase,
+        persistir_footprint: Persistir,
+        limpiar_footprint: None,
+    ) -> None:
+        # (3.5) Un hueco es un hecho AUSENTE: el lector no rellena nada. La tupla vacia
+        # es lo que el evaluador traduce a NOT_EVALUABLE (K3), que NO es FALSE.
+        assert _leer_ventana(rules_db, _OPEN, 10) == ()  # tabla vacia.
+
+        escritas = _escribir_barras(persistir_footprint, 2)
+        # Ancla ANTERIOR a toda la historia: ninguna barra califica.
+        assert _leer_ventana(rules_db, escritas[0].open_time - 1, 10) == ()
+        # Otro flujo (symbol que no existe): sin coincidencia, sin invencion.
+        ultimo = escritas[-1].open_time
+        with rules_db.transaction() as session:
+            assert (
+                read_footprint_window(
+                    session, "binance", "ETH-USDT", _TF.value, ultimo, 10
+                )
+                == ()
+            )
 
 
 class TestElEventoEncoladoEsPublicable:
