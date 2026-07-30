@@ -21,7 +21,7 @@ UnwiredSourceError si una regla la referencia, en vez de servir una serie equivo
 from __future__ import annotations
 
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import ROUND_HALF_EVEN, Decimal, localcontext
 from typing import TYPE_CHECKING, Protocol
 
 from ce_v5.infra.db.cvd_snapshot import read_cvd_snapshot_before, write_cvd_snapshot
@@ -43,6 +43,14 @@ from ce_v5.platform.rules.indicators.volume import (
     LOOKBACK_DEFAULT,
     VOLUME_RATIO_VS_AVG_SOURCE_ID,
     ratio_vs_avg,
+)
+from ce_v5.platform.rules.indicators.vwap import (
+    N_CANDLES_DEFAULT,
+    VWAP_DISTANCE_PCT_SOURCE_ID,
+    VWAP_VALUE_SOURCE_ID,
+)
+from ce_v5.platform.rules.indicators.vwap import (
+    value as vwap_value,
 )
 from ce_v5.platform.rules.materializer import (
     materialize_recursive,
@@ -328,6 +336,51 @@ def _volume_ratio_vs_avg(window: Sequence[CandleOHLCV]) -> Decimal:
     return value
 
 
+def _hlc3_mean(window: Sequence[CandleOHLCV]) -> Decimal:
+    """Media NO PONDERADA de HLC3 sobre la ventana: fallback de materializacion del VWAP
+    cuando el volumen total de la ventana es 0 (P08b-INT-04, opcion B). Es el limite del
+    VWAP con pesos uniformes; con volumen 0 las velas estan planas, asi que coincide con
+    el precio plano real. La POLITICA del degenerado vive AQUI (cableado), no en la
+    funcion pura de vwap, que se queda fiel (None = indefinido)."""
+    with localcontext() as ctx:
+        ctx.prec = 34
+        ctx.rounding = ROUND_HALF_EVEN
+        total = Decimal(0)
+        for candle in window:
+            total += (candle.high + candle.low + candle.close) / 3
+        return total / Decimal(len(window))
+
+
+def _vwap_effective(window: Sequence[CandleOHLCV]) -> Decimal:
+    """VWAP de la ventana (funcion pura), o el fallback HLC3 si el volumen total
+    es 0."""
+    v = vwap_value(
+        tuple(c.high for c in window),
+        tuple(c.low for c in window),
+        tuple(c.close for c in window),
+        tuple(c.volume for c in window),
+        n_candles=N_CANDLES_DEFAULT,
+    )[-1]
+    return v if v is not None else _hlc3_mean(window)
+
+
+def _vwap_value(window: Sequence[CandleOHLCV]) -> Decimal:
+    return _vwap_effective(window)
+
+
+def _vwap_distance_pct(window: Sequence[CandleOHLCV]) -> Decimal:
+    """|close - VWAP| / VWAP * 100 con el VWAP EFECTIVO (fallback HLC3 si vol
+    total = 0)."""
+    vwap_ref = _vwap_effective(window)
+    close = window[-1].close
+    with localcontext() as ctx:
+        ctx.prec = 34
+        ctx.rounding = ROUND_HALF_EVEN
+        if vwap_ref <= 0:
+            return Decimal(0)
+        return abs(close - vwap_ref) / vwap_ref * Decimal(100)
+
+
 # Registro por SOURCE_ID (MAT-06/07). Las fuentes cableadas de v5.0.
 SOURCE_MATERIALIZERS: dict[str, SourceMaterializer] = {
     VP_POC_SOURCE_ID: FootprintWindowedSpec(transform=_poc),
@@ -344,5 +397,11 @@ SOURCE_MATERIALIZERS: dict[str, SourceMaterializer] = {
     ),
     VOLUME_RATIO_VS_AVG_SOURCE_ID: CandleWindowedSpec(
         transform=_volume_ratio_vs_avg, window_bars=LOOKBACK_DEFAULT + 1
+    ),
+    VWAP_VALUE_SOURCE_ID: CandleWindowedSpec(
+        transform=_vwap_value, window_bars=N_CANDLES_DEFAULT
+    ),
+    VWAP_DISTANCE_PCT_SOURCE_ID: CandleWindowedSpec(
+        transform=_vwap_distance_pct, window_bars=N_CANDLES_DEFAULT
     ),
 }

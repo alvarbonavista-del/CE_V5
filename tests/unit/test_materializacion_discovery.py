@@ -20,6 +20,8 @@ _EXPECTED = {
     "candle.upper_shadow_pct",
     "candle.lower_shadow_pct",
     "volume.ratio_vs_avg",
+    "vwap.value",
+    "vwap.distance_pct",
 }
 
 
