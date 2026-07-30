@@ -3,9 +3,12 @@
 Archivo vivo (sin logica). Mantenido por Claude Code; Alvaro lo resube
 al knowledge al cerrar cada pieza o hito (DOC_ENTREGABLES sec.8).
 
-Ultima actualizacion: 2026-07-26 (P07c ENTREGADA: orderbook L2 con estado, cierre formal
-Central+CSA firmado por Alvaro; HEAD 8869ec9, PR #3 mergeado a main. M3 SIGUE ABIERTO:
-faltan P08b, P08c, P09a).
+Ultima actualizacion: 2026-07-30 (P08c sub-pieza MATERIALIZACION CERRADA: merge ca4d5f4
+en main, Actions verde 3/3 run 30564656066, ci_local 24/24. P08c NO entregada -avanza por
+sub-piezas-. M3 SIGUE ABIERTO en 4 de 7: faltan P08b, P08c completa y P09a).
+
+Anterior: 2026-07-26 (P07c ENTREGADA: orderbook L2 con estado, cierre formal
+Central+CSA firmado por Alvaro; HEAD 8869ec9, PR #3 mergeado a main).
 
 | Hito | Definicion breve (DOC_ROADMAP sec.4) | Piezas | Estado |
 |------|--------------------------------------|--------|--------|
@@ -232,6 +235,27 @@ se escribio y se conserva sin tocar; queda DEROGADA hacia delante (regla
   a v5.1 -disparador de revision si el market data empezara a fluir a produccion antes-.
   Ver REGISTRO_DECISIONES seccion 29.
   M3: 4 de 7; SIGUE ABIERTO (faltan P08b, P08c y P09a).
+- P08c - DataSources footprint/L2-derived: EN CURSO por sub-piezas. NO entregada.
+  Sub-pieza MATERIALIZACION (CE-14) CERRADA 2026-07-30. Merge commit ca4d5f4
+  (wip/p08c -> main, --no-ff). Estado: CERRADA con APROBADO FINAL (Central + Alvaro).
+  ci_local 24/24 y Actions run 30564656066 VERDE 3/3 sobre el merge; cero skips/xfail.
+  Rango de commits de la sub-pieza: 873453f..c762ffc (11 de construccion + 2 de doc +
+  2 de correccion pre-merge).
+  Que deja en pie: el catalogo VIVO se puebla por discovery explicito (declarations()
+  por modulo productor, agregadas en discover_declarations) y se valida antes de
+  compilar (grafo completo y aciclico + cache_key por naturaleza, MAT-03). El dispatch
+  de materializacion es por SOURCE_ID contra un registro polimorfico (Protocol
+  SourceMaterializer) en el composition root del worker; una fuente servible sin
+  materializador falla RUIDOSO (UnwiredSourceError), nunca sirve una serie por defecto.
+  Cableadas en vivo: market.close (POINT_LOCAL), vp.poc/vah/val (WINDOWED),
+  orderflow.delta (POINT_LOCAL) y cvd.value (INTEGRATOR, replay desde snapshot con GATE
+  bit-exacto ADR-007). Sin cablear: orderflow.delta_momentum.
+  Migracion nueva: 0022 (cvd_snapshot, scope=system, append-only; el rol ce_v5_rules
+  ESCRIBE por primera vez su propio estado de replay, categoria RULES_STATE_TABLES).
+  Handoff a P08b entregado: docs/HANDOFF_P08c_MATERIALIZACION.md (requerimiento
+  P08c-R1); P08c cierra esta sub-pieza SIN deuda hacia P08b.
+  M3: sigue 4 de 7; SIGUE ABIERTO (P08c no cuenta como entregada; faltan P08b, P08c
+  completa y P09a). Ver REGISTRO_DECISIONES seccion 30.
 
 ## Nota EXP-M3-01 (2026-07-17): M3 AMPLIADO A PARIDAD FUNCIONAL v4
 M3 queda AMPLIADO a paridad funcional v4. Firmado por Alvaro 2026-07-17, con doble

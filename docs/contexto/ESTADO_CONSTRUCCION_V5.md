@@ -4,7 +4,13 @@ Archivo vivo de estado de proceso (sin logica). Lo mantiene Claude Code
 en disco; Alvaro lo resube al knowledge cada vez que se cierra una pieza
 o un hito (DOC_ENTREGABLES sec.8).
 
-Ultima actualizacion: 2026-07-26 (P07c ENTREGADA: cierre formal con doble revision
+Ultima actualizacion: 2026-07-30 (P08c sub-pieza MATERIALIZACION CERRADA: catalogo vivo
+por discovery explicito, materializadores POINT_LOCAL/WINDOWED/INTEGRATOR cableados y
+cvd.value con replay desde snapshot. Merge ca4d5f4 en main, Actions verde 3/3, ci_local
+24/24. P08c NO entregada aun -sigue por sub-piezas-; M3 SIGUE ABIERTO. Ver
+REGISTRO_DECISIONES seccion 30).
+
+Anterior: 2026-07-26 (P07c ENTREGADA: cierre formal con doble revision
 Central+CSA, firmada por Alvaro. Orderbook L2 con estado (snapshots top-K
 observacionales, frontera por reloj de barra, resync como hecho propio, 2a conexion OKX
 a /public), cache_key_schema ADR-008 construido (10 dimensiones, un-diferido de la nota
@@ -27,7 +33,8 @@ no reabre ADR). Piezas de M3 y su estado:
   - P07c (orderbook L2 con estado) ................... ENTREGADA
   - P08  (motor de reglas) ........................... ENTREGADA
   - P08b (DataSources candle-derived) ................ PENDIENTE
-  - P08c (DataSources footprint/L2-derived) .......... PENDIENTE
+  - P08c (DataSources footprint/L2-derived) .......... EN CURSO
+      (sub-pieza MATERIALIZACION CERRADA 2026-07-30, merge ca4d5f4)
   - P09a (router de notificaciones backend) .......... PENDIENTE
 Orden: P07 -> T-03 -> P07b -> P07c -> P08 -> P08b -> P08c -> P09a.
 Paralelismo admitido: P08 || P07b || P07c || P08b; P08c tras P07b+P07c;
@@ -93,10 +100,27 @@ P07 - Ingesta de market data (hibrida), ADR-014: ENTREGADA. ABRE el hito M3
   cola en el arbol.)
 
 ## Pieza en curso
-Ninguna. P07c ENTREGADA (cierre formal, ver "Piezas cerradas"). Las siguientes de M3
-(P08b, P08c, P09a) estan PENDIENTES; admiten paralelismo P08b (P08c tras P07b+P07c, ya
-ambas entregadas).
+P08c (DataSources footprint/L2-derived) EN CURSO, por sub-piezas. La sub-pieza de
+MATERIALIZACION (CE-14) esta CERRADA (ver "Sub-piezas cerradas de P08c"); P08c como
+pieza NO esta entregada todavia. P08b y P09a siguen PENDIENTES.
 T-05 (visor de desarrollo, transversal): CERRADA (ver "Transversales cerradas").
+
+## Sub-piezas cerradas de P08c
+- P08c materializacion (CE-14): CERRADA. Rango de commits 873453f..c762ffc; merge commit
+  ca4d5f4; fecha 2026-07-30. APROBADO FINAL (Central + Alvaro). ci_local 24/24 y Actions
+  verde 3/3 sobre el merge (run 30564656066). SIN deuda hacia P08b.
+  Entregables: discovery explicito (declarations() por modulo productor /
+  discover_declarations); nucleos puros materialize_windowed y materialize_recursive;
+  cache_key_validator (MAT-03); read_footprint_window; dispatch por SOURCE_ID (registro
+  polimorfico con el Protocol SourceMaterializer); read_footprint_delta_range; tabla
+  cvd_snapshot (migracion 0022); cvd.value INTEGRATOR con replay desde snapshot (GATE
+  ADR-007); handoff docs/HANDOFF_P08c_MATERIALIZACION.md; pytest del dispatch de
+  market.close; correccion de validate_rules_worker.py.
+  Fuentes CABLEADAS en vivo: market.close (POINT_LOCAL), vp.poc/vah/val (WINDOWED),
+  orderflow.delta (POINT_LOCAL), cvd.value (INTEGRATOR).
+  SIN cablear: orderflow.delta_momentum (fallo ruidoso UnwiredSourceError si una regla
+  la referencia; no se sirve serie por defecto).
+  Ver REGISTRO_DECISIONES seccion 30 (MAT-01..MAT-07 y dictamenes de correccion).
 
 ## Piezas cerradas
 - P00 - Esqueleto de repositorio + CI base: ENTREGADA (hito M0 CERRADO).

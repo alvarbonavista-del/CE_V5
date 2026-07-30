@@ -2029,3 +2029,79 @@ FIXES (3, ninguno roza el tope de 2 por problema):
 ADR: sin ADR nuevo; 5.12 NO activada. P07c NO cierra M3; siguen pendientes P08b, P08c,
 P09a.
 =====================================================================
+
+=====================================================================
+30. CIERRE DE SUB-PIEZA P08c - MATERIALIZACION (CE-14)
+=====================================================================
+Estado: CERRADA (sub-pieza; P08c como PIEZA sigue EN CURSO). Merge commit ca4d5f4
+(wip/p08c -> main, --no-ff). Rango de commits 873453f..c762ffc. Fecha 2026-07-30.
+Actions run 30564656066, 3/3 success sobre el merge; ci_local 24/24; cero skips/xfail.
+APROBADO FINAL: Central + Alvaro.
+
+DICTAMENES DE LA SUB-PIEZA:
+
+MAT-01  Secuenciacion opcion B; routing RECURSIVE; DoD de la sub-pieza (D1-D7).
+
+MAT-02  Interfaz de materializacion (5 puntos): el CALLER resuelve el lector de base y
+        pasa la funcion pura; platform queda puro.
+
+MAT-03  Validacion del cache_key COMPLETO por naturaleza (opcion B): dims de flujo
+        (exchange, symbol, timeframe) + TODO param declarado en la clave;
+        formula_version/as_of se ACEPTAN como opcionales, no se exigen.
+
+MAT-04  Grant SELECT footprint al rol de reglas autorizado; cvd snapshot OPCION A
+        (snapshot de VALOR); split T5a/T5b.
+
+MAT-05  Q1=A registro de materializadores en el composition root del worker. Q2=A
+        materializar con DEFAULTS de la declaracion en v5.0 (no se toca el compilador).
+        Q3 window_bars=100 es constante FIJA de materializacion (NO dimension de
+        cache_key, no override por regla). Q4 guarda en el compilador si el esquema
+        admite params de fuente. Rama (b) CONFIRMADA: DataSourceRef.params existe ->
+        guarda "ref.params no vacio -> CompilationError" (cuarentena). TEMPORAL v5.0; se
+        retira cuando el compilador propague params (opcion 1).
+
+MAT-06  Dispatch en _series_for por SOURCE_ID (NO por memory_model, que es solo
+        metadata). market.close es caso explicito (read_close_window). Fuente servible
+        sin materializador -> UnwiredSourceError (fallo ruidoso), nunca serie por
+        defecto.
+
+MAT-07  cvd.value INTEGRATOR. D1 cablear orderflow.delta (POINT_LOCAL sobre footprint,
+        bar_delta) y que cvd lo consuma (DAG footprint->delta->cvd). D2 tabla
+        cvd_snapshot + migracion 0022 + grant nuevos: el rol de reglas ESCRIBE su propio
+        estado de replay (categoria RULES_STATE_TABLES, scope=system, append-only). D3
+        un snapshot por barra vigente; replay desde el ultimo snapshot con open_time <
+        la ventana + los deltas posteriores. D4 rolling en v5.0, session_utc DIFERIDO.
+
+DICTAMEN CORRECCION (pre-merge): pytest de integracion del dispatch de market.close por
+_series_for, obligatorio antes del merge (cerraba un hueco de cobertura preexistente).
+Cumplido en c8a7c30.
+
+DICTAMEN PRE-MERGE opcion A: arreglar el mapa sintetico de grants en
+validate_rules_worker.py (regresion de T5a-1/T5b-2a); el mapa ahora deriva de
+RULES_STATE_TABLES para auto-seguir. Cumplido en c762ffc. Pendiente separado: decidir si
+validate_rules_worker.py entra en ci_local.
+
+0022 editada EN SITIO: no mergeada, no publicada en main, no aplicada en entorno no
+desechable, base local desechable, CI aplica desde cero, checksum no parcheado, 0 filas.
+Juicio 5.14-adyacente (la 5.14 protege migraciones PUBLICADAS).
+
+DECISIONES DEL LADO P08b QUE CENTRAL ORDENA REGISTRAR (descripciones de la orden de
+Central):
+- D-A: N es param en cache_key.
+- D-B: hojas (fuentes hoja) sin market.candle.
+- D-C: P08c cierra sin deuda hacia P08b (handoff entregado, requerimiento P08c-R1).
+- P08b-INT-01: D1 diferir fuentes no-escalares; D2 spec por fuente; D3 read_candle_window
+  en P08b; D4 diferir listas.
+
+ENTREGABLES EN MAIN: discovery explicito (declarations() / discover_declarations);
+nucleos puros materialize_windowed y materialize_recursive; cache_key_validator;
+read_footprint_window; dispatch por SOURCE_ID (Protocol SourceMaterializer);
+read_footprint_delta_range; tabla cvd_snapshot (0022); cvd.value INTEGRATOR con replay
+desde snapshot (GATE ADR-007); handoff docs/HANDOFF_P08c_MATERIALIZACION.md; pytest del
+dispatch de market.close; correccion de validate_rules_worker.py.
+Cableadas en vivo: market.close (POINT_LOCAL), vp.poc/vah/val (WINDOWED),
+orderflow.delta (POINT_LOCAL), cvd.value (INTEGRATOR). Sin cablear:
+orderflow.delta_momentum.
+
+ADR: sin ADR nuevo. Esta sub-pieza NO cierra P08c ni M3.
+=====================================================================

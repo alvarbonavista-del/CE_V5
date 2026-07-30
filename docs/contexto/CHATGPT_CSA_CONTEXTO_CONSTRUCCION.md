@@ -5,8 +5,12 @@ estable para revisar las piezas. El CSA revisa coherencia y calidad
 contra los documentos-norte; NO decide (firma Alvaro). Archivo vivo
 mantenido por Claude Code.
 
-Ultima actualizacion: 2026-07-26 (P07c ENTREGADA: orderbook L2 con estado, firmada; HEAD
-8869ec9, PR #3 mergeado a main; M3 sigue abierto -4/7-, faltan P08b, P08c y P09a).
+Ultima actualizacion: 2026-07-30 (P08c sub-pieza MATERIALIZACION CERRADA y firmada;
+merge ca4d5f4 en main, Actions verde 3/3. P08c NO entregada -avanza por sub-piezas-; M3
+sigue abierto -4/7-. Ver la entrada de cierre al final de este fichero).
+
+Anterior: 2026-07-26 (P07c ENTREGADA: orderbook L2 con estado, firmada; HEAD
+8869ec9, PR #3 mergeado a main).
 
 ## 1. Que construimos
 CE v5: plataforma comercial multiusuario de analisis cuantitativo y
@@ -510,3 +514,52 @@ ADR-008 -incluida orderbook_snapshot_declaration()- desde el catalogo real; y P0
 de notificaciones backend). P08c hereda de P07c el criterio memory_model=RECURSIVE del
 libro: cualquier fuente derivada del orderbook NO es candidata a correccion por ventana
 acotada, a diferencia de las derivadas de market.close (POINT_LOCAL).
+
+## CIERRE: sub-pieza P08c MATERIALIZACION (CE-14) - 2026-07-30
+Estado: CERRADA con APROBADO FINAL (Central + CSA + Alvaro). Merge ca4d5f4 en main con
+Actions VERDE 3/3 (run 30564656066); ci_local 24/24, cero skips/xfail. Rango
+873453f..c762ffc. SIN deuda: el handoff a P08b esta entregado
+(docs/HANDOFF_P08c_MATERIALIZACION.md, requerimiento P08c-R1). OJO: cierra la SUB-PIEZA,
+no la pieza P08c ni M3.
+
+QUE QUEDA CONSTRUIDO. El catalogo VIVO se puebla por discovery EXPLICITO -cada modulo
+productor expone declarations(), agregadas por discover_declarations- y se valida antes
+de compilar nada (grafo completo y aciclico + cache_key por naturaleza). La
+materializacion despacha por SOURCE_ID contra un registro polimorfico (Protocol
+SourceMaterializer) que vive en el composition root del worker, no en la declaracion
+(dato puro ADR-008) ni en platform. Cableadas: market.close (POINT_LOCAL), vp.poc/vah/val
+(WINDOWED, ventana 100), orderflow.delta (POINT_LOCAL) y cvd.value (INTEGRATOR).
+
+PUNTOS QUE EL CSA DEBE TENER PRESENTES (no son deuda, son contexto vivo):
+- GUARDA DEL COMPILADOR, TEMPORAL. El contrato SI admite params de fuente
+  (DataSourceRef.params) y el validador semantico los acepta, pero el compilador los
+  descartaba y la materializacion usaria el default: servir 50 a quien pidio 7 seria la
+  deuda D-E2.1 de v4 reproducida, y ademas mentiria la cache_key (bin_count SI esta en
+  ella). Se RECHAZA en compilacion (CompilationError -> cuarentena). Se RETIRA cuando el
+  compilador propague params (MAT-05 Q4).
+- CvdIntegratorSpec TIENE EFECTO. Es el unico materializador con ESTADO: tras calcular la
+  serie PERSISTE el snapshot de la barra vigente (MAT-07 D2). Es idempotente (ON CONFLICT
+  DO NOTHING) y no escribe nada si no hay base. Un materializador que escribe es una
+  novedad respecto a los demas, que son lecturas puras.
+- cvd_snapshot es scope=system y el rol de reglas ESCRIBE en el. Es la primera vez que
+  ce_v5_rules escribe algo que no es su outbox ni su estado de regla. Se acota a
+  SELECT+INSERT (append-only: UPDATE/DELETE/TRUNCATE revocados y verificados en los dos
+  sentidos por check_rules_access, categoria RULES_STATE_TABLES). NO es dato de mercado:
+  es su estado de replay, por eso no cruza frontera de tenant.
+- MIGRACION 0022 EDITADA EN SITIO. Se corrigio el COMMENT (le faltaba isolation_scope,
+  que exige el check 7.8) reaplicandola, no con una sucesora. Condiciones que lo
+  justificaron: no mergeada, no publicada en main, no aplicada en entorno no desechable,
+  base local desechable, CI la aplica desde cero, checksum no parcheado a mano, 0 filas.
+  Juicio 5.14-adyacente: la 5.14 protege migraciones PUBLICADAS.
+- validate_rules_worker.py NO ESTA EN ci_local. Su mapa sintetico de grants quedo
+  desalineado por T5a-1/T5b-2a y estuvo ROJO varias tandas sin que la bateria lo notara,
+  precisamente porque no esta enganchado. Ya esta arreglado (c762ffc, el mapa deriva de
+  RULES_STATE_TABLES para auto-seguir), pero DECIDIR SI ENTRA EN ci_local es una decision
+  separada y PENDIENTE. Roza la regla 5.22 (un check que existe y no esta enganchado es
+  un check que no existe).
+
+PARA LA PROXIMA REVISION: P08c continua con sus sub-piezas restantes (deteccion) y P08b
+puede arrancar ya sobre este mecanismo: sus fuentes candle-derived se declaran y
+materializan con el MISMO patron, sin reabrirlo. orderflow.delta_momentum (WINDOWED sobre
+una fuente derivada, DAG de 2o nivel) sigue SIN cablear a proposito: si una regla la
+referencia, el motor falla ruidoso en vez de servir una serie equivocada.
