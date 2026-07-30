@@ -334,3 +334,25 @@ ESPECIFICACION DE CABLEADO LOTE 1 (ejecutar en el turno post-merge, tras rebase 
   6. Verificacion: fixture bit-a-bit por fuente (misma base + misma funcion pura -> misma serie) + ci_local 24/24 sobre pila de BD LIMPIA (recrear contenedores antes).
 
 GATE: ejecutar cuando P08c mergee a main (Actions verde + cierre de contexto) y wip/p08b rebase sobre main. Disparo de vuelta: HANDOFF_P08c_MATERIALIZACION seccion 12 (aviso a Alvaro).
+
+---
+
+## P08b -- LOTE 1a CABLEADO (commit c8040ce, ci_local 24/24 sobre pila limpia)
+
+Primer cableado EN VIVO de fuentes candle-derived, tras rebase de wip/p08b sobre main (materializacion de P08c mergeada). Dictamen P08b-INT-03: C1 (reuso read_ohlcv_window, SIN lector nuevo), C2(B) (solo las 4 siempre-Decimal).
+
+Fuentes materializadas:
+  - candle.body_pct / candle.upper_shadow_pct / candle.lower_shadow_pct: POINT_LOCAL, consumes=(), cache_key=(exchange, symbol, timeframe); spec CandlePointLocalSpec sobre read_ohlcv_window.
+  - volume.ratio_vs_avg: WINDOWED, param lookback (INTEGER, def 20) en cache_key, window_bars=lookback+1; spec CandleWindowedSpec sobre read_ohlcv_window.
+
+Cableado (aditivo):
+  - Reuso de read_ohlcv_window (ya en main, T-05) -> CandleOHLCV; sin lector nuevo (C1).
+  - CandlePointLocalSpec + CandleWindowedSpec en entrypoints/worker_rules/materializers.py; alta de las 4 en SOURCE_MATERIALIZERS.
+  - declarations() en indicators/candle.py e indicators/volume.py; registradas en discovery.py (bundle P08b). _DEFAULT_LOOKBACK -> LOOKBACK_DEFAULT (publico) en volume.py.
+
+Verificacion:
+  - tests/unit/test_candle_derived_materializers.py: extract/transform bit-a-bit == funcion pura + "muerde" (los tres pct distintos; ratio no constante) + memory_model por fuente + lookback en cache_key.
+  - Aserciones de conjunto exacto actualizadas (SOURCE_MATERIALIZERS y discovery _EXPECTED).
+  - 1 fix ruff (docstring >88), dentro del limite. ci_local COMPLETA 24/24 verde sobre pila recreada.
+
+PENDIENTE: LOTE 1b (vwap.value / vwap.distance_pct), gateado por el tratamiento del hueco de volumen-cero (elevacion P08b-INT-04). Luego LOTE 2 (EMA), LOTE 3 (RSI/MACD), LOTE 5 (categoricas / booleanas / listas).
