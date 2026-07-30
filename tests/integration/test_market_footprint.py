@@ -42,7 +42,7 @@ from ce_v5.infra.db.market_footprint import (
 )
 from ce_v5.infra.db.outbox_publisher import OutboxPublisher, topic_for
 from ce_v5.infra.db.psycopg_adapter import PsycopgDatabase
-from ce_v5.platform.rules.cvd import ResetPolicy
+from ce_v5.platform.rules.cvd import CVD_SOURCE_ID, ResetPolicy
 from ce_v5.platform.rules.orderflow import ORDERFLOW_DELTA_SOURCE_ID
 from ce_v5.platform.rules.volume_profile import (
     DEFAULT_BIN_COUNT,
@@ -1002,3 +1002,140 @@ class TestLectorDeRangoDeBarDelta:
             )
 
         assert rango == ((_OPEN, correccion.bar_delta),)
+
+
+def _borrar_snapshots(migrator_db: PsycopgDatabase) -> None:
+    """Borra los snapshots con el rol de MIGRACIONES (el de reglas no tiene DELETE)."""
+    with migrator_db.transaction() as session:
+        session.execute("DELETE FROM cvd_snapshot")
+
+
+def _cumsum(deltas: list[Decimal]) -> list[Decimal]:
+    """Acumulado desde el ORIGEN: la verdad contra la que se mide todo replay."""
+    total = Decimal(0)
+    salida: list[Decimal] = []
+    for delta in deltas:
+        total += delta
+        salida.append(total)
+    return salida
+
+
+def _materializar_cvd(
+    rules_db: PsycopgDatabase, open_time: int, history_bars: int
+) -> tuple[Decimal, ...]:
+    """cvd.value materializado con el spec REAL del registro, con el rol de reglas."""
+    spec = SOURCE_MATERIALIZERS[CVD_SOURCE_ID]
+    with rules_db.transaction() as session:
+        return spec.materialize(
+            session, "binance", "BTC-USDT", _TF.value, open_time, history_bars
+        )
+
+
+class TestCvdIntegratorReplayDesdeSnapshot:
+    """cvd.value INTEGRATOR: replay ACOTADO desde snapshot contra PostgreSQL (MAT-07).
+
+    Se usa el spec del REGISTRO (SOURCE_MATERIALIZERS), no uno de prueba: lo que se
+    valida es el cableado de produccion, componiendo los cuatro piezas -- ventana de
+    footprint, ancla de snapshot, rango de deltas y materialize_recursive -- mas la
+    PERSISTENCIA del snapshot de la barra vigente. Es el unico materializador CON
+    ESTADO: el snapshot ES su memoria de replay.
+    """
+
+    def test_bootstrap_sin_ancla_acumula_desde_el_inicio_de_la_ventana(
+        self,
+        rules_db: PsycopgDatabase,
+        persistir_footprint: Persistir,
+        limpiar_footprint: None,
+        limpiar_cvd_snapshot: None,
+    ) -> None:
+        # 4.1 Sin snapshot previo el acumulado arranca en 0 en la primera barra de la
+        # ventana. El valor ABSOLUTO del rolling es anchor-dependiente (cvd.py); lo que
+        # NO depende del ancla es la forma de la serie, y eso es lo que F3 usa.
+        escritas = _escribir_barras(persistir_footprint, 5)
+        deltas = [barra.bar_delta for barra in escritas]
+        assert len(set(deltas)) == 5  # cada barra es distinguible por su delta.
+        ultimo = escritas[-1].open_time
+
+        serie = _materializar_cvd(rules_db, ultimo, 5)
+
+        assert serie == tuple(_cumsum(deltas))
+
+    def test_bootstrap_persiste_el_snapshot_de_la_barra_vigente(
+        self,
+        rules_db: PsycopgDatabase,
+        persistir_footprint: Persistir,
+        limpiar_footprint: None,
+        limpiar_cvd_snapshot: None,
+    ) -> None:
+        # 4.1 (segunda mitad): materializar DEJA el ancla para la ventana siguiente. Sin
+        # esta escritura, cada tick volveria a acumular desde el inicio de su ventana y
+        # el replay acotado no existiria.
+        escritas = _escribir_barras(persistir_footprint, 5)
+        deltas = [barra.bar_delta for barra in escritas]
+        ultimo = escritas[-1].open_time
+
+        _materializar_cvd(rules_db, ultimo, 5)
+
+        assert _leer_ancla(rules_db, ultimo + 1) == (ultimo, _cumsum(deltas)[-1])
+
+    def test_con_ancla_el_replay_reproduce_la_cola_del_acumulado_de_origen(
+        self,
+        rules_db: PsycopgDatabase,
+        migrator_db: PsycopgDatabase,
+        persistir_footprint: Persistir,
+        limpiar_footprint: None,
+        limpiar_cvd_snapshot: None,
+    ) -> None:
+        # 4.2 Sembrado desde un snapshot CONSISTENTE con el origen, la ventana corta
+        # reproduce EXACTAMENTE los valores que tendria acumulando desde el origen. Esa
+        # es la razon de ser del snapshot: mismo resultado, replay acotado.
+        escritas = _escribir_barras(persistir_footprint, 5)
+        acumulado = _cumsum([barra.bar_delta for barra in escritas])
+        _borrar_snapshots(migrator_db)
+        # Ancla en la barra 1; la ventana pedida (M=2) son las barras 3 y 4.
+        _escribir_snapshot(rules_db, escritas[1].open_time, acumulado[1])
+
+        serie = _materializar_cvd(rules_db, escritas[-1].open_time, 2)
+
+        assert serie == (acumulado[3], acumulado[4])
+
+    def test_gate_bit_exacto_dos_anclas_distintas_dan_la_misma_cola(
+        self,
+        rules_db: PsycopgDatabase,
+        migrator_db: PsycopgDatabase,
+        persistir_footprint: Persistir,
+        limpiar_footprint: None,
+        limpiar_cvd_snapshot: None,
+    ) -> None:
+        # 4.3 EL GATE de ADR-007. El replay desde CUALQUIER snapshot valido reproduce la
+        # MISMA cola, bit a bit: el fold es determinista sobre Decimal. Si esto fallara,
+        # el CVD daria valores distintos segun donde se hubiera cortado el snapshot, y
+        # entonces el snapshot seria una fuente de deriva, no una optimizacion.
+        escritas = _escribir_barras(persistir_footprint, 5)
+        acumulado = _cumsum([barra.bar_delta for barra in escritas])
+        ultimo = escritas[-1].open_time
+        # Dos anclas distintas, ambas ANTERIORES al inicio de la ventana (barra 3).
+        k1, k2 = 2, 0
+
+        _borrar_snapshots(migrator_db)
+        _escribir_snapshot(rules_db, escritas[k1].open_time, acumulado[k1])
+        serie_1 = _materializar_cvd(rules_db, ultimo, 2)
+
+        _borrar_snapshots(migrator_db)
+        _escribir_snapshot(rules_db, escritas[k2].open_time, acumulado[k2])
+        serie_2 = _materializar_cvd(rules_db, ultimo, 2)
+
+        assert serie_1 == serie_2
+        assert serie_1 == (acumulado[3], acumulado[4])
+
+    def test_sin_footprint_no_inventa_serie_ni_snapshot(
+        self,
+        rules_db: PsycopgDatabase,
+        limpiar_footprint: None,
+        limpiar_cvd_snapshot: None,
+    ) -> None:
+        # Sin base no hay acumulado: tupla vacia (NOT_EVALUABLE, K3) y NINGUN snapshot
+        # escrito. Persistir un snapshot de una barra que no existe plantaria un ancla
+        # falsa que envenenaria todos los replays posteriores.
+        assert _materializar_cvd(rules_db, _OPEN, 5) == ()
+        assert _leer_ancla(rules_db, _OPEN + 10 * _TF.duration_ms) is None

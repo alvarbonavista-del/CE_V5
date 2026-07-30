@@ -16,15 +16,22 @@ import pytest
 
 from ce_v5.entrypoints.worker_rules.composition import _materialize
 from ce_v5.entrypoints.worker_rules.materializers import (
+    CVD_RESET_POLICY_V5,
     PROFILE_WINDOW_BARS,
     SOURCE_MATERIALIZERS,
+    CvdIntegratorSpec,
     FootprintPointLocalSpec,
     FootprintWindowedSpec,
     UnwiredSourceError,
+    _cvd_step,
 )
 from ce_v5.platform.rules.compiler import ExecutionPlan, ResolvedSource
-from ce_v5.platform.rules.cvd import CVD_SOURCE_ID, cvd_declaration
-from ce_v5.platform.rules.orderflow import ORDERFLOW_DELTA_SOURCE_ID
+from ce_v5.platform.rules.cvd import CVD_SOURCE_ID
+from ce_v5.platform.rules.orderflow import (
+    ORDERFLOW_DELTA_MOMENTUM_SOURCE_ID,
+    ORDERFLOW_DELTA_SOURCE_ID,
+    orderflow_delta_momentum_declaration,
+)
 from ce_v5.platform.rules.volume_profile import (
     DEFAULT_BIN_COUNT,
     VP_POC_SOURCE_ID,
@@ -113,6 +120,7 @@ class TestRegistroPorSourceId:
             VP_VAH_SOURCE_ID,
             VP_VAL_SOURCE_ID,
             ORDERFLOW_DELTA_SOURCE_ID,
+            CVD_SOURCE_ID,
         }
 
     @pytest.mark.parametrize(
@@ -209,22 +217,52 @@ class TestOrderflowDeltaPointLocal:
         assert spec.extract(uno) != spec.extract(otro)
 
 
+class TestCvdIntegratorRegistrada:
+    """3: cvd.value cableada como INTEGRATOR con replay desde snapshot (MAT-07).
+
+    Aqui solo el BINDING y la recurrencia: el replay real (bootstrap, ancla y el GATE
+    bit-exacto de ADR-007) exige BD y vive en el test de integracion del footprint,
+    porque el snapshot que lo siembra es una fila de cvd_snapshot.
+    """
+
+    def test_esta_cableada_con_un_spec_integrator(self) -> None:
+        spec = SOURCE_MATERIALIZERS[CVD_SOURCE_ID]
+        assert isinstance(spec, CvdIntegratorSpec)
+
+    def test_la_politica_de_reset_es_rolling(self) -> None:
+        # v5.0 solo materializa rolling: la guarda del compilador (MAT-05 Q4) rechaza
+        # params de fuente, asi que cvd.value llega siempre con su default. Si esto
+        # cambiara a session_utc sin propagar params, el motor serviria un acumulado
+        # reseteado a quien pidio el continuo.
+        spec = SOURCE_MATERIALIZERS[CVD_SOURCE_ID]
+        assert isinstance(spec, CvdIntegratorSpec)
+        assert spec.reset_policy == "rolling"
+        assert spec.reset_policy == CVD_RESET_POLICY_V5
+
+    def test_la_recurrencia_acumula(self) -> None:
+        # cvd[T] = cvd[T-1] + delta[T], con signo: un delta negativo BAJA el acumulado.
+        assert _cvd_step(Decimal(3), Decimal(-5)) == Decimal(-2)
+        assert _cvd_step(Decimal(0), Decimal("1.5")) == Decimal("1.5")
+        assert _cvd_step(Decimal("-2.25"), Decimal("0.25")) == Decimal(-2)
+
+
 class TestDispatchFalloRuidoso:
     """4.2: una servible sin materializador LANZA, no recibe una serie por defecto.
 
-    La fuente-ejemplo es cvd.value: SERVIBLE y en el catalogo vivo, pero sin cablear
-    hasta T5b-2. (Hasta MAT-07 el ejemplo era orderflow.delta; ahora esa YA esta
-    cableada, asi que dejaria de probar nada.)
+    La fuente-ejemplo es orderflow.delta_momentum: la UNICA servible del catalogo vivo
+    que sigue sin materializador. (El ejemplo ha ido cambiando conforme el DAG se
+    cablea: era orderflow.delta hasta MAT-07 T5b-1, luego cvd.value hasta T5b-2b; ambas
+    ya estan cableadas y dejarian de probar nada.)
     """
 
-    def test_cvd_sin_cablear_lanza_unwired(self) -> None:
-        # cvd.value es SERVIBLE y esta en el catalogo vivo, pero en v5.0 no tiene
-        # materializador. Servirle la ventana de cierres (el comportamiento viejo de
-        # _series_for, que leia read_close_window para TODA fuente) le daria PRECIOS
-        # donde espera un ACUMULADO de delta: un hecho falso con aspecto de correcto.
+    def test_delta_momentum_sin_cablear_lanza_unwired(self) -> None:
+        # orderflow.delta_momentum es SERVIBLE y esta en el catalogo vivo, pero en v5.0
+        # no tiene materializador. Servirle la ventana de cierres (el comportamiento
+        # viejo de _series_for, que leia read_close_window para TODA fuente) le daria
+        # PRECIOS donde espera un CAMBIO de delta: un hecho falso con aspecto correcto.
         source = ResolvedSource(
-            source_id=CVD_SOURCE_ID,
-            declaration=cvd_declaration(),
+            source_id=ORDERFLOW_DELTA_MOMENTUM_SOURCE_ID,
+            declaration=orderflow_delta_momentum_declaration(),
             history_bars=5,
         )
         with pytest.raises(UnwiredSourceError, match="no tiene materializador"):
@@ -239,11 +277,13 @@ class TestDispatchFalloRuidoso:
     def test_el_mensaje_nombra_la_fuente(self) -> None:
         # El fallo tiene que decir QUE fuente falta, o el operador no sabe que cablear.
         source = ResolvedSource(
-            source_id=CVD_SOURCE_ID,
-            declaration=cvd_declaration(),
+            source_id=ORDERFLOW_DELTA_MOMENTUM_SOURCE_ID,
+            declaration=orderflow_delta_momentum_declaration(),
             history_bars=5,
         )
-        with pytest.raises(UnwiredSourceError, match=CVD_SOURCE_ID):
+        with pytest.raises(
+            UnwiredSourceError, match=ORDERFLOW_DELTA_MOMENTUM_SOURCE_ID
+        ):
             _materialize(
                 _SesionQueFalla(),
                 _plan(),
