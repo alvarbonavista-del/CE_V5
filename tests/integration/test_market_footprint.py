@@ -43,7 +43,10 @@ from ce_v5.infra.db.market_footprint import (
 from ce_v5.infra.db.outbox_publisher import OutboxPublisher, topic_for
 from ce_v5.infra.db.psycopg_adapter import PsycopgDatabase
 from ce_v5.platform.rules.cvd import CVD_SOURCE_ID, ResetPolicy
-from ce_v5.platform.rules.orderflow import ORDERFLOW_DELTA_SOURCE_ID
+from ce_v5.platform.rules.orderflow import (
+    ORDERFLOW_DELTA_MOMENTUM_SOURCE_ID,
+    ORDERFLOW_DELTA_SOURCE_ID,
+)
 from ce_v5.platform.rules.volume_profile import (
     DEFAULT_BIN_COUNT,
     compute_volume_profile,
@@ -1139,3 +1142,72 @@ class TestCvdIntegratorReplayDesdeSnapshot:
         # falsa que envenenaria todos los replays posteriores.
         assert _materializar_cvd(rules_db, _OPEN, 5) == ()
         assert _leer_ancla(rules_db, _OPEN + 10 * _TF.duration_ms) is None
+
+
+def _materializar_delta_momentum(
+    rules_db: PsycopgDatabase, open_time: int, history_bars: int
+) -> tuple[Decimal, ...]:
+    """delta_momentum con el spec REAL del registro, leyendo con el rol de reglas."""
+    spec = SOURCE_MATERIALIZERS[ORDERFLOW_DELTA_MOMENTUM_SOURCE_ID]
+    with rules_db.transaction() as session:
+        return spec.materialize(
+            session, "binance", "BTC-USDT", _TF.value, open_time, history_bars
+        )
+
+
+class TestDeltaMomentumSobreLaSerieDeDelta:
+    """orderflow.delta_momentum: DAG de 2o NIVEL contra PostgreSQL real (MAT-08).
+
+    Es la primera fuente que se materializa sobre otra fuente DERIVADA
+    (orderflow.delta), no sobre el footprint crudo: el DerivedSeriesSpec pide la serie
+    de la base a SU materializador del registro y le aplica la funcion pura de paridad
+    v4. Lo que estos dos tests separan es el borde: con historia por delante, el primer
+    valor de la ventana usa su prior REAL (lookback=1); en la primera barra ABSOLUTA no
+    hay prior y la funcion pura da 0.
+    """
+
+    def test_con_historia_previa_el_primer_valor_usa_su_prior_real(
+        self,
+        rules_db: PsycopgDatabase,
+        persistir_footprint: Persistir,
+        limpiar_footprint: None,
+    ) -> None:
+        # 5.1 EL TEST DEL LOOKBACK. Con 5 barras y history_bars=3, la ventana pedida son
+        # las barras 2, 3 y 4. Si el spec no pidiera la barra 1 de mas, el primer valor
+        # saldria 0 (borde falso) en vez de d2-d1: un cambio de delta INVENTADO justo en
+        # el punto donde una regla de momentum dispararia.
+        escritas = _escribir_barras(persistir_footprint, 5)
+        deltas = [barra.bar_delta for barra in escritas]
+        assert len(set(deltas)) == 5  # cada barra distinguible por su delta.
+
+        serie = _materializar_delta_momentum(rules_db, escritas[-1].open_time, 3)
+
+        assert serie == (
+            deltas[2] - deltas[1],
+            deltas[3] - deltas[2],
+            deltas[4] - deltas[3],
+        )
+        assert serie[0] != Decimal(0)  # el borde falso NO aparece.
+
+    def test_en_la_primera_barra_absoluta_no_hay_prior_y_vale_cero(
+        self,
+        rules_db: PsycopgDatabase,
+        persistir_footprint: Persistir,
+        limpiar_footprint: None,
+    ) -> None:
+        # 5.2 El borde REAL: pidiendo TODA la historia, la barra 0 no tiene barra previa
+        # que exista, asi que compute_delta_momentum da 0 [PARIDAD v4]. Eso NO es el
+        # borde falso del test anterior: aqui el cero es la respuesta correcta.
+        escritas = _escribir_barras(persistir_footprint, 5)
+        deltas = [barra.bar_delta for barra in escritas]
+
+        serie = _materializar_delta_momentum(rules_db, escritas[-1].open_time, 5)
+
+        assert serie == (
+            Decimal(0),
+            deltas[1] - deltas[0],
+            deltas[2] - deltas[1],
+            deltas[3] - deltas[2],
+            deltas[4] - deltas[3],
+        )
+        assert len(serie) == 5

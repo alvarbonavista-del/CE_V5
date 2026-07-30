@@ -20,6 +20,7 @@ from ce_v5.entrypoints.worker_rules.materializers import (
     PROFILE_WINDOW_BARS,
     SOURCE_MATERIALIZERS,
     CvdIntegratorSpec,
+    DerivedSeriesSpec,
     FootprintPointLocalSpec,
     FootprintWindowedSpec,
     UnwiredSourceError,
@@ -30,6 +31,7 @@ from ce_v5.platform.rules.cvd import CVD_SOURCE_ID
 from ce_v5.platform.rules.orderflow import (
     ORDERFLOW_DELTA_MOMENTUM_SOURCE_ID,
     ORDERFLOW_DELTA_SOURCE_ID,
+    compute_delta_momentum,
     orderflow_delta_momentum_declaration,
 )
 from ce_v5.platform.rules.volume_profile import (
@@ -48,6 +50,11 @@ if TYPE_CHECKING:
 
 _TF = Timeframe.M1
 _OPEN = 1_784_073_600_000
+
+# Fuente-ejemplo SINTETICA del fallo ruidoso: no existe en el catalogo ni en el
+# registro, y no debe existir nunca (lo vigila un test). Cumple el patron de source_id
+# del contrato (dominio.campo en snake_case) para que sea un id valido, no un absurdo.
+_FUENTE_SINTETICA = "test.fuente_sin_materializador"
 
 
 def _footprint(open_time: int, offset: Decimal) -> FootprintClosedPayload:
@@ -121,6 +128,7 @@ class TestRegistroPorSourceId:
             VP_VAL_SOURCE_ID,
             ORDERFLOW_DELTA_SOURCE_ID,
             CVD_SOURCE_ID,
+            ORDERFLOW_DELTA_MOMENTUM_SOURCE_ID,
         }
 
     @pytest.mark.parametrize(
@@ -246,22 +254,76 @@ class TestCvdIntegratorRegistrada:
         assert _cvd_step(Decimal("-2.25"), Decimal("0.25")) == Decimal(-2)
 
 
+class TestDeltaMomentumDerivada:
+    """4.1/4.2: delta_momentum cableada como DAG de 2o NIVEL (MAT-08).
+
+    Es la primera fuente que consume otra fuente DERIVADA (orderflow.delta) en vez del
+    footprint crudo. Aqui solo el BINDING y la consistencia del registro; el recorrido
+    real con BD (y la prueba de que lookback=1 da a la primera barra de la ventana su
+    prior REAL) vive en el test de integracion del footprint.
+    """
+
+    def test_esta_cableada_con_un_spec_derivado(self) -> None:
+        spec = SOURCE_MATERIALIZERS[ORDERFLOW_DELTA_MOMENTUM_SOURCE_ID]
+        assert isinstance(spec, DerivedSeriesSpec)
+
+    def test_el_binding_es_delta_con_lookback_uno(self) -> None:
+        # base = orderflow.delta (no el footprint), transform = la funcion pura de
+        # paridad v4, lookback = 1 porque un diff barra-a-barra necesita UNA barra
+        # previa para que el primer valor de la ventana no salga de la nada.
+        spec = SOURCE_MATERIALIZERS[ORDERFLOW_DELTA_MOMENTUM_SOURCE_ID]
+        assert isinstance(spec, DerivedSeriesSpec)
+        assert spec.base_source_id == ORDERFLOW_DELTA_SOURCE_ID
+        assert spec.transform is compute_delta_momentum
+        assert spec.lookback == 1
+
+    def test_la_base_declarada_existe_en_el_registro(self) -> None:
+        # CONDICION MAT-08: un DerivedSeriesSpec cuya base NO este cableada es un
+        # registro incoherente que solo se descubriria al evaluar una regla real. Se
+        # comprueba en frio, en construccion.
+        spec = SOURCE_MATERIALIZERS[ORDERFLOW_DELTA_MOMENTUM_SOURCE_ID]
+        assert isinstance(spec, DerivedSeriesSpec)
+        assert spec.base_source_id in SOURCE_MATERIALIZERS
+
+    def test_toda_base_de_un_spec_derivado_esta_cableada(self) -> None:
+        # Generalizacion del anterior: vale para los DerivedSeriesSpec que entren
+        # despues, sin tener que anadir un test por fuente.
+        for source_id, spec in SOURCE_MATERIALIZERS.items():
+            if isinstance(spec, DerivedSeriesSpec):
+                assert spec.base_source_id in SOURCE_MATERIALIZERS, source_id
+
+    def test_una_base_sin_cablear_lanza_unwired(self) -> None:
+        # El fallo ruidoso tambien protege el SEGUNDO nivel: si la base desapareciera
+        # del registro, la derivada NO puede materializarse a medias ni caer a otra
+        # cosa. Y revienta ANTES de tocar la BD (la sesion doble lo demuestra).
+        huerfana = DerivedSeriesSpec(
+            base_source_id="no.existe",
+            transform=compute_delta_momentum,
+            lookback=1,
+        )
+        with pytest.raises(UnwiredSourceError, match="no.existe"):
+            huerfana.materialize(
+                _SesionQueFalla(), "binance", "BTC-USDT", _TF.value, _OPEN, 5
+            )
+
+
 class TestDispatchFalloRuidoso:
     """4.2: una servible sin materializador LANZA, no recibe una serie por defecto.
 
-    La fuente-ejemplo es orderflow.delta_momentum: la UNICA servible del catalogo vivo
-    que sigue sin materializador. (El ejemplo ha ido cambiando conforme el DAG se
-    cablea: era orderflow.delta hasta MAT-07 T5b-1, luego cvd.value hasta T5b-2b; ambas
-    ya estan cableadas y dejarian de probar nada.)
+    La fuente-ejemplo es ahora SINTETICA. Con MAT-08 (delta_momentum) NO queda ninguna
+    fuente servible del catalogo vivo sin materializador, asi que ya no hay una real que
+    prestar como ejemplo. El invariante sigue vivo y hay que seguir probandolo: es lo
+    que protege de que una fuente declarada manana entre sin su materializador y reciba
+    una serie por defecto. (El ejemplo fue orderflow.delta hasta T5b-1, cvd.value hasta
+    T5b-2b y delta_momentum hasta esta tanda; las tres estan ya cableadas.)
     """
 
-    def test_delta_momentum_sin_cablear_lanza_unwired(self) -> None:
-        # orderflow.delta_momentum es SERVIBLE y esta en el catalogo vivo, pero en v5.0
-        # no tiene materializador. Servirle la ventana de cierres (el comportamiento
-        # viejo de _series_for, que leia read_close_window para TODA fuente) le daria
-        # PRECIOS donde espera un CAMBIO de delta: un hecho falso con aspecto correcto.
+    def test_una_fuente_sin_materializador_lanza_unwired(self) -> None:
+        # Servirle la ventana de cierres (el comportamiento viejo de _series_for, que
+        # leia read_close_window para TODA fuente) le daria PRECIOS donde espera otra
+        # cosa: un hecho falso con aspecto de correcto.
         source = ResolvedSource(
-            source_id=ORDERFLOW_DELTA_MOMENTUM_SOURCE_ID,
+            source_id=_FUENTE_SINTETICA,
             declaration=orderflow_delta_momentum_declaration(),
             history_bars=5,
         )
@@ -277,13 +339,11 @@ class TestDispatchFalloRuidoso:
     def test_el_mensaje_nombra_la_fuente(self) -> None:
         # El fallo tiene que decir QUE fuente falta, o el operador no sabe que cablear.
         source = ResolvedSource(
-            source_id=ORDERFLOW_DELTA_MOMENTUM_SOURCE_ID,
+            source_id=_FUENTE_SINTETICA,
             declaration=orderflow_delta_momentum_declaration(),
             history_bars=5,
         )
-        with pytest.raises(
-            UnwiredSourceError, match=ORDERFLOW_DELTA_MOMENTUM_SOURCE_ID
-        ):
+        with pytest.raises(UnwiredSourceError, match=_FUENTE_SINTETICA):
             _materialize(
                 _SesionQueFalla(),
                 _plan(),
@@ -291,3 +351,8 @@ class TestDispatchFalloRuidoso:
                 _OPEN,
                 source,
             )
+
+    def test_la_fuente_sintetica_no_esta_en_el_registro(self) -> None:
+        # Si alguien la cableara, los dos tests de arriba dejarian de probar nada en
+        # silencio. Esto lo impide.
+        assert _FUENTE_SINTETICA not in SOURCE_MATERIALIZERS
