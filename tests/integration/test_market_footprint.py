@@ -29,6 +29,10 @@ from decimal import Decimal
 import pytest
 import redis
 
+from ce_v5.entrypoints.worker_rules.materializers import (
+    FootprintWindowedSpec,
+    materialize_footprint_windowed,
+)
 from ce_v5.infra.bus_redis import RedisBusConfig, RedisEventBus, create_client
 from ce_v5.infra.db.market_footprint import (
     PostgresFootprintWriter,
@@ -36,6 +40,10 @@ from ce_v5.infra.db.market_footprint import (
 )
 from ce_v5.infra.db.outbox_publisher import OutboxPublisher, topic_for
 from ce_v5.infra.db.psycopg_adapter import PsycopgDatabase
+from ce_v5.platform.rules.volume_profile import (
+    DEFAULT_BIN_COUNT,
+    compute_volume_profile,
+)
 from source.envelope import Envelope
 from source.envelope.enums import Scope
 from source.families.footprint import (
@@ -578,6 +586,79 @@ class TestVentanaDeFootprintParaLaMaterializacion:
                 )
                 == ()
             )
+
+
+class TestMaterializacionWindowedSobreLaVentanaReal:
+    """La composicion lector + materializador contra PostgreSQL REAL (CE-14, MAT-06).
+
+    Cierra el circuito que ni el test puro del materializador ni el del lector cubren
+    por separado: que la BASE leida de la BD, pasada por materialize_windowed, produce
+    EXACTAMENTE la misma serie que aplicar la funcion pura a cada ventana rodante de los
+    footprints que se escribieron. Misma base -> misma serie, bit a bit.
+
+    window_bars=3 (no el 100 de produccion) para no escribir 100 barras: la constante
+    real la fija el test unitario del registro. Lo que se prueba aqui es el MECANISMO.
+    """
+
+    def test_la_serie_es_el_perfil_de_cada_ventana_rodante(
+        self,
+        rules_db: PsycopgDatabase,
+        persistir_footprint: Persistir,
+        limpiar_footprint: None,
+    ) -> None:
+        escritas = _escribir_barras(persistir_footprint, 5)
+        ultimo = escritas[-1].open_time
+        spec = FootprintWindowedSpec(
+            transform=lambda ventana: (
+                compute_volume_profile(ventana, bin_count=DEFAULT_BIN_COUNT).poc
+            ),
+            window_bars=3,
+        )
+
+        with rules_db.transaction() as session:
+            serie = materialize_footprint_windowed(
+                session, spec, "binance", "BTC-USDT", _TF.value, ultimo, 5
+            )
+
+        # Con 5 barras y ventana 3 solo hay 3 valores computables (las barras 3, 4 y 5);
+        # las dos primeras no tienen ventana completa detras y NO se inventan.
+        esperados = tuple(
+            compute_volume_profile(
+                escritas[inicio : inicio + 3], bin_count=DEFAULT_BIN_COUNT
+            ).poc
+            for inicio in range(3)
+        )
+        assert serie == esperados
+        assert len(serie) == 3
+
+    def test_historia_mas_corta_que_la_ventana_no_emite_valor(
+        self,
+        rules_db: PsycopgDatabase,
+        persistir_footprint: Persistir,
+        limpiar_footprint: None,
+    ) -> None:
+        # Dos barras y ventana de 3: NINGUN valor es computable. La serie vacia es lo
+        # que el evaluador lee como NOT_EVALUABLE (K3); rellenar seria inventar.
+        escritas = _escribir_barras(persistir_footprint, 2)
+        spec = FootprintWindowedSpec(
+            transform=lambda ventana: (
+                compute_volume_profile(ventana, bin_count=DEFAULT_BIN_COUNT).poc
+            ),
+            window_bars=3,
+        )
+
+        with rules_db.transaction() as session:
+            serie = materialize_footprint_windowed(
+                session,
+                spec,
+                "binance",
+                "BTC-USDT",
+                _TF.value,
+                escritas[-1].open_time,
+                5,
+            )
+
+        assert serie == ()
 
 
 class TestElEventoEncoladoEsPublicable:

@@ -33,11 +33,17 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass
+from decimal import Decimal
 from uuid import UUID
 
 from ce_v5.core.bus import BusMessage, EventBus
 from ce_v5.core.observability import log_event
 from ce_v5.entrypoints.worker_rules.cycle import process_rule_cycle
+from ce_v5.entrypoints.worker_rules.materializers import (
+    FOOTPRINT_MATERIALIZERS,
+    UnwiredSourceError,
+    materialize_footprint_windowed,
+)
 from ce_v5.infra.bus_redis import RedisBusConfig, RedisEventBus, create_client
 from ce_v5.infra.db.config import DbConfig, RulesDbConfig
 from ce_v5.infra.db.inbox_consumer import ConsumeResult, Handler, InboxConsumer
@@ -57,7 +63,12 @@ from ce_v5.infra.db.rules import (
 from ce_v5.infra.db.tenancy import SystemScopedDatabase
 from ce_v5.platform.rules.cache_key_validator import validate_cache_keys
 from ce_v5.platform.rules.catalog import DataSourceCatalog
-from ce_v5.platform.rules.compiler import CompilationError, ExecutionPlan, compile
+from ce_v5.platform.rules.compiler import (
+    CompilationError,
+    ExecutionPlan,
+    ResolvedSource,
+    compile,
+)
 from ce_v5.platform.rules.correction import (
     affected_window,
     correction_scope,
@@ -65,6 +76,7 @@ from ce_v5.platform.rules.correction import (
 )
 from ce_v5.platform.rules.discovery import discover_declarations
 from ce_v5.platform.rules.evaluator import Series
+from ce_v5.platform.rules.rawclose import MARKET_CLOSE_SOURCE_ID
 from ce_v5.platform.rules.runtime import EvalOutcome, RuntimeState, StaleReason
 from source.families.market import (
     CandleClosedPayload,
@@ -171,14 +183,36 @@ def _decode_corrected(
 def _series_for(
     session: Session, plan: ExecutionPlan, timeframe: str, open_time: int
 ) -> Series:
-    """Materializa la serie de cada fuente del plan desde el historico de velas.
+    """Materializa la serie de cada fuente resuelta del plan (dispatch MAT-06).
 
-    El plan dimensiona la historia POR FUENTE (ResolvedSource.history_bars: el maximo de
-    barras que pide entre todos sus usos en la regla). En v5.0 la unica fuente servible
-    es market.close, y su serie es la ventana de cierres del flujo de la regla.
+    El dispatch es por SOURCE_ID (no por memory_model, que es solo metadata de la
+    declaracion): market.close se lee directa; vp.* pasan por su MaterializerSpec;
+    cualquier otra fuente servible sin materializador cableado lanza UnwiredSourceError
+    en vez de recibir una serie equivocada por defecto.
     """
     return {
-        source.source_id: read_close_window(
+        source.source_id: _materialize(session, plan, timeframe, open_time, source)
+        for source in plan.resolved_sources
+    }
+
+
+def _materialize(
+    session: Session,
+    plan: ExecutionPlan,
+    timeframe: str,
+    open_time: int,
+    source: ResolvedSource,
+) -> tuple[Decimal, ...]:
+    """La serie de UNA fuente resuelta, elegida por SOURCE_ID (MAT-06).
+
+    market.close (unica POINT_LOCAL sobre velas de v5.0) se lee con read_close_window.
+    vp.poc/vah/val (WINDOWED sobre footprint) pasan por su FootprintWindowedSpec. Toda
+    otra fuente servible sin spec cableado -> UnwiredSourceError: no se sirve una serie
+    por defecto (serviria un hecho falso, la deriva que mato a v4).
+    """
+    source_id = source.source_id
+    if source_id == MARKET_CLOSE_SOURCE_ID:
+        return read_close_window(
             session,
             plan.exchange,
             plan.symbol,
@@ -186,8 +220,22 @@ def _series_for(
             open_time,
             source.history_bars,
         )
-        for source in plan.resolved_sources
-    }
+    spec = FOOTPRINT_MATERIALIZERS.get(source_id)
+    if spec is not None:
+        return materialize_footprint_windowed(
+            session,
+            spec,
+            plan.exchange,
+            plan.symbol,
+            timeframe,
+            open_time,
+            source.history_bars,
+        )
+    msg = (
+        f"la fuente servible {source_id!r} no tiene materializador cableado en v5.0: "
+        f"no se sirve una serie por defecto (MAT-06)."
+    )
+    raise UnwiredSourceError(msg)
 
 
 def _previous_state(session: Session, rule_id: UUID) -> RuntimeState:
