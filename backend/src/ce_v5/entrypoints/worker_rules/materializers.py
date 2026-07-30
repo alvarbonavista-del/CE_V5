@@ -25,11 +25,25 @@ from decimal import Decimal
 from typing import TYPE_CHECKING, Protocol
 
 from ce_v5.infra.db.cvd_snapshot import read_cvd_snapshot_before, write_cvd_snapshot
+from ce_v5.infra.db.market_candles import read_ohlcv_window
 from ce_v5.infra.db.market_footprint import (
     read_footprint_delta_range,
     read_footprint_window,
 )
 from ce_v5.platform.rules.cvd import CVD_SOURCE_ID, ResetPolicy
+from ce_v5.platform.rules.indicators.candle import (
+    CANDLE_BODY_PCT_SOURCE_ID,
+    CANDLE_LOWER_SHADOW_PCT_SOURCE_ID,
+    CANDLE_UPPER_SHADOW_PCT_SOURCE_ID,
+    body_pct,
+    lower_shadow_pct,
+    upper_shadow_pct,
+)
+from ce_v5.platform.rules.indicators.volume import (
+    LOOKBACK_DEFAULT,
+    VOLUME_RATIO_VS_AVG_SOURCE_ID,
+    ratio_vs_avg,
+)
 from ce_v5.platform.rules.materializer import (
     materialize_recursive,
     materialize_windowed,
@@ -46,6 +60,7 @@ from ce_v5.platform.rules.volume_profile import (
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
+    from ce_v5.infra.db.market_candles import CandleOHLCV
     from ce_v5.infra.db.ports import Session
     from source.families.footprint import FootprintPayload
 
@@ -144,6 +159,67 @@ class FootprintPointLocalSpec:
         return tuple(self.extract(footprint) for footprint in footprints)
 
 
+@dataclass(frozen=True, slots=True)
+class CandlePointLocalSpec:
+    """Materializador POINT_LOCAL sobre vela: valor de T = extract(vela de T).
+
+    Como FootprintPointLocalSpec, pero sobre CandleOHLCV via read_ohlcv_window (el
+    lector ya existe en main; P08b-INT-03 C1, no se crea lector nuevo).
+    """
+
+    extract: Callable[[CandleOHLCV], Decimal]
+
+    def materialize(
+        self,
+        session: Session,
+        exchange: str,
+        symbol: str,
+        timeframe: str,
+        open_time: int,
+        history_bars: int,
+    ) -> tuple[Decimal, ...]:
+        candles = read_ohlcv_window(
+            session, exchange, symbol, timeframe, open_time, history_bars
+        )
+        return tuple(self.extract(candle) for candle in candles)
+
+
+@dataclass(frozen=True, slots=True)
+class CandleWindowedSpec:
+    """Materializador WINDOWED sobre vela: funcion pura + ventana rodante.
+
+    Como FootprintWindowedSpec, pero sobre CandleOHLCV via read_ohlcv_window. Lee
+    history_bars + window_bars - 1 velas y aplica materialize_windowed.
+    """
+
+    transform: Callable[[Sequence[CandleOHLCV]], Decimal]
+    window_bars: int
+
+    def materialize(
+        self,
+        session: Session,
+        exchange: str,
+        symbol: str,
+        timeframe: str,
+        open_time: int,
+        history_bars: int,
+    ) -> tuple[Decimal, ...]:
+        base = read_ohlcv_window(
+            session,
+            exchange,
+            symbol,
+            timeframe,
+            open_time,
+            history_bars + self.window_bars - 1,
+        )
+        return materialize_windowed(
+            base,
+            self.transform,
+            window_bars=self.window_bars,
+            history_bars=history_bars,
+        )
+
+
 def _cvd_step(previous: Decimal, delta: Decimal) -> Decimal:
     """Recurrencia INTEGRATOR de cvd rolling: acumula (cvd[T] = cvd[T-1] + delta[T])."""
     return previous + delta
@@ -225,6 +301,33 @@ def _bar_delta(footprint: FootprintPayload) -> Decimal:
     return footprint.bar_delta
 
 
+def _candle_body_pct(candle: CandleOHLCV) -> Decimal:
+    return body_pct((candle.open,), (candle.high,), (candle.low,), (candle.close,))[0]
+
+
+def _candle_upper_shadow_pct(candle: CandleOHLCV) -> Decimal:
+    return upper_shadow_pct(
+        (candle.open,), (candle.high,), (candle.low,), (candle.close,)
+    )[0]
+
+
+def _candle_lower_shadow_pct(candle: CandleOHLCV) -> Decimal:
+    return lower_shadow_pct(
+        (candle.open,), (candle.high,), (candle.low,), (candle.close,)
+    )[0]
+
+
+def _volume_ratio_vs_avg(window: Sequence[CandleOHLCV]) -> Decimal:
+    series = ratio_vs_avg(tuple(c.volume for c in window), lookback=LOOKBACK_DEFAULT)
+    value = series[-1]
+    if (
+        value is None
+    ):  # inalcanzable: window_bars = LOOKBACK_DEFAULT + 1 => ventana llena
+        msg = "volume.ratio_vs_avg materializado sin ventana llena (invariante roto)."
+        raise RuntimeError(msg)
+    return value
+
+
 # Registro por SOURCE_ID (MAT-06/07). Las fuentes cableadas de v5.0.
 SOURCE_MATERIALIZERS: dict[str, SourceMaterializer] = {
     VP_POC_SOURCE_ID: FootprintWindowedSpec(transform=_poc),
@@ -232,4 +335,14 @@ SOURCE_MATERIALIZERS: dict[str, SourceMaterializer] = {
     VP_VAL_SOURCE_ID: FootprintWindowedSpec(transform=_val),
     ORDERFLOW_DELTA_SOURCE_ID: FootprintPointLocalSpec(extract=_bar_delta),
     CVD_SOURCE_ID: CvdIntegratorSpec(),
+    CANDLE_BODY_PCT_SOURCE_ID: CandlePointLocalSpec(extract=_candle_body_pct),
+    CANDLE_UPPER_SHADOW_PCT_SOURCE_ID: CandlePointLocalSpec(
+        extract=_candle_upper_shadow_pct
+    ),
+    CANDLE_LOWER_SHADOW_PCT_SOURCE_ID: CandlePointLocalSpec(
+        extract=_candle_lower_shadow_pct
+    ),
+    VOLUME_RATIO_VS_AVG_SOURCE_ID: CandleWindowedSpec(
+        transform=_volume_ratio_vs_avg, window_bars=LOOKBACK_DEFAULT + 1
+    ),
 }

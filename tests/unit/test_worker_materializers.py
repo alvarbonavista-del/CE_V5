@@ -27,6 +27,12 @@ from ce_v5.entrypoints.worker_rules.materializers import (
 )
 from ce_v5.platform.rules.compiler import ExecutionPlan, ResolvedSource
 from ce_v5.platform.rules.cvd import CVD_SOURCE_ID
+from ce_v5.platform.rules.indicators.candle import (
+    CANDLE_BODY_PCT_SOURCE_ID,
+    CANDLE_LOWER_SHADOW_PCT_SOURCE_ID,
+    CANDLE_UPPER_SHADOW_PCT_SOURCE_ID,
+)
+from ce_v5.platform.rules.indicators.volume import VOLUME_RATIO_VS_AVG_SOURCE_ID
 from ce_v5.platform.rules.orderflow import (
     ORDERFLOW_DELTA_MOMENTUM_SOURCE_ID,
     ORDERFLOW_DELTA_SOURCE_ID,
@@ -121,6 +127,10 @@ class TestRegistroPorSourceId:
             VP_VAL_SOURCE_ID,
             ORDERFLOW_DELTA_SOURCE_ID,
             CVD_SOURCE_ID,
+            CANDLE_BODY_PCT_SOURCE_ID,
+            CANDLE_UPPER_SHADOW_PCT_SOURCE_ID,
+            CANDLE_LOWER_SHADOW_PCT_SOURCE_ID,
+            VOLUME_RATIO_VS_AVG_SOURCE_ID,
         }
 
     @pytest.mark.parametrize(

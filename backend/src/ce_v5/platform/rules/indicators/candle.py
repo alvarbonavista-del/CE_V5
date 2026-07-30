@@ -25,6 +25,17 @@ from collections.abc import Sequence
 from decimal import ROUND_HALF_EVEN, Decimal, localcontext
 from enum import Enum
 
+from source.datasource import (
+    DataSourceDeclaration,
+    HistoryUnit,
+    MemoryModel,
+    Servibility,
+    SharingScope,
+    SourceType,
+)
+from source.families.market import Timeframe
+from source.rules.scalar import ScalarType
+
 CANDLE_FORMULA_VERSION = 1
 
 # Defaults de paridad v4 (parametros, no hardcode).
@@ -271,4 +282,35 @@ def pullback_moment(
     return tuple(
         _pullback_at(opens, highs, lows, closes, i, window, doji_ratio)
         for i in range(len(opens))
+    )
+
+
+CANDLE_BODY_PCT_SOURCE_ID = "candle.body_pct"
+CANDLE_UPPER_SHADOW_PCT_SOURCE_ID = "candle.upper_shadow_pct"
+CANDLE_LOWER_SHADOW_PCT_SOURCE_ID = "candle.lower_shadow_pct"
+
+
+def _anatomy_declaration(source_id: str) -> DataSourceDeclaration:
+    """POINT_LOCAL: el pct de anatomia de la barra T depende SOLO de la vela T."""
+    return DataSourceDeclaration(
+        source_id=source_id,
+        source_type=SourceType.OBSERVABLE,
+        servibility=Servibility.CONTINUOUS,
+        memory_model=MemoryModel.POINT_LOCAL,
+        value_type=ScalarType.DECIMAL,
+        evaluation_contexts=tuple(tf.value for tf in Timeframe),
+        history_units=(HistoryUnit.BARS,),
+        shared_evaluation=True,
+        sharing_scope=SharingScope.PUBLIC_CROSS_TENANT,
+        cache_key_schema=("exchange", "symbol", "timeframe"),
+    )
+
+
+def declarations() -> tuple[DataSourceDeclaration, ...]:
+    """Fuentes de anatomia SIEMPRE-Decimal (LOTE 1a). Las categoricas/booleanas de
+    candle.* quedan DIFERIDAS (D1) y NO se declaran aun."""
+    return (
+        _anatomy_declaration(CANDLE_BODY_PCT_SOURCE_ID),
+        _anatomy_declaration(CANDLE_UPPER_SHADOW_PCT_SOURCE_ID),
+        _anatomy_declaration(CANDLE_LOWER_SHADOW_PCT_SOURCE_ID),
     )

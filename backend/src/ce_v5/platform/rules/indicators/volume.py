@@ -25,9 +25,21 @@ from collections.abc import Sequence
 from decimal import ROUND_HALF_EVEN, Decimal, localcontext
 from enum import Enum
 
+from source.datasource import (
+    DataSourceDeclaration,
+    HistoryUnit,
+    MemoryModel,
+    ParamSpec,
+    Servibility,
+    SharingScope,
+    SourceType,
+)
+from source.families.market import Timeframe
+from source.rules.scalar import ScalarType, ScalarValue
+
 VOLUME_FORMULA_VERSION = 1
 
-_DEFAULT_LOOKBACK = 20
+LOOKBACK_DEFAULT = 20
 _PREC = 34
 _HUNDRED = Decimal(100)
 
@@ -47,7 +59,7 @@ def _mean(window: Sequence[Decimal]) -> Decimal:
 
 def ratio_vs_avg(
     volumes: Sequence[Decimal],
-    lookback: int = _DEFAULT_LOOKBACK,
+    lookback: int = LOOKBACK_DEFAULT,
 ) -> tuple[Decimal | None, ...]:
     """volumen_actual / media de las `lookback` barras ANTERIORES.
 
@@ -87,7 +99,7 @@ def direction(
 
 def is_increasing(
     volumes: Sequence[Decimal],
-    lookback: int = _DEFAULT_LOOKBACK,
+    lookback: int = LOOKBACK_DEFAULT,
 ) -> tuple[bool, ...]:
     """True si, en las `lookback` barras ANTERIORES, la media de la 2a mitad
     supera a la de la 1a. Requiere >=4 barras de referencia; si no, False.
@@ -108,3 +120,38 @@ def is_increasing(
             second = _mean(ref[half:])
             out.append(second > first)
     return tuple(out)
+
+
+VOLUME_RATIO_VS_AVG_SOURCE_ID = "volume.ratio_vs_avg"
+
+
+def volume_ratio_vs_avg_declaration() -> DataSourceDeclaration:
+    """WINDOWED: ratio de la barra T sobre la media de las lookback anteriores; depende
+    de una ventana acotada, no de su valor previo. lookback es PARAM en la cache_key."""
+    return DataSourceDeclaration(
+        source_id=VOLUME_RATIO_VS_AVG_SOURCE_ID,
+        source_type=SourceType.OBSERVABLE,
+        servibility=Servibility.CONTINUOUS,
+        memory_model=MemoryModel.WINDOWED,
+        value_type=ScalarType.DECIMAL,
+        evaluation_contexts=tuple(tf.value for tf in Timeframe),
+        history_units=(HistoryUnit.BARS,),
+        params=(
+            ParamSpec(
+                name="lookback",
+                value_type=ScalarType.INTEGER,
+                default=ScalarValue(
+                    scalar_type=ScalarType.INTEGER,
+                    integer_value=LOOKBACK_DEFAULT,
+                ),
+            ),
+        ),
+        shared_evaluation=True,
+        sharing_scope=SharingScope.PUBLIC_CROSS_TENANT,
+        cache_key_schema=("exchange", "symbol", "timeframe", "lookback"),
+    )
+
+
+def declarations() -> tuple[DataSourceDeclaration, ...]:
+    """volume.ratio_vs_avg (LOTE 1a). direction/is_increasing DIFERIDAS (D1)."""
+    return (volume_ratio_vs_avg_declaration(),)

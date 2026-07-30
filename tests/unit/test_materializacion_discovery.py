@@ -16,6 +16,10 @@ _EXPECTED = {
     "orderflow.delta",
     "orderflow.delta_momentum",
     "cvd.value",
+    "candle.body_pct",
+    "candle.upper_shadow_pct",
+    "candle.lower_shadow_pct",
+    "volume.ratio_vs_avg",
 }
 
 
