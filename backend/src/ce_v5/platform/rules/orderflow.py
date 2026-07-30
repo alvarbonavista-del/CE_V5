@@ -91,6 +91,14 @@ def orderflow_delta_momentum_declaration() -> DataSourceDeclaration:
     )
 
 
+def declarations() -> tuple[DataSourceDeclaration, ...]:
+    """Declaraciones que este modulo publica al catalogo vivo (discovery, MAT-02)."""
+    return (
+        orderflow_delta_declaration(),
+        orderflow_delta_momentum_declaration(),
+    )
+
+
 def compute_delta_momentum(deltas: Sequence[Decimal]) -> tuple[Decimal, ...]:
     """Cambio del delta entre barras consecutivas (oldest->newest), [PARIDAD v4].
 

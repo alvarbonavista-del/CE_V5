@@ -71,3 +71,8 @@ def close_window(candles: Sequence[CandleClosedPayload]) -> tuple[Decimal, ...]:
         previous_open = candle.open_time
         closes.append(candle.close)
     return tuple(closes)
+
+
+def declarations() -> tuple[DataSourceDeclaration, ...]:
+    """Declaraciones que este modulo publica al catalogo vivo (discovery, MAT-02)."""
+    return (market_close_declaration(),)

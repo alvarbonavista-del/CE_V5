@@ -62,8 +62,8 @@ from ce_v5.platform.rules.correction import (
     correction_scope,
     is_within_window,
 )
+from ce_v5.platform.rules.discovery import discover_declarations
 from ce_v5.platform.rules.evaluator import Series
-from ce_v5.platform.rules.rawclose import market_close_declaration
 from ce_v5.platform.rules.runtime import EvalOutcome, RuntimeState, StaleReason
 from source.families.market import (
     CandleClosedPayload,
@@ -117,14 +117,18 @@ class RulesContext:
 
 
 def build_catalog() -> DataSourceCatalog:
-    """El catalogo de DataSources del motor: en v5.0, market.close (ADR-008).
+    """El catalogo vivo de DataSources (ADR-008, CE-14, sub-pieza materializacion).
 
-    Los cuatro indicadores y el catalogo de paridad-v4 NO son P08 (los disena I-02):
-    market.close es la demostracion del marco. validate() comprueba que el grafo de
-    derivacion esta completo y es aciclico ANTES de compilar nada.
+    Discovery EXPLICITO (dictamen P08c-MAT-02): recoge las declaraciones de los
+    modulos productores (discovery.discover_declarations) y las registra. Aditivo:
+    market.close sigue registrada; se anaden las derivadas deterministas (footprint,
+    vp.*, orderflow.*, cvd.value); las diferidas (candle.*/l2.*) no exponen
+    declaracion aun. validate() comprueba que el grafo esta completo y es aciclico
+    ANTES de compilar nada.
     """
     catalog = DataSourceCatalog()
-    catalog.register(market_close_declaration())
+    for declaration in discover_declarations():
+        catalog.register(declaration)
     catalog.validate()
     return catalog
 

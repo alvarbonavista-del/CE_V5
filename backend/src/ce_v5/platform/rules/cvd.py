@@ -96,6 +96,11 @@ def cvd_declaration() -> DataSourceDeclaration:
     )
 
 
+def declarations() -> tuple[DataSourceDeclaration, ...]:
+    """Declaraciones que este modulo publica al catalogo vivo (discovery, MAT-02)."""
+    return (cvd_declaration(),)
+
+
 def compute_cvd(
     bars: Sequence[tuple[int, Decimal]],
     *,
