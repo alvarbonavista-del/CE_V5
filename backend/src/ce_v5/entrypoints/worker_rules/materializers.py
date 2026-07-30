@@ -12,10 +12,15 @@ cableadas (MAT-07, DAG bottom-up footprint -> delta -> cvd):
 - vp.poc/vah/val: WINDOWED sobre footprint (FootprintWindowedSpec, ventana 100).
 - orderflow.delta: POINT_LOCAL sobre footprint (FootprintPointLocalSpec, bar_delta).
 - cvd.value: INTEGRATOR sobre el delta (CvdIntegratorSpec, replay desde snapshot).
+- orderflow.delta_momentum: WINDOWED sobre orderflow.delta (DerivedSeriesSpec, DAG de
+  2o nivel: consume otra fuente DERIVADA, no el footprint crudo; MAT-08).
 market.close conserva su lectura directa (read_close_window) en _series_for.
-orderflow.delta_momentum (WINDOWED sobre delta) sigue SIN cablear: _series_for lanza
-UnwiredSourceError si una regla la referencia, en vez de servir una serie equivocada
-(MAT-06 decision 3).
+
+Con delta_momentum cableada NO queda ninguna fuente servible del catalogo vivo sin
+materializador. El fallo ruidoso sigue vigente como INVARIANTE, no como caso muerto:
+cualquier fuente servible que se declare sin cablear su materializador -- o una base de
+DerivedSeriesSpec que no este en el registro -- levanta UnwiredSourceError en vez de
+servir una serie equivocada (MAT-06 decision 3, MAT-08).
 """
 
 from __future__ import annotations
@@ -34,7 +39,11 @@ from ce_v5.platform.rules.materializer import (
     materialize_recursive,
     materialize_windowed,
 )
-from ce_v5.platform.rules.orderflow import ORDERFLOW_DELTA_SOURCE_ID
+from ce_v5.platform.rules.orderflow import (
+    ORDERFLOW_DELTA_MOMENTUM_SOURCE_ID,
+    ORDERFLOW_DELTA_SOURCE_ID,
+    compute_delta_momentum,
+)
 from ce_v5.platform.rules.volume_profile import (
     DEFAULT_BIN_COUNT,
     VP_POC_SOURCE_ID,
@@ -209,6 +218,53 @@ class CvdIntegratorSpec:
         return series
 
 
+@dataclass(frozen=True, slots=True)
+class DerivedSeriesSpec:
+    """Materializador de una fuente que consume OTRA fuente DERIVADA (DAG 2o nivel).
+
+    Materializa la fuente BASE por su source_id (su SourceMaterializer en el registro),
+    pidiendo history_bars + lookback barras; aplica un transform de SERIE puro sobre la
+    serie completa de la base; y devuelve las history_bars mas recientes. lookback es el
+    numero de barras previas que el transform necesita para que el PRIMER valor de la
+    ventana pedida use su contexto real (p.ej. 1 para un diff barra-a-barra; el borde
+    real sin prior lo resuelve la funcion pura). Fallo ruidoso si la base no esta
+    cableada -> UnwiredSourceError, como toda fuente sin materializador (MAT-08).
+    """
+
+    base_source_id: str
+    transform: Callable[[Sequence[Decimal]], tuple[Decimal, ...]]
+    lookback: int
+
+    def materialize(
+        self,
+        session: Session,
+        exchange: str,
+        symbol: str,
+        timeframe: str,
+        open_time: int,
+        history_bars: int,
+    ) -> tuple[Decimal, ...]:
+        base_materializer = SOURCE_MATERIALIZERS.get(self.base_source_id)
+        if base_materializer is None:
+            msg = (
+                f"la fuente base {self.base_source_id!r} de un DerivedSeriesSpec no "
+                "esta cableada en v5.0: no se materializa la derivada (MAT-08)."
+            )
+            raise UnwiredSourceError(msg)
+        base = base_materializer.materialize(
+            session,
+            exchange,
+            symbol,
+            timeframe,
+            open_time,
+            history_bars + self.lookback,
+        )
+        series = self.transform(base)
+        if history_bars <= 0:
+            return ()
+        return series[-history_bars:]
+
+
 def _poc(window: Sequence[FootprintPayload]) -> Decimal:
     return compute_volume_profile(window, bin_count=DEFAULT_BIN_COUNT).poc
 
@@ -232,4 +288,9 @@ SOURCE_MATERIALIZERS: dict[str, SourceMaterializer] = {
     VP_VAL_SOURCE_ID: FootprintWindowedSpec(transform=_val),
     ORDERFLOW_DELTA_SOURCE_ID: FootprintPointLocalSpec(extract=_bar_delta),
     CVD_SOURCE_ID: CvdIntegratorSpec(),
+    ORDERFLOW_DELTA_MOMENTUM_SOURCE_ID: DerivedSeriesSpec(
+        base_source_id=ORDERFLOW_DELTA_SOURCE_ID,
+        transform=compute_delta_momentum,
+        lookback=1,
+    ),
 }
