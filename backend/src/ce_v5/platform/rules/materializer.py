@@ -10,7 +10,13 @@ Hay uno por MemoryModel:
 - WINDOWED: el valor de la barra T sale de una VENTANA ACOTADA [T-w+1, T] de una fuente
   BASE (p.ej. vp.* sobre footprints). materialize_windowed aplica la FUNCION PURA de la
   fuente sobre cada sub-ventana rodante de la base ya leida.
-- RECURSIVE/INTEGRATOR: snapshot/replay de VALOR. Tanda propia (T3).
+- RECURSIVE/INTEGRATOR: el valor de la barra T depende del valor previo (RECURSIVE,
+  p.ej. EMA) o acumula desde un origen (INTEGRATOR, p.ej. cvd). materialize_recursive
+  hace REPLAY DETERMINISTA desde un SNAPSHOT de valor: dado el valor en una barra ancla
+  y las entradas posteriores, reproduce la serie. Replay desde cualquier snapshot valido
+  da resultado IDENTICO bit a bit (ADR-007): el fold es determinista en Decimal. La
+  GESTION del snapshot (persistir/leer el ancla, respetar resets como el de cvd) es de
+  la capa de cableado (T5), no de este nucleo puro.
 
 CAPA. Este modulo es PLATFORM y es PURO: recibe la base YA LEIDA (una Sequence) y la
 funcion pura de la fuente; NO hace I/O. Quien lee la base (lector_base) y compone
@@ -66,3 +72,30 @@ def materialize_windowed[Base](
     return tuple(
         transform(base[j - window_bars + 1 : j + 1]) for j in range(first_j, n)
     )
+
+
+def materialize_recursive[Input](
+    snapshot_value: Decimal,
+    inputs: Sequence[Input],
+    step: Callable[[Decimal, Input], Decimal],
+) -> tuple[Decimal, ...]:
+    """Serie RECURSIVE/INTEGRATOR: replay determinista desde un SNAPSHOT de valor.
+
+    snapshot_value: valor de la fuente en la barra ANCLA (el snapshot del que se parte).
+    inputs: entradas por barra POSTERIORES al ancla, oldest->newest (p.ej. el delta de
+      cada barra para cvd, o el precio de cada barra para una EMA).
+    step: la recurrencia PURA (valor_previo, entrada) -> valor_nuevo. INTEGRATOR usa
+      step = prev + entrada; RECURSIVE general usa su propia recurrencia Markov.
+
+    Devuelve el valor de CADA barra posterior al ancla (longitud = len(inputs); el ancla
+    es solo la semilla, no se re-emite). REPRODUCIBILIDAD BIT A BIT (ADR-007): como el
+    fold es determinista sobre Decimal, hacer replay desde CUALQUIER snapshot valido de
+    la serie (una barra ancla real con su valor) mas sus entradas produce EXACTAMENTE la
+    misma cola de la serie -- se verifica en los tests. inputs vacio -> ().
+    """
+    result: list[Decimal] = []
+    value = snapshot_value
+    for item in inputs:
+        value = step(value, item)
+        result.append(value)
+    return tuple(result)

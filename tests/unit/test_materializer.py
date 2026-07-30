@@ -5,7 +5,10 @@ from __future__ import annotations
 from collections.abc import Sequence
 from decimal import Decimal
 
-from ce_v5.platform.rules.materializer import materialize_windowed
+from ce_v5.platform.rules.materializer import (
+    materialize_recursive,
+    materialize_windowed,
+)
 
 
 def _last(window: Sequence[Decimal]) -> Decimal:
@@ -75,4 +78,50 @@ def test_determinismo() -> None:
     base = [Decimal(v) for v in (10, 12, 9, 15, 11)]
     a = materialize_windowed(base, _span, window_bars=3, history_bars=10)
     b = materialize_windowed(base, _span, window_bars=3, history_bars=10)
+    assert a == b
+
+
+_ALPHA = Decimal("0.5")
+
+
+def _add(previous: Decimal, item: Decimal) -> Decimal:
+    """Recurrencia INTEGRATOR: acumula (cvd = prev + delta)."""
+    return previous + item
+
+
+def _ema(previous: Decimal, item: Decimal) -> Decimal:
+    """Recurrencia RECURSIVE general: EMA con alpha 0.5."""
+    return _ALPHA * item + (Decimal(1) - _ALPHA) * previous
+
+
+def test_integrator_acumula() -> None:
+    deltas = [Decimal(v) for v in (1, 2, 3, 4, 5)]
+    serie = materialize_recursive(Decimal(0), deltas, _add)
+    assert serie == (Decimal(1), Decimal(3), Decimal(6), Decimal(10), Decimal(15))
+
+
+def test_replay_desde_cualquier_snapshot_es_identico() -> None:
+    # La clave (ADR-007, precision de Central): replay desde un snapshot de la serie
+    # reproduce EXACTAMENTE la cola de la serie completa, bit a bit.
+    deltas = [Decimal(v) for v in (1, 2, 3, 4, 5)]
+    full = materialize_recursive(Decimal(0), deltas, _add)
+    replay = materialize_recursive(full[2], deltas[3:], _add)
+    assert replay == full[3:]
+
+
+def test_recursive_general_ema_replay_identico() -> None:
+    prices = [Decimal(v) for v in (10, 20, 30, 40)]
+    full = materialize_recursive(Decimal(10), prices, _ema)
+    replay = materialize_recursive(full[1], prices[2:], _ema)
+    assert replay == full[2:]
+
+
+def test_inputs_vacios_da_vacio() -> None:
+    assert materialize_recursive(Decimal(7), [], _add) == ()
+
+
+def test_determinismo_recursive() -> None:
+    deltas = [Decimal(v) for v in (1, 2, 3, 4, 5)]
+    a = materialize_recursive(Decimal(0), deltas, _add)
+    b = materialize_recursive(Decimal(0), deltas, _add)
     assert a == b
