@@ -55,6 +55,7 @@ from ce_v5.infra.db.rules import (
     read_state,
 )
 from ce_v5.infra.db.tenancy import SystemScopedDatabase
+from ce_v5.platform.rules.cache_key_validator import validate_cache_keys
 from ce_v5.platform.rules.catalog import DataSourceCatalog
 from ce_v5.platform.rules.compiler import CompilationError, ExecutionPlan, compile
 from ce_v5.platform.rules.correction import (
@@ -123,13 +124,16 @@ def build_catalog() -> DataSourceCatalog:
     modulos productores (discovery.discover_declarations) y las registra. Aditivo:
     market.close sigue registrada; se anaden las derivadas deterministas (footprint,
     vp.*, orderflow.*, cvd.value); las diferidas (candle.*/l2.*) no exponen
-    declaracion aun. validate() comprueba que el grafo esta completo y es aciclico
-    ANTES de compilar nada.
+    declaracion aun. validate() comprueba que el grafo esta completo y es aciclico;
+    validate_cache_keys comprueba el cache_key por naturaleza (MAT-03) ANTES de
+    compilar nada.
     """
+    declarations = discover_declarations()
     catalog = DataSourceCatalog()
-    for declaration in discover_declarations():
+    for declaration in declarations:
         catalog.register(declaration)
     catalog.validate()
+    validate_cache_keys(declarations)
     return catalog
 
 
