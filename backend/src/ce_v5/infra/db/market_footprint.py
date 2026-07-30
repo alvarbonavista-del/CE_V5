@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from decimal import Decimal
 
 from ce_v5.infra.db.ports import Database, Session
 from source.families.footprint import FootprintPayload
@@ -224,3 +225,73 @@ def read_footprint_window(
         FootprintPayload.model_validate(dict(zip(_FOOTPRINT_COLUMNS, row, strict=True)))
         for row in rows
     )
+
+
+def _entero(valor: object) -> int:
+    if not isinstance(valor, int):
+        msg = f"Se esperaba un entero de la base y llego {type(valor)!r}."
+        raise TypeError(msg)
+    return valor
+
+
+def _decimal(valor: object) -> Decimal:
+    if not isinstance(valor, Decimal):
+        msg = f"Se esperaba un Decimal de la base y llego {type(valor)!r}."
+        raise TypeError(msg)
+    return valor
+
+
+# Deltas de barra (bar_delta) del footprint en un RANGO (after, up_to], oldest->newest,
+# una fila por barra (revision vigente). Es la entrada del replay del INTEGRATOR cvd:
+# los deltas POSTERIORES al ancla de snapshot. Mismo dedup por revision que
+# read_footprint_window; bar_delta es la MISMA columna que sirve orderflow.delta (una
+# sola definicion de "delta desde footprint", MAT-07), aqui leida por rango para el
+# replay acotado en vez de por ventana ultima-N.
+_FOOTPRINT_DELTA_RANGE_SQL = """
+SELECT w.open_time, w.bar_delta
+FROM (
+    SELECT DISTINCT ON (open_time) open_time, bar_delta
+    FROM market_footprint
+    WHERE exchange = %s
+      AND market_type = %s
+      AND symbol = %s
+      AND timeframe = %s
+      AND maturity_state IN ('closed', 'correction')
+      AND open_time > %s
+      AND open_time <= %s
+    ORDER BY open_time DESC, correction_revision DESC NULLS LAST
+) AS w
+ORDER BY w.open_time
+"""
+
+
+def read_footprint_delta_range(
+    session: Session,
+    exchange: str,
+    symbol: str,
+    timeframe: str,
+    after_open_time: int,
+    up_to_open_time: int,
+) -> tuple[tuple[int, Decimal], ...]:
+    """Los (open_time, bar_delta) del footprint en (after_open_time, up_to_open_time].
+
+    oldest->newest, una fila por barra (la revision vigente si hubo correcciones, por el
+    DISTINCT ON + correction_revision DESC NULLS LAST). Es la secuencia de deltas que el
+    materializador de cvd (INTEGRATOR) acumula sobre el valor del snapshot ancla. El
+    limite inferior es ABIERTO (after excluido: el ancla ya aporta su valor) y el
+    superior CERRADO (up_to incluido: la barra pedida). Rango vacio -> ().
+
+    market_type FIJADO a spot (v5.0), como en read_footprint_window.
+    """
+    rows = session.fetchall(
+        _FOOTPRINT_DELTA_RANGE_SQL,
+        (
+            exchange,
+            MarketType.SPOT.value,
+            symbol,
+            timeframe,
+            after_open_time,
+            up_to_open_time,
+        ),
+    )
+    return tuple((_entero(row[0]), _decimal(row[1])) for row in rows)
