@@ -11,7 +11,15 @@ from fractions import Fraction
 
 import pytest
 
-from ce_v5.platform.rules.indicators.ema import EMA_FORMULA_VERSION, ema
+from ce_v5.platform.rules.indicators.ema import (
+    EMA_FORMULA_VERSION,
+    EMA_SOURCE_ID,
+    declarations,
+    ema,
+    ema_declaration,
+)
+from source.datasource import MemoryModel, Servibility
+from source.rules.scalar import ScalarType
 
 _CLOSES = [
     Decimal(v)
@@ -191,3 +199,44 @@ def test_golden_lock_ema12() -> None:
     for i, expected in enumerate(_GOLDEN_EMA12):
         assert str(got[i]) == expected, f"i={i}: {got[i]} != {expected}"
     assert str(got[0]) == "100.00"  # invariante de semilla, clavado bit-exacto
+
+
+class TestDeclaracion:
+    """Cara declarativa: ema.value en el catalogo (P08b LOTE 2, OPCION D)."""
+
+    def test_id_y_value_type(self) -> None:
+        d = ema_declaration()
+        assert d.source_id == EMA_SOURCE_ID == "ema.value"
+        assert d.value_type == ScalarType.DECIMAL
+
+    def test_memory_model_recursive(self) -> None:
+        assert ema_declaration().memory_model == MemoryModel.RECURSIVE
+
+    def test_non_servible(self) -> None:
+        # OPCION D: descubrible pero rechazada como termino hasta que haya
+        # materializador.
+        assert ema_declaration().servibility == Servibility.NON_SERVIBLE
+
+    def test_consume_market_close(self) -> None:
+        # EMA deriva de la serie de cierres (dictamen INT-06-A1).
+        assert ema_declaration().consumes == ("market.close",)
+
+    def test_period_en_cache_key(self) -> None:
+        d = ema_declaration()
+        assert "period" in d.cache_key_schema
+        assert {p.name for p in d.params} <= set(d.cache_key_schema)
+
+    def test_period_es_integer_sin_default(self) -> None:
+        (period,) = ema_declaration().params
+        assert period.name == "period"
+        assert period.value_type == ScalarType.INTEGER
+        assert period.default is None
+
+    def test_sharing_publico_coherente_con_0023(self) -> None:
+        # La 0023 (ema_snapshot) justifica el SIN tenant_id con esto; deben cuadrar.
+        d = ema_declaration()
+        assert d.shared_evaluation is True
+        assert d.sharing_scope.value == "public_cross_tenant"
+
+    def test_declarations_incluye_ema_value(self) -> None:
+        assert ema_declaration() in declarations()
