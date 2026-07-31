@@ -35,6 +35,10 @@ from ce_v5.infra.db.market_footprint import (
     read_footprint_window,
 )
 from ce_v5.platform.rules.cvd import CVD_SOURCE_ID, ResetPolicy
+from ce_v5.platform.rules.footprint_range import (
+    FOOTPRINT_PRICE_RANGE_SOURCE_ID,
+    price_range,
+)
 from ce_v5.platform.rules.materializer import (
     materialize_recursive,
     materialize_windowed,
@@ -293,4 +297,5 @@ SOURCE_MATERIALIZERS: dict[str, SourceMaterializer] = {
         transform=compute_delta_momentum,
         lookback=1,
     ),
+    FOOTPRINT_PRICE_RANGE_SOURCE_ID: FootprintPointLocalSpec(extract=price_range),
 }

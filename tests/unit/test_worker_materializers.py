@@ -129,6 +129,7 @@ class TestRegistroPorSourceId:
             ORDERFLOW_DELTA_SOURCE_ID,
             CVD_SOURCE_ID,
             ORDERFLOW_DELTA_MOMENTUM_SOURCE_ID,
+            "footprint.price_range",
         }
 
     @pytest.mark.parametrize(
