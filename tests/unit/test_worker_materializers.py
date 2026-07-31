@@ -36,10 +36,14 @@ from ce_v5.platform.rules.orderflow import (
 )
 from ce_v5.platform.rules.volume_profile import (
     DEFAULT_BIN_COUNT,
+    VP_HVN_SOURCE_ID,
+    VP_LVN_SOURCE_ID,
     VP_POC_SOURCE_ID,
     VP_VAH_SOURCE_ID,
     VP_VAL_SOURCE_ID,
     compute_volume_profile,
+    select_hvn_price,
+    select_lvn_price,
 )
 from source.families.footprint import FootprintCell, FootprintClosedPayload
 from source.families.market import MarketType, Timeframe
@@ -126,6 +130,8 @@ class TestRegistroPorSourceId:
             VP_POC_SOURCE_ID,
             VP_VAH_SOURCE_ID,
             VP_VAL_SOURCE_ID,
+            VP_HVN_SOURCE_ID,
+            VP_LVN_SOURCE_ID,
             ORDERFLOW_DELTA_SOURCE_ID,
             CVD_SOURCE_ID,
             ORDERFLOW_DELTA_MOMENTUM_SOURCE_ID,
@@ -134,7 +140,13 @@ class TestRegistroPorSourceId:
 
     @pytest.mark.parametrize(
         "source_id",
-        [VP_POC_SOURCE_ID, VP_VAH_SOURCE_ID, VP_VAL_SOURCE_ID],
+        [
+            VP_POC_SOURCE_ID,
+            VP_VAH_SOURCE_ID,
+            VP_VAL_SOURCE_ID,
+            VP_HVN_SOURCE_ID,
+            VP_LVN_SOURCE_ID,
+        ],
     )
     def test_la_ventana_rodante_es_la_de_paridad_v4(self, source_id: str) -> None:
         # [PARIDAD v4 _WINDOW] = 100 barras. Es constante FIJA de materializacion
@@ -157,6 +169,16 @@ class TestRegistroPorSourceId:
         ventana = _ventana()
         esperado = compute_volume_profile(ventana, bin_count=DEFAULT_BIN_COUNT).val
         assert _windowed(VP_VAL_SOURCE_ID).transform(ventana) == esperado
+
+    def test_el_transform_de_hvn_es_el_select_hvn_price_del_perfil(self) -> None:
+        ventana = _ventana()
+        esperado = select_hvn_price(ventana, bin_count=DEFAULT_BIN_COUNT)
+        assert _windowed(VP_HVN_SOURCE_ID).transform(ventana) == esperado
+
+    def test_el_transform_de_lvn_es_el_select_lvn_price_del_perfil(self) -> None:
+        ventana = _ventana()
+        esperado = select_lvn_price(ventana, bin_count=DEFAULT_BIN_COUNT)
+        assert _windowed(VP_LVN_SOURCE_ID).transform(ventana) == esperado
 
     def test_cada_transform_lee_su_propia_salida(self) -> None:
         # Los tres NO son el mismo numero en esta ventana: si el registro cruzara los

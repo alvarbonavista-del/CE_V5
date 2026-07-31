@@ -9,7 +9,7 @@ SOURCE_ID contra este registro.
 Cada materializador implementa el Protocol SourceMaterializer (structural): sabe leer
 su base y producir su serie tuple[Decimal, ...] oldest->newest. En v5.0 estan
 cableadas (MAT-07, DAG bottom-up footprint -> delta -> cvd):
-- vp.poc/vah/val: WINDOWED sobre footprint (FootprintWindowedSpec, ventana 100).
+- vp.poc/vah/val/hvn/lvn: WINDOWED sobre footprint (FootprintWindowedSpec, ventana 100).
 - orderflow.delta: POINT_LOCAL sobre footprint (FootprintPointLocalSpec, bar_delta).
 - cvd.value: INTEGRATOR sobre el delta (CvdIntegratorSpec, replay desde snapshot).
 - orderflow.delta_momentum: WINDOWED sobre orderflow.delta (DerivedSeriesSpec, DAG de
@@ -50,10 +50,14 @@ from ce_v5.platform.rules.orderflow import (
 )
 from ce_v5.platform.rules.volume_profile import (
     DEFAULT_BIN_COUNT,
+    VP_HVN_SOURCE_ID,
+    VP_LVN_SOURCE_ID,
     VP_POC_SOURCE_ID,
     VP_VAH_SOURCE_ID,
     VP_VAL_SOURCE_ID,
     compute_volume_profile,
+    select_hvn_price,
+    select_lvn_price,
 )
 
 if TYPE_CHECKING:
@@ -281,6 +285,14 @@ def _val(window: Sequence[FootprintPayload]) -> Decimal:
     return compute_volume_profile(window, bin_count=DEFAULT_BIN_COUNT).val
 
 
+def _hvn(window: Sequence[FootprintPayload]) -> Decimal:
+    return select_hvn_price(window, bin_count=DEFAULT_BIN_COUNT)
+
+
+def _lvn(window: Sequence[FootprintPayload]) -> Decimal:
+    return select_lvn_price(window, bin_count=DEFAULT_BIN_COUNT)
+
+
 def _bar_delta(footprint: FootprintPayload) -> Decimal:
     return footprint.bar_delta
 
@@ -290,6 +302,8 @@ SOURCE_MATERIALIZERS: dict[str, SourceMaterializer] = {
     VP_POC_SOURCE_ID: FootprintWindowedSpec(transform=_poc),
     VP_VAH_SOURCE_ID: FootprintWindowedSpec(transform=_vah),
     VP_VAL_SOURCE_ID: FootprintWindowedSpec(transform=_val),
+    VP_HVN_SOURCE_ID: FootprintWindowedSpec(transform=_hvn),
+    VP_LVN_SOURCE_ID: FootprintWindowedSpec(transform=_lvn),
     ORDERFLOW_DELTA_SOURCE_ID: FootprintPointLocalSpec(extract=_bar_delta),
     CVD_SOURCE_ID: CvdIntegratorSpec(),
     ORDERFLOW_DELTA_MOMENTUM_SOURCE_ID: DerivedSeriesSpec(
