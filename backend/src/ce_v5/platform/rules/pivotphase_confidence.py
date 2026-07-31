@@ -13,8 +13,6 @@ FRONTERA P4/P5 (ELEVACION P08c-PIVOT-02, OPCION R1 ratificada por Central):
 - P5 = CABLEADO: extraccion de los escalares crudos de cada factor desde las series
   reales (orderflow/cvd/vp/notrade, swing.*), snapshot/replay del CVD (F3) y alta en
   catalogo. Sin logica de modelo.
-Cada factor recibe un ESCALAR CRUDO ya orientado (mayor = mas soporte del pivote en su
-direccion documentada) MAS su ventana de distribucion reciente; el modulo lo normaliza.
 
 FACTORES (I-04 2.3; AHP REV 2). Activos en v5.0 (peso 1/5 cada uno):
   F2 exhaustion de delta, F3 divergencia de CVD, F4 esfuerzo vs resultado,
@@ -22,20 +20,21 @@ FACTORES (I-04 2.3; AHP REV 2). Activos en v5.0 (peso 1/5 cada uno):
 Diferidos (peso 0, activables sin cambio de estructura):
   F1 absorcion (espera candle.open + absorption.*), F5 imbalance apilado (espera fuente
   de celdas de footprint). Activarlos = anadir peso + funcion + input, no reestructurar.
+F2/F3/F4/F7 se normalizan por PERCENTIL (raw + distribucion reciente). F6 se normaliza
+por DISTANCIA a niveles VP servibles (ELEVACION P08c-PIVOT-05: corrige el vol_ratio
+inicial; los vp.* exponen PRECIOS, no ratios de volumen).
 
 EVIDENCIA AUSENTE NO INFLA: un factor ausente o no evaluable aporta 0 (no se renormaliza
 el denominador); la confianza sube conforme se acumula evidencia en cada cierre
 (DEC-PROVISIONAL-02). Si NINGUN factor activo es evaluable, confidence = None.
 
 DETERMINISTA y reproducible bit a bit (ADR-007): solo Decimal, sin float; cuantizacion
-ROUND_HALF_EVEN. DEC-AHP-01: todos los pesos/cortes/ventanas son SEMILLAS [A CALIBRAR
-AHP], nunca verdades; la calibracion (walk-forward sobre corpus) esta DIFERIDA.
+ROUND_HALF_EVEN. DEC-AHP-01: todos los pesos/ventanas son SEMILLAS [A CALIBRAR AHP],
+nunca verdades; la calibracion (walk-forward sobre corpus) esta DIFERIDA.
 
 DECLARACION DIFERIDA: la DataSource pivotphase.confidence declara consumes que incluyen
 swing.* (F3) y la fuente de void/notrade (F7), AUN INEXISTENTES en el catalogo; se
-hornea en P5 cuando esas fuentes esten disponibles. Mismo criterio ya aceptado en
-absorption.py ("como F3 espera a swing.*"). Este modulo entrega el nucleo puro del
-modelo, independiente de esa espera.
+hornea en P5 cuando esas fuentes esten disponibles. Mismo criterio que absorption.py.
 """
 
 from __future__ import annotations
@@ -50,10 +49,6 @@ if TYPE_CHECKING:
 
 # Peso semilla: cinco factores activos, 1/5 cada uno (AHP REV 2). Decimal exacto.
 _ACTIVE_WEIGHT = Decimal(1) / Decimal(5)
-# Cortes [PARIDAD v4] de F6 (GAP-P08c): vol_ratio del nivel frente a la media de la
-# ventana. HVN pleno soporte, LVN/void sin soporte. Semillas [A CALIBRAR AHP].
-_HVN_CUT = Decimal("1.5")
-_LVN_CUT = Decimal("0.3")
 # Cuantizacion determinista de la confianza final (0-100), ROUND_HALF_EVEN (ADR-007).
 _CONFIDENCE_QUANTUM = Decimal("0.01")
 
@@ -77,19 +72,33 @@ class Factor(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class FactorInput:
-    """Insumo de un factor (frontera R1): escalar crudo YA orientado + distribucion.
+    """Insumo de un factor por PERCENTIL (F2/F3/F4/F7): escalar crudo YA orientado +
+    distribucion reciente.
 
     raw: valor crudo del factor en la barra, orientado por el extractor (P5) de modo
     que MAYOR = mas soporte del pivote en su direccion documentada. Para F7 la
-    orientacion es intrinseca (raw = intensidad de void) y el modelo la invierte. Para
-    F6 raw = vol_ratio del nivel (volumen del nivel / media de la ventana), por cortes.
+    orientacion es intrinseca (raw = intensidad de void) y el modelo la invierte.
     distribution: ventana de distribucion reciente del propio simbolo/TF contra la
-    que se normaliza (percentil). Vacia = factor NO evaluable para los factores por
-    percentil; F6 es por cortes y no la usa.
+    que se normaliza (percentil). Vacia = factor NO evaluable.
     """
 
     raw: Decimal
     distribution: tuple[Decimal, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class VpContextInput:
+    """Insumo de F6 (por DISTANCIA; ELEVACION P08c-PIVOT-05): precio del pivote y los
+    niveles VP servibles (precios) contra los que se mide la proximidad.
+
+    hvn_price = precio del nodo de alto volumen (vp.hvn; iman, soporte); lvn_price =
+    precio del nodo de bajo volumen / void (vp.lvn; penaliza). VA-edge (vah/val) queda
+    DIFERIDO a calibracion. Los cortes HVN/LVN viven en volume_profile.py, no aqui.
+    """
+
+    price: Decimal
+    hvn_price: Decimal
+    lvn_price: Decimal
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,7 +111,7 @@ class ConfidenceInputs:
     f2: FactorInput | None = None
     f3: FactorInput | None = None
     f4: FactorInput | None = None
-    f6: FactorInput | None = None
+    f6: VpContextInput | None = None
     f7: FactorInput | None = None
 
 
@@ -111,13 +120,11 @@ class ConfidenceParams:
     """Parametros SEMILLA del modelo (DEC-AHP-01: [A CALIBRAR AHP], nunca verdades).
 
     weights: peso por factor; activos 1/5, F1/F5 0. La suma DEBE ser 1 (garantiza que la
-    confianza cae en 0-100). hvn_cut/lvn_cut: cortes [PARIDAD v4] de F6. formula_version
-    entra en la cache_key (I-01 C2/C3): un cambio de pesos/cortes/forma la incrementa.
+    confianza cae en 0-100). formula_version entra en la cache_key (I-01 C2/C3): un
+    cambio de pesos/forma la incrementa.
     """
 
     weights: tuple[tuple[Factor, Decimal], ...]
-    hvn_cut: Decimal
-    lvn_cut: Decimal
     formula_version: int
 
     def __post_init__(self) -> None:
@@ -127,9 +134,6 @@ class ConfidenceParams:
             raise ValueError(msg)
         if any(w < 0 for _, w in self.weights):
             msg = "los pesos no pueden ser negativos."
-            raise ValueError(msg)
-        if self.lvn_cut < 0 or self.hvn_cut <= self.lvn_cut:
-            msg = "se exige 0 <= lvn_cut < hvn_cut para F6."
             raise ValueError(msg)
         if self.formula_version < 1:
             msg = "formula_version debe ser >= 1."
@@ -159,7 +163,8 @@ class ConfidenceResult:
 
 
 def default_params() -> ConfidenceParams:
-    """Parametros semilla v5.0 (AHP REV 2): activos 1/5, F1/F5 0, cortes PARIDAD v4."""
+    """Parametros semilla v5.0 (AHP REV 2): activos 1/5, F1/F5 0. formula_version=2
+    tras la correccion de F6 a distancia (ELEVACION P08c-PIVOT-05)."""
     return ConfidenceParams(
         weights=(
             (Factor.F1_ABSORPTION, Decimal(0)),
@@ -170,9 +175,7 @@ def default_params() -> ConfidenceParams:
             (Factor.F6_VP_CONTEXT, _ACTIVE_WEIGHT),
             (Factor.F7_VOID_NOTRADE, _ACTIVE_WEIGHT),
         ),
-        hvn_cut=_HVN_CUT,
-        lvn_cut=_LVN_CUT,
-        formula_version=1,
+        formula_version=2,
     )
 
 
@@ -202,15 +205,22 @@ def _normalized_percentile(fin: FactorInput, *, descending: bool) -> Decimal:
     return (Decimal(1) - rank) if descending else rank
 
 
-def _normalized_vp_context(vol_ratio: Decimal, params: ConfidenceParams) -> Decimal:
-    """F6 por cortes [PARIDAD v4]: LVN (<=lvn_cut) -> 0; HVN (>=hvn_cut) -> 1; lineal
-    entre cortes. VA-edge queda como refinamiento de calibracion (diferido).
+def _normalized_vp_context(vp: VpContextInput) -> Decimal | None:
+    """F6 por DISTANCIA (ELEVACION P08c-PIVOT-05): proximidad del precio del pivote a
+    vp.hvn (soporte) vs vp.lvn (void/penaliza).
+
+    f6 = (1 + (d_lvn - d_hvn) / (d_lvn + d_hvn)) / 2, con d = |price - nivel| / price.
+    En el HVN (d_hvn=0) -> 1; en el LVN (d_lvn=0) -> 0; equidistante -> 0.5. price<=0 o
+    ambos niveles en el precio (d_lvn+d_hvn=0) -> None (no evaluable). VA-edge diferido.
     """
-    if vol_ratio <= params.lvn_cut:
-        return Decimal(0)
-    if vol_ratio >= params.hvn_cut:
-        return Decimal(1)
-    return (vol_ratio - params.lvn_cut) / (params.hvn_cut - params.lvn_cut)
+    if vp.price <= 0:
+        return None
+    d_hvn = abs(vp.price - vp.hvn_price) / vp.price
+    d_lvn = abs(vp.price - vp.lvn_price) / vp.price
+    total = d_lvn + d_hvn
+    if total == 0:
+        return None
+    return (Decimal(1) + (d_lvn - d_hvn) / total) / Decimal(2)
 
 
 def compute_confidence(
@@ -240,16 +250,16 @@ def compute_confidence(
         contributions.append(
             FactorContribution(factor, weight, norm, weight * norm, evaluable=True)
         )
-    # F6 por cortes (no usa distribucion).
+    # F6 por distancia a niveles VP (no usa distribucion; puede ser no evaluable).
     weight6 = _weight_of(params, Factor.F6_VP_CONTEXT)
-    if inputs.f6 is None:
+    norm6 = None if inputs.f6 is None else _normalized_vp_context(inputs.f6)
+    if norm6 is None:
         contributions.append(
             FactorContribution(
                 Factor.F6_VP_CONTEXT, weight6, None, Decimal(0), evaluable=False
             )
         )
     else:
-        norm6 = _normalized_vp_context(inputs.f6.raw, params)
         contributions.append(
             FactorContribution(
                 Factor.F6_VP_CONTEXT, weight6, norm6, weight6 * norm6, evaluable=True

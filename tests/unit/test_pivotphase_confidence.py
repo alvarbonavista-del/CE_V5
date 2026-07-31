@@ -1,6 +1,6 @@
 """Tests del modelo pivotphase.confidence (P08c-P4): inputs inyectados y deterministas.
 
-Todo el modelo se ejercita con escalares y ventanas inyectados (frontera R1).
+F6 por DISTANCIA a niveles VP (ELEVACION P08c-PIVOT-05); resto por percentil.
 """
 
 from decimal import Decimal
@@ -12,11 +12,20 @@ from ce_v5.platform.rules.pivotphase_confidence import (
     ConfidenceParams,
     Factor,
     FactorInput,
+    VpContextInput,
     compute_confidence,
     default_params,
 )
 
 _DIST = (Decimal(1), Decimal(2), Decimal(3), Decimal(4), Decimal(5))
+# F6 en el HVN -> soporte pleno (f6=1): precio en vp.hvn, vp.lvn lejos.
+_F6_HVN = VpContextInput(
+    price=Decimal(100), hvn_price=Decimal(100), lvn_price=Decimal(50)
+)
+# F6 en el LVN -> sin soporte (f6=0): precio en vp.lvn, vp.hvn lejos.
+_F6_LVN = VpContextInput(
+    price=Decimal(100), hvn_price=Decimal(150), lvn_price=Decimal(100)
+)
 
 
 def _fin(raw: object, dist: tuple[Decimal, ...] = _DIST) -> FactorInput:
@@ -26,6 +35,10 @@ def _fin(raw: object, dist: tuple[Decimal, ...] = _DIST) -> FactorInput:
 def test_default_params_active_weights_sum_to_one() -> None:
     total = sum((w for _, w in default_params().weights), Decimal(0))
     assert total == Decimal(1)
+
+
+def test_default_params_formula_version_is_2() -> None:
+    assert default_params().formula_version == 2
 
 
 def test_deferred_factors_have_zero_weight() -> None:
@@ -40,7 +53,7 @@ def test_all_factors_max_support_gives_100() -> None:
         f2=_fin(100),
         f3=_fin(100),
         f4=_fin(100),
-        f6=FactorInput(raw=Decimal("2.0")),
+        f6=_F6_HVN,
         f7=_fin(-100),
     )
     r = compute_confidence(inputs, default_params())
@@ -59,7 +72,7 @@ def test_all_factors_min_support_gives_0() -> None:
         f2=_fin(-100),
         f3=_fin(-100),
         f4=_fin(-100),
-        f6=FactorInput(raw=Decimal("0.1")),
+        f6=_F6_LVN,
         f7=_fin(100),
     )
     r = compute_confidence(inputs, default_params())
@@ -67,26 +80,21 @@ def test_all_factors_min_support_gives_0() -> None:
 
 
 def test_f7_penalizes_higher_void_lowers_confidence() -> None:
-    base = {
-        "f2": _fin(3),
-        "f3": _fin(3),
-        "f4": _fin(3),
-        "f6": FactorInput(raw=Decimal("1.0")),
-    }
-    low = compute_confidence(ConfidenceInputs(**base, f7=_fin(1)), default_params())
-    high = compute_confidence(ConfidenceInputs(**base, f7=_fin(5)), default_params())
+    low = compute_confidence(
+        ConfidenceInputs(f2=_fin(3), f3=_fin(3), f4=_fin(3), f6=_F6_HVN, f7=_fin(1)),
+        default_params(),
+    )
+    high = compute_confidence(
+        ConfidenceInputs(f2=_fin(3), f3=_fin(3), f4=_fin(3), f6=_F6_HVN, f7=_fin(5)),
+        default_params(),
+    )
     assert high.confidence is not None
     assert low.confidence is not None
     assert high.confidence < low.confidence
 
 
 def test_missing_factor_contributes_zero_and_caps_confidence() -> None:
-    inputs = ConfidenceInputs(
-        f2=_fin(100),
-        f4=_fin(100),
-        f6=FactorInput(raw=Decimal("2.0")),
-        f7=_fin(-100),
-    )
+    inputs = ConfidenceInputs(f2=_fin(100), f4=_fin(100), f6=_F6_HVN, f7=_fin(-100))
     r = compute_confidence(inputs, default_params())
     assert r.confidence == Decimal("80.00")
     assert Factor.F3_CVD_DIVERGENCE not in r.used_factors
@@ -99,7 +107,7 @@ def test_empty_distribution_is_not_evaluable() -> None:
     inputs = ConfidenceInputs(
         f2=FactorInput(raw=Decimal(3), distribution=()),
         f4=_fin(100),
-        f6=FactorInput(raw=Decimal("2.0")),
+        f6=_F6_HVN,
         f7=_fin(-100),
     )
     r = compute_confidence(inputs, default_params())
@@ -113,14 +121,28 @@ def test_all_absent_is_not_evaluable() -> None:
     assert r.used_factors == ()
 
 
-def test_f6_cuts_paridad_v4() -> None:
+def test_f6_distance_hvn_lvn_equidistant() -> None:
     p = default_params()
-    below = compute_confidence(ConfidenceInputs(f6=FactorInput(raw=Decimal("0.3"))), p)
-    above = compute_confidence(ConfidenceInputs(f6=FactorInput(raw=Decimal("1.5"))), p)
-    mid = compute_confidence(ConfidenceInputs(f6=FactorInput(raw=Decimal("0.9"))), p)
-    assert below.confidence == Decimal("0.00")
-    assert above.confidence == Decimal("20.00")
-    assert mid.confidence == Decimal("10.00")
+    # solo F6 evaluable -> confidence = 0.2 * f6 * 100 = 20 * f6.
+    at_hvn = compute_confidence(ConfidenceInputs(f6=_F6_HVN), p)
+    at_lvn = compute_confidence(ConfidenceInputs(f6=_F6_LVN), p)
+    equi = VpContextInput(
+        price=Decimal(100), hvn_price=Decimal(110), lvn_price=Decimal(90)
+    )
+    at_equi = compute_confidence(ConfidenceInputs(f6=equi), p)
+    assert at_hvn.confidence == Decimal("20.00")  # f6=1
+    assert at_lvn.confidence == Decimal("0.00")  # f6=0
+    assert at_equi.confidence == Decimal("10.00")  # f6=0.5
+
+
+def test_f6_degenerate_is_not_evaluable() -> None:
+    # price<=0 o ambos niveles en el precio -> F6 no evaluable.
+    degenerate = VpContextInput(
+        price=Decimal(100), hvn_price=Decimal(100), lvn_price=Decimal(100)
+    )
+    r = compute_confidence(ConfidenceInputs(f6=degenerate), default_params())
+    assert Factor.F6_VP_CONTEXT not in r.used_factors
+    assert r.confidence is None
 
 
 def test_percentile_midrank_equal_to_all() -> None:
@@ -132,11 +154,7 @@ def test_percentile_midrank_equal_to_all() -> None:
 
 def test_deterministic_same_inputs_same_result() -> None:
     inputs = ConfidenceInputs(
-        f2=_fin(3),
-        f3=_fin(4),
-        f4=_fin(2),
-        f6=FactorInput(raw=Decimal("1.1")),
-        f7=_fin(2),
+        f2=_fin(3), f3=_fin(4), f4=_fin(2), f6=_F6_HVN, f7=_fin(2)
     )
     p = default_params()
     assert compute_confidence(inputs, p) == compute_confidence(inputs, p)
@@ -146,24 +164,12 @@ def test_params_reject_weights_not_summing_one() -> None:
     with pytest.raises(ValueError, match="suma de pesos"):
         ConfidenceParams(
             weights=((Factor.F2_DELTA_EXHAUSTION, Decimal("0.5")),),
-            hvn_cut=Decimal("1.5"),
-            lvn_cut=Decimal("0.3"),
-            formula_version=1,
-        )
-
-
-def test_params_reject_bad_vp_cuts() -> None:
-    with pytest.raises(ValueError, match="lvn_cut < hvn_cut"):
-        ConfidenceParams(
-            weights=((Factor.F2_DELTA_EXHAUSTION, Decimal(1)),),
-            hvn_cut=Decimal("0.3"),
-            lvn_cut=Decimal("0.3"),
-            formula_version=1,
+            formula_version=2,
         )
 
 
 def test_explainability_breakdown_present() -> None:
-    inputs = ConfidenceInputs(f2=_fin(3), f6=FactorInput(raw=Decimal("1.0")))
+    inputs = ConfidenceInputs(f2=_fin(3), f6=_F6_HVN)
     r = compute_confidence(inputs, default_params())
     factors = {c.factor for c in r.contributions}
     assert factors == {
