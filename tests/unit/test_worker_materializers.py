@@ -34,6 +34,10 @@ from ce_v5.platform.rules.orderflow import (
     compute_delta_momentum,
     orderflow_delta_momentum_declaration,
 )
+from ce_v5.platform.rules.pivotphase import (
+    PIVOTPHASE_CONFIDENCE_SOURCE_ID,
+    PIVOTPHASE_PHASE_SOURCE_ID,
+)
 from ce_v5.platform.rules.volume_profile import (
     DEFAULT_BIN_COUNT,
     VP_HVN_SOURCE_ID,
@@ -136,6 +140,8 @@ class TestRegistroPorSourceId:
             CVD_SOURCE_ID,
             ORDERFLOW_DELTA_MOMENTUM_SOURCE_ID,
             "footprint.price_range",
+            PIVOTPHASE_PHASE_SOURCE_ID,
+            PIVOTPHASE_CONFIDENCE_SOURCE_ID,
         }
 
     @pytest.mark.parametrize(

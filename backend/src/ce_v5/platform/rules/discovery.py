@@ -14,6 +14,7 @@ from ce_v5.platform.rules import (
     cvd,
     footprint_range,
     orderflow,
+    pivotphase,
     rawclose,
     rawfootprint,
     volume_profile,
@@ -30,4 +31,5 @@ def discover_declarations() -> tuple[DataSourceDeclaration, ...]:
         *orderflow.declarations(),
         *cvd.declarations(),
         *footprint_range.declarations(),
+        *pivotphase.declarations(),
     )

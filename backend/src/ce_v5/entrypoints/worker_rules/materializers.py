@@ -14,6 +14,8 @@ cableadas (MAT-07, DAG bottom-up footprint -> delta -> cvd):
 - cvd.value: INTEGRATOR sobre el delta (CvdIntegratorSpec, replay desde snapshot).
 - orderflow.delta_momentum: WINDOWED sobre orderflow.delta (DerivedSeriesSpec, DAG de
   2o nivel: consume otra fuente DERIVADA, no el footprint crudo; MAT-08).
+- pivotphase.phase/confidence: RECURSIVE, replay propio desde snapshot
+  (PivotphasePhaseSpec/PivotphaseConfidenceSpec, glue en pivotphase_materializer; T5).
 market.close conserva su lectura directa (read_close_window) en _series_for.
 
 Con delta_momentum cableada NO queda ninguna fuente servible del catalogo vivo sin
@@ -29,6 +31,10 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import TYPE_CHECKING, Protocol
 
+from ce_v5.entrypoints.worker_rules.pivotphase_materializer import (
+    PivotphaseConfidenceSpec,
+    PivotphasePhaseSpec,
+)
 from ce_v5.infra.db.cvd_snapshot import read_cvd_snapshot_before, write_cvd_snapshot
 from ce_v5.infra.db.market_footprint import (
     read_footprint_delta_range,
@@ -47,6 +53,10 @@ from ce_v5.platform.rules.orderflow import (
     ORDERFLOW_DELTA_MOMENTUM_SOURCE_ID,
     ORDERFLOW_DELTA_SOURCE_ID,
     compute_delta_momentum,
+)
+from ce_v5.platform.rules.pivotphase import (
+    PIVOTPHASE_CONFIDENCE_SOURCE_ID,
+    PIVOTPHASE_PHASE_SOURCE_ID,
 )
 from ce_v5.platform.rules.volume_profile import (
     DEFAULT_BIN_COUNT,
@@ -312,4 +322,6 @@ SOURCE_MATERIALIZERS: dict[str, SourceMaterializer] = {
         lookback=1,
     ),
     FOOTPRINT_PRICE_RANGE_SOURCE_ID: FootprintPointLocalSpec(extract=price_range),
+    PIVOTPHASE_PHASE_SOURCE_ID: PivotphasePhaseSpec(),
+    PIVOTPHASE_CONFIDENCE_SOURCE_ID: PivotphaseConfidenceSpec(),
 }
