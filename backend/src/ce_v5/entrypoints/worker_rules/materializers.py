@@ -9,11 +9,13 @@ SOURCE_ID contra este registro.
 Cada materializador implementa el Protocol SourceMaterializer (structural): sabe leer
 su base y producir su serie tuple[Decimal, ...] oldest->newest. En v5.0 estan
 cableadas (MAT-07, DAG bottom-up footprint -> delta -> cvd):
-- vp.poc/vah/val: WINDOWED sobre footprint (FootprintWindowedSpec, ventana 100).
+- vp.poc/vah/val/hvn/lvn: WINDOWED sobre footprint (FootprintWindowedSpec, ventana 100).
 - orderflow.delta: POINT_LOCAL sobre footprint (FootprintPointLocalSpec, bar_delta).
 - cvd.value: INTEGRATOR sobre el delta (CvdIntegratorSpec, replay desde snapshot).
 - orderflow.delta_momentum: WINDOWED sobre orderflow.delta (DerivedSeriesSpec, DAG de
   2o nivel: consume otra fuente DERIVADA, no el footprint crudo; MAT-08).
+- pivotphase.phase/confidence: RECURSIVE, replay propio desde snapshot
+  (PivotphasePhaseSpec/PivotphaseConfidenceSpec, glue en pivotphase_materializer; T5).
 market.close conserva su lectura directa (read_close_window) en _series_for.
 
 Con delta_momentum cableada NO queda ninguna fuente servible del catalogo vivo sin
@@ -29,12 +31,20 @@ from dataclasses import dataclass
 from decimal import Decimal
 from typing import TYPE_CHECKING, Protocol
 
+from ce_v5.entrypoints.worker_rules.pivotphase_materializer import (
+    PivotphaseConfidenceSpec,
+    PivotphasePhaseSpec,
+)
 from ce_v5.infra.db.cvd_snapshot import read_cvd_snapshot_before, write_cvd_snapshot
 from ce_v5.infra.db.market_footprint import (
     read_footprint_delta_range,
     read_footprint_window,
 )
 from ce_v5.platform.rules.cvd import CVD_SOURCE_ID, ResetPolicy
+from ce_v5.platform.rules.footprint_range import (
+    FOOTPRINT_PRICE_RANGE_SOURCE_ID,
+    price_range,
+)
 from ce_v5.platform.rules.materializer import (
     materialize_recursive,
     materialize_windowed,
@@ -44,12 +54,20 @@ from ce_v5.platform.rules.orderflow import (
     ORDERFLOW_DELTA_SOURCE_ID,
     compute_delta_momentum,
 )
+from ce_v5.platform.rules.pivotphase import (
+    PIVOTPHASE_CONFIDENCE_SOURCE_ID,
+    PIVOTPHASE_PHASE_SOURCE_ID,
+)
 from ce_v5.platform.rules.volume_profile import (
     DEFAULT_BIN_COUNT,
+    VP_HVN_SOURCE_ID,
+    VP_LVN_SOURCE_ID,
     VP_POC_SOURCE_ID,
     VP_VAH_SOURCE_ID,
     VP_VAL_SOURCE_ID,
     compute_volume_profile,
+    select_hvn_price,
+    select_lvn_price,
 )
 
 if TYPE_CHECKING:
@@ -277,6 +295,14 @@ def _val(window: Sequence[FootprintPayload]) -> Decimal:
     return compute_volume_profile(window, bin_count=DEFAULT_BIN_COUNT).val
 
 
+def _hvn(window: Sequence[FootprintPayload]) -> Decimal:
+    return select_hvn_price(window, bin_count=DEFAULT_BIN_COUNT)
+
+
+def _lvn(window: Sequence[FootprintPayload]) -> Decimal:
+    return select_lvn_price(window, bin_count=DEFAULT_BIN_COUNT)
+
+
 def _bar_delta(footprint: FootprintPayload) -> Decimal:
     return footprint.bar_delta
 
@@ -286,6 +312,8 @@ SOURCE_MATERIALIZERS: dict[str, SourceMaterializer] = {
     VP_POC_SOURCE_ID: FootprintWindowedSpec(transform=_poc),
     VP_VAH_SOURCE_ID: FootprintWindowedSpec(transform=_vah),
     VP_VAL_SOURCE_ID: FootprintWindowedSpec(transform=_val),
+    VP_HVN_SOURCE_ID: FootprintWindowedSpec(transform=_hvn),
+    VP_LVN_SOURCE_ID: FootprintWindowedSpec(transform=_lvn),
     ORDERFLOW_DELTA_SOURCE_ID: FootprintPointLocalSpec(extract=_bar_delta),
     CVD_SOURCE_ID: CvdIntegratorSpec(),
     ORDERFLOW_DELTA_MOMENTUM_SOURCE_ID: DerivedSeriesSpec(
@@ -293,4 +321,7 @@ SOURCE_MATERIALIZERS: dict[str, SourceMaterializer] = {
         transform=compute_delta_momentum,
         lookback=1,
     ),
+    FOOTPRINT_PRICE_RANGE_SOURCE_ID: FootprintPointLocalSpec(extract=price_range),
+    PIVOTPHASE_PHASE_SOURCE_ID: PivotphasePhaseSpec(),
+    PIVOTPHASE_CONFIDENCE_SOURCE_ID: PivotphaseConfidenceSpec(),
 }

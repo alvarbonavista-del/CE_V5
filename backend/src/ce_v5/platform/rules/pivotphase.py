@@ -34,11 +34,15 @@ from dataclasses import dataclass, replace
 from decimal import Decimal
 from enum import IntEnum
 
+from ce_v5.platform.rules.footprint_range import FOOTPRINT_PRICE_RANGE_SOURCE_ID
 from ce_v5.platform.rules.orderflow import (
     ORDERFLOW_DELTA_MOMENTUM_SOURCE_ID,
     ORDERFLOW_DELTA_SOURCE_ID,
 )
+from ce_v5.platform.rules.rawclose import MARKET_CLOSE_SOURCE_ID
 from ce_v5.platform.rules.volume_profile import (
+    VP_HVN_SOURCE_ID,
+    VP_LVN_SOURCE_ID,
     VP_POC_SOURCE_ID,
     VP_VAH_SOURCE_ID,
     VP_VAL_SOURCE_ID,
@@ -336,8 +340,7 @@ def _on_exhaustion(
 
 
 # ---------------------------------------------------------------------------
-# Declaracion al catalogo (ADR-008). SIN CABLEAR en discovery.py: cableado vivo
-# en P5, cuando absorption.* y candle.open esten en main.
+# Declaracion al catalogo (ADR-008). Cableada en discovery.py (P5, DICTAMEN PIVOT-10).
 # ---------------------------------------------------------------------------
 
 PIVOTPHASE_PHASE_SOURCE_ID = "pivotphase.phase"
@@ -346,11 +349,6 @@ PIVOTPHASE_CONFIDENCE_SOURCE_ID = "pivotphase.confidence"
 # Version de la formula: la FSM puede cambiar de SEMANTICA (gates, orden de fases) SIN
 # cambio de parametro, asi que formula_version va EN la cache_key (regla 3, MAT-03).
 PIVOTPHASE_FORMULA_VERSION = "pivotphase.v1"
-
-# notrade.* aun NO declara source_id propio (su declaracion esta DIFERIDA hasta que
-# candle.* sea servible, como absorption/climax/void). Se referencia aqui por el id
-# canonico previsto de su score 0-100; queda a confirmar por Central al declararlo.
-NOTRADE_SCORE_SOURCE_ID = "notrade.score"
 
 # Dimensiones del cache_key: las cuatro de flujo + reset_policy (la secuencia de la FSM
 # es RECURSIVA y su punto de reinicio es un HECHO DISTINTO, como en cvd.value) +
@@ -364,16 +362,19 @@ _PIVOTPHASE_CACHE_KEY_SCHEMA: tuple[str, ...] = (
     "formula_version",
 )
 
-# consumes: el DAG de insumos de la FSM que YA existe o esta previsto en el catalogo.
-# absorption.* NO se lista AHORA a proposito: esta DIFERIDA (candle.open, P08b) y
-# anadirla romperia el DAG del catalogo vivo. Se ANADE en P5.
+# consumes: el DAG de insumos de la FSM (DICTAMEN PIVOT-10). absorption.* NO se lista
+# AHORA a proposito: esta DIFERIDA (candle.open, P08b) y anadirla romperia el DAG del
+# catalogo vivo. Se ANADE en P5.
 _PIVOTPHASE_CONSUMES: tuple[str, ...] = (
+    MARKET_CLOSE_SOURCE_ID,
     ORDERFLOW_DELTA_SOURCE_ID,
     ORDERFLOW_DELTA_MOMENTUM_SOURCE_ID,
+    FOOTPRINT_PRICE_RANGE_SOURCE_ID,
     VP_POC_SOURCE_ID,
     VP_VAH_SOURCE_ID,
     VP_VAL_SOURCE_ID,
-    NOTRADE_SCORE_SOURCE_ID,
+    VP_HVN_SOURCE_ID,
+    VP_LVN_SOURCE_ID,
 )
 
 
@@ -420,9 +421,8 @@ def pivotphase_confidence_declaration() -> DataSourceDeclaration:
 
 
 def declarations() -> tuple[DataSourceDeclaration, ...]:
-    """Declaraciones de pivotphase. NO cableada en discovery.py todavia.
-
-    Cableado vivo en P5, cuando absorption.* y candle.open esten en main.
+    """Declaraciones de pivotphase que este modulo publica al catalogo vivo
+    (discovery).
     """
     return (
         pivotphase_phase_declaration(),

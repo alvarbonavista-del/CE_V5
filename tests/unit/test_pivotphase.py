@@ -470,22 +470,28 @@ def test_declaracion_confidence_solo_declarada() -> None:
 
 
 def test_consumes_no_incluye_absorption_todavia() -> None:
-    """absorption.* se ANADE en P5: listarla ahora romperia el DAG del catalogo vivo."""
+    """absorption.* se ANADE mas adelante: listarla ahora romperia el DAG del
+    catalogo vivo (DICTAMEN PIVOT-10: 9 aristas, sin notrade.score).
+    """
     for declaration in declarations():
         assert declaration.consumes == (
+            "market.close",
             "orderflow.delta",
             "orderflow.delta_momentum",
+            "footprint.price_range",
             "vp.poc",
             "vp.vah",
             "vp.val",
-            "notrade.score",
+            "vp.hvn",
+            "vp.lvn",
         )
         assert not any(c.startswith("absorption.") for c in declaration.consumes)
 
 
-def test_declaracion_no_esta_cableada_en_el_discovery_vivo() -> None:
-    """P3 NO cablea: el catalogo vivo sigue sin pivotphase.* (cableado en P5)."""
+def test_declaracion_esta_cableada_en_el_discovery_vivo() -> None:
+    """P5 (DICTAMEN PIVOT-10): el catalogo vivo ya incluye pivotphase.*."""
     from ce_v5.platform.rules.discovery import discover_declarations
 
     ids = {d.source_id for d in discover_declarations()}
-    assert not any(i.startswith("pivotphase.") for i in ids)
+    assert PIVOTPHASE_PHASE_SOURCE_ID in ids
+    assert PIVOTPHASE_CONFIDENCE_SOURCE_ID in ids

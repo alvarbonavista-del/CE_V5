@@ -30,6 +30,8 @@ from ce_v5.platform.rules.volume_profile import (
     VolumeProfileError,
     compute_volume_nodes,
     compute_volume_profile,
+    select_hvn_price,
+    select_lvn_price,
     vp_hvn_declaration,
     vp_lvn_declaration,
     vp_poc_declaration,
@@ -239,6 +241,80 @@ class TestNodos:
         params = VolumeNodeParams(hvn_multiplier=Decimal("5.0"))
         nodes = compute_volume_nodes(self._WINDOW, bin_count=10, params=params)
         assert nodes.hvn == ()
+
+
+class TestSelectNodePrice:
+    """select_hvn_price/select_lvn_price [DICTAMEN P08c-PIVOT-08-bis]: el PRIMER
+    candidato del orden interno de deteccion (mismo _volume_node_indices que
+    compute_volume_nodes), antes de reordenar por precio. Los umbrales se relajan via
+    VolumeNodeParams para aislar la regla de SELECCION (mayor/menor volumen, empate a
+    menor precio) de la mecanica de umbral/Value Area, ya cubierta por TestNodos.
+    """
+
+    def _hvn_window(self, low: str, high: str) -> list[FootprintClosedPayload]:
+        # bin_count=9, min=100 max=109 (precio 109 cae en el ultimo bin por el tope de
+        # _build_bins) -> bin_width=(109-100)/9=1.0 EXACTO. POC en idx4 (vol dominante,
+        # a distancia 4 > adjacency_bins=3 de ambos extremos, no los excluye).
+        return [
+            _footprint([("100", low, "0"), ("104", "1000", "0"), ("109", high, "0")])
+        ]
+
+    def test_hvn_de_distinto_volumen_elige_el_de_mayor_volumen(self) -> None:
+        window = self._hvn_window("50", "30")
+        params = VolumeNodeParams(hvn_multiplier=Decimal("0"))
+        assert select_hvn_price(window, bin_count=9, params=params) == Decimal("100.5")
+
+    def test_hvn_empate_de_volumen_elige_el_de_menor_precio(self) -> None:
+        window = self._hvn_window("50", "50")
+        params = VolumeNodeParams(hvn_multiplier=Decimal("0"))
+        assert select_hvn_price(window, bin_count=9, params=params) == Decimal("100.5")
+
+    def test_hvn_sin_candidato_sobre_umbral_cae_al_poc(self) -> None:
+        # [PARIDAD v4] TestNodos._WINDOW con el umbral por defecto (5.0): ningun bin
+        # supera media*5=210 -> sin candidatos. Fallback: el POC (idx5, centro 105.5).
+        params = VolumeNodeParams(hvn_multiplier=Decimal("5.0"))
+        result = select_hvn_price(TestNodos._WINDOW, bin_count=10, params=params)
+        assert result == Decimal("105.5")
+
+    def test_lvn_de_distinto_volumen_elige_el_de_menor_volumen(self) -> None:
+        # 9 bins consecutivos (sin huecos: idx0..8 todos ocupados) para que el rango
+        # de Value Area completo (value_area_pct=1) no meta bins vacios como candidatos
+        # LVN espurios. idx0=5 (menor), idx8=9, resto=6 de relleno, POC=1000 en idx4.
+        window = [
+            _footprint(
+                [
+                    ("100", "5", "0"),
+                    ("101", "6", "0"),
+                    ("102", "6", "0"),
+                    ("103", "6", "0"),
+                    ("104", "1000", "0"),
+                    ("105", "6", "0"),
+                    ("106", "6", "0"),
+                    ("107", "6", "0"),
+                    ("109", "9", "0"),
+                ]
+            )
+        ]
+        params = VolumeNodeParams(lvn_multiplier=Decimal("1000"))
+        result = select_lvn_price(
+            window, bin_count=9, value_area_pct=Decimal("1"), params=params
+        )
+        assert result == Decimal("100.5")
+
+    def test_lvn_sin_candidato_bajo_umbral_cae_al_bin_ocupado_de_menor_volumen(
+        self,
+    ) -> None:
+        # [PARIDAD v4] TestNodos._WINDOW con lvn_multiplier=0: ni siquiera los bins
+        # vacios (volumen 0) cumplen "< 0" -> sin candidatos. Fallback: el bin OCUPADO
+        # de menor volumen (b3/b7/b9 empatan a 10; menor indice = b3, centro 103.5).
+        params = VolumeNodeParams(lvn_multiplier=Decimal("0"))
+        result = select_lvn_price(TestNodos._WINDOW, bin_count=10, params=params)
+        assert result == Decimal("103.5")
+
+    def test_precio_unico_da_hvn_lvn_degenerados(self) -> None:
+        window = [_footprint([("100", "10", "0")])]
+        assert select_hvn_price(window, bin_count=5) == Decimal("100")
+        assert select_lvn_price(window, bin_count=5) == Decimal("100")
 
 
 class TestNodosDeclaraciones:

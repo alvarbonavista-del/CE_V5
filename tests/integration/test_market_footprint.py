@@ -41,6 +41,10 @@ from ce_v5.infra.db.market_footprint import (
     read_footprint_window,
 )
 from ce_v5.infra.db.outbox_publisher import OutboxPublisher, topic_for
+from ce_v5.infra.db.pivotphase_snapshot import (
+    read_pivotphase_snapshot_before,
+    write_pivotphase_snapshot,
+)
 from ce_v5.infra.db.psycopg_adapter import PsycopgDatabase
 from ce_v5.platform.rules.cvd import CVD_SOURCE_ID, ResetPolicy
 from ce_v5.platform.rules.orderflow import (
@@ -897,6 +901,138 @@ class TestStoreDelSnapshotDeCvd:
         ancla = _leer_ancla(rules_db, _OPEN + 1)
         assert ancla is not None
         assert ancla[1] == valor
+
+
+@pytest.fixture
+def limpiar_pivotphase_snapshot(migrator_db: PsycopgDatabase) -> Iterator[None]:
+    """pivotphase_snapshot: sin FK a nadie, se acumularia entre ejecuciones (como
+    cvd_snapshot).
+
+    Se limpia con el rol de MIGRACIONES a proposito: el rol de reglas NO tiene DELETE
+    sobre su propio estado (append-only, 0024), asi que no podria hacerlo ni para un
+    test -- y eso es exactamente lo que el check 5.20 garantiza.
+    """
+
+    def _wipe() -> None:
+        with migrator_db.transaction() as session:
+            session.execute("DELETE FROM pivotphase_snapshot")
+
+    _wipe()
+    yield
+    _wipe()
+
+
+_PARAMS_VERSION = "v1"
+_PARAMS_VERSION_B = "v2"
+
+
+def _escribir_pivotphase_snapshot(
+    rules_db: PsycopgDatabase,
+    open_time: int,
+    state: str,
+    confidence: Decimal | None,
+    params_version: str = _PARAMS_VERSION,
+) -> None:
+    """Escribe un snapshot con el rol de REGLAS (el INSERT que le dio la 0024)."""
+    with rules_db.transaction() as session:
+        write_pivotphase_snapshot(
+            session,
+            "binance",
+            "BTC-USDT",
+            _TF.value,
+            params_version,
+            open_time,
+            state,
+            confidence,
+        )
+
+
+def _leer_pivotphase_ancla(
+    rules_db: PsycopgDatabase,
+    open_time: int,
+    params_version: str = _PARAMS_VERSION,
+) -> tuple[int, str, Decimal | None] | None:
+    with rules_db.transaction() as session:
+        return read_pivotphase_snapshot_before(
+            session, "binance", "BTC-USDT", _TF.value, params_version, open_time
+        )
+
+
+class TestStoreDelSnapshotDePivotphase:
+    """P08c P5 T1: el estado de replay del RECURSIVE pivotphase, escrito y leido por
+    el ROL DE REGLAS (mismo regimen que cvd_snapshot, 0024).
+    """
+
+    def test_write_y_read_before_devuelve_el_snapshot_escrito(
+        self,
+        rules_db: PsycopgDatabase,
+        limpiar_pivotphase_snapshot: None,
+    ) -> None:
+        _escribir_pivotphase_snapshot(
+            rules_db, _OPEN, "estado-serializado", Decimal("42.50")
+        )
+        assert _leer_pivotphase_ancla(rules_db, _OPEN) == (
+            _OPEN,
+            "estado-serializado",
+            Decimal("42.50"),
+        )
+
+    def test_reinsertar_la_misma_barra_es_idempotente(
+        self,
+        rules_db: PsycopgDatabase,
+        limpiar_pivotphase_snapshot: None,
+    ) -> None:
+        # Reevaluar la misma barra recomputa el MISMO estado (determinista), asi que
+        # el segundo INSERT es un duplicado exacto: ON CONFLICT DO NOTHING lo absorbe.
+        _escribir_pivotphase_snapshot(rules_db, _OPEN, "estado", Decimal("10"))
+        _escribir_pivotphase_snapshot(rules_db, _OPEN, "estado", Decimal("10"))
+
+        assert (
+            _contar(
+                rules_db,
+                "SELECT count(*) FROM pivotphase_snapshot WHERE open_time = %s",
+                (_OPEN,),
+            )
+            == 1
+        )
+
+    def test_sin_ancla_anterior_devuelve_none(
+        self,
+        rules_db: PsycopgDatabase,
+        limpiar_pivotphase_snapshot: None,
+    ) -> None:
+        # None NO es un cero ni un IDLE implicito: significa "no hay ancla", y el
+        # materializador arranca desde PivotState() (bootstrap).
+        assert _leer_pivotphase_ancla(rules_db, _OPEN) is None
+
+    def test_aislamiento_por_params_version(
+        self,
+        rules_db: PsycopgDatabase,
+        limpiar_pivotphase_snapshot: None,
+    ) -> None:
+        # Dos params_version son HECHOS DISTINTOS (como reset_policy en cvd_snapshot,
+        # OA-1): un snapshot de una version no es el ancla de otra.
+        _escribir_pivotphase_snapshot(
+            rules_db, _OPEN, "estado-v1", Decimal("50"), _PARAMS_VERSION
+        )
+        assert _leer_pivotphase_ancla(rules_db, _OPEN, _PARAMS_VERSION_B) is None
+        assert _leer_pivotphase_ancla(rules_db, _OPEN, _PARAMS_VERSION) == (
+            _OPEN,
+            "estado-v1",
+            Decimal("50"),
+        )
+
+    def test_confidence_none_se_guarda_y_se_lee_como_none(
+        self,
+        rules_db: PsycopgDatabase,
+        limpiar_pivotphase_snapshot: None,
+    ) -> None:
+        # confidence None (NOT_EVALUABLE, ningun factor activo evaluable) es un dato
+        # legitimo del modelo: debe persistir y volver como None, no como 0.
+        _escribir_pivotphase_snapshot(rules_db, _OPEN, "estado-not-evaluable", None)
+        ancla = _leer_pivotphase_ancla(rules_db, _OPEN)
+        assert ancla is not None
+        assert ancla[2] is None
 
 
 class TestLectorDeRangoDeBarDelta:

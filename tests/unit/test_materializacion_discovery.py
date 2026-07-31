@@ -16,6 +16,9 @@ _EXPECTED = {
     "orderflow.delta",
     "orderflow.delta_momentum",
     "cvd.value",
+    "footprint.price_range",
+    "pivotphase.phase",
+    "pivotphase.confidence",
 }
 
 

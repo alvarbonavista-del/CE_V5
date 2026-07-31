@@ -477,27 +477,24 @@ class VolumeNodeParams:
 _DEFAULT_NODE_PARAMS = VolumeNodeParams()
 
 
-def compute_volume_nodes(
-    window: Sequence[FootprintPayload],
-    *,
-    bin_count: int = DEFAULT_BIN_COUNT,
-    value_area_pct: Decimal = DEFAULT_VALUE_AREA_PCT,
-    params: VolumeNodeParams = _DEFAULT_NODE_PARAMS,
-) -> VolumeNodes:
-    """HVN/LVN sobre el MISMO perfil binado que vp.poc/vah/val. [PARIDAD v4].
+def _volume_node_indices(
+    bins: _Bins, params: VolumeNodeParams
+) -> tuple[list[int], list[int]]:
+    """Candidatos HVN/LVN de un perfil binado NO degenerado, en orden de PRIORIDAD.
 
-    media = volumen_total / bins OCUPADOS (NO se promedia sobre bins vacios). HVN: bins
-    ocupados con volumen > media*hvn_mult, excluido el POC y sus adyacentes (por INDICE
-    de bin), ordenados por volumen DESCENDENTE (desempate por indice ascendente), dedup
-    por adyacencia, tope hvn_max. LVN: TODOS los bins de [val_index, vah_index] --
-    incluidos los VACIOS, que valen 0 y empatan -- con volumen < media*lvn_mult,
-    ordenados por volumen ASCENDENTE y desempate por indice ASCENDENTE (reproducible bit
-    a bit), dedup por adyacencia, tope lvn_max. Rango nulo -> sin nodos.
+    Factoriza el nucleo de deteccion compartido por compute_volume_nodes y
+    select_hvn_price/select_lvn_price (CSA: un solo calculo, dos consumidores). media =
+    volumen_total / bins OCUPADOS (NO se promedia sobre bins vacios). HVN: bins ocupados
+    con volumen > media*hvn_mult, excluido el POC y sus adyacentes (por INDICE de bin),
+    ordenados por volumen DESCENDENTE (desempate por indice ascendente = precio
+    ascendente), dedup por adyacencia, tope hvn_max. LVN: TODOS los bins de [val_index,
+    vah_index] -- incluidos los VACIOS, que valen 0 y empatan -- con volumen <
+    media*lvn_mult, ordenados por volumen ASCENDENTE y desempate por indice ASCENDENTE
+    (reproducible bit a bit), dedup por adyacencia, tope lvn_max. El orden de cada lista
+    es de PRIORIDAD (el nodo mas fuerte primero), NO de precio: select_hvn_price/
+    select_lvn_price leen su primer elemento directamente; compute_volume_nodes reordena
+    por precio para su tupla publica.
     """
-    bins = _build_bins(window, bin_count=bin_count, value_area_pct=value_area_pct)
-    if bins.degenerate_price is not None:
-        return VolumeNodes(hvn=(), lvn=())
-
     occupied = bins.volume_by_bin
     mean_bin_volume = bins.total_volume / Decimal(len(occupied))
 
@@ -519,6 +516,27 @@ def compute_volume_nodes(
     lvn_candidates.sort(key=lambda index: (occupied.get(index, Decimal(0)), index))
     lvn_indices = _dedup_adjacent(lvn_candidates, params.adjacency_bins, params.lvn_max)
 
+    return hvn_indices, lvn_indices
+
+
+def compute_volume_nodes(
+    window: Sequence[FootprintPayload],
+    *,
+    bin_count: int = DEFAULT_BIN_COUNT,
+    value_area_pct: Decimal = DEFAULT_VALUE_AREA_PCT,
+    params: VolumeNodeParams = _DEFAULT_NODE_PARAMS,
+) -> VolumeNodes:
+    """HVN/LVN sobre el MISMO perfil binado que vp.poc/vah/val. [PARIDAD v4].
+
+    La deteccion (umbrales, exclusion del POC, dedup por adyacencia, tope) vive en
+    _volume_node_indices; aqui solo se reordena por PRECIO (ascendente) para la tupla
+    publica. Rango nulo -> sin nodos.
+    """
+    bins = _build_bins(window, bin_count=bin_count, value_area_pct=value_area_pct)
+    if bins.degenerate_price is not None:
+        return VolumeNodes(hvn=(), lvn=())
+
+    hvn_indices, lvn_indices = _volume_node_indices(bins, params)
     return VolumeNodes(
         hvn=tuple(
             _bin_center(bins.min_price, index, bins.bin_width)
@@ -529,6 +547,58 @@ def compute_volume_nodes(
             for index in sorted(lvn_indices)
         ),
     )
+
+
+def select_hvn_price(
+    window: Sequence[FootprintPayload],
+    *,
+    bin_count: int = DEFAULT_BIN_COUNT,
+    value_area_pct: Decimal = DEFAULT_VALUE_AREA_PCT,
+    params: VolumeNodeParams = _DEFAULT_NODE_PARAMS,
+) -> Decimal:
+    """Precio del nodo HVN de MAYOR volumen [DICTAMEN P08c-PIVOT-08-bis].
+
+    Es el PRIMER candidato del orden de _volume_node_indices (por -volumen, indice
+    ascendente): el nodo de mayor volumen; empate de volumen -> menor precio (indice
+    ascendente = precio ascendente). FALLBACK determinista si el perfil es valido pero
+    no hay candidato sobre el umbral: el bin de MAYOR volumen del perfil (el POC, que ya
+    desempata por menor indice = menor precio). Rango DEGENERADO (todo el volumen a un
+    precio): ese unico precio.
+    """
+    bins = _build_bins(window, bin_count=bin_count, value_area_pct=value_area_pct)
+    if bins.degenerate_price is not None:
+        return bins.degenerate_price
+
+    hvn_indices, _ = _volume_node_indices(bins, params)
+    index = hvn_indices[0] if hvn_indices else bins.poc_index
+    return _bin_center(bins.min_price, index, bins.bin_width)
+
+
+def select_lvn_price(
+    window: Sequence[FootprintPayload],
+    *,
+    bin_count: int = DEFAULT_BIN_COUNT,
+    value_area_pct: Decimal = DEFAULT_VALUE_AREA_PCT,
+    params: VolumeNodeParams = _DEFAULT_NODE_PARAMS,
+) -> Decimal:
+    """Precio del nodo LVN de MENOR volumen [DICTAMEN P08c-PIVOT-08-bis].
+
+    Es el PRIMER candidato del orden de _volume_node_indices (por volumen, indice
+    ascendente): el nodo de menor volumen; empate de volumen -> menor precio. FALLBACK
+    determinista si el perfil es valido pero no hay candidato bajo el umbral: el bin
+    OCUPADO de MENOR volumen del perfil (desempate por menor indice = menor precio).
+    Rango DEGENERADO (todo el volumen a un precio): ese unico precio.
+    """
+    bins = _build_bins(window, bin_count=bin_count, value_area_pct=value_area_pct)
+    if bins.degenerate_price is not None:
+        return bins.degenerate_price
+
+    _, lvn_indices = _volume_node_indices(bins, params)
+    if lvn_indices:
+        index = lvn_indices[0]
+    else:
+        index = min(bins.volume_by_bin, key=lambda i: (bins.volume_by_bin[i], i))
+    return _bin_center(bins.min_price, index, bins.bin_width)
 
 
 def _dedup_adjacent(ordered_indices: list[int], adjacency: int, cap: int) -> list[int]:
