@@ -3,9 +3,12 @@
 Archivo vivo (sin logica). Mantenido por Claude Code; Alvaro lo resube
 al knowledge al cerrar cada pieza o hito (DOC_ENTREGABLES sec.8).
 
-Ultima actualizacion: 2026-07-30 (P08c sub-pieza MATERIALIZACION CERRADA: merge ca4d5f4
-en main, Actions verde 3/3 run 30564656066, ci_local 24/24. P08c NO entregada -avanza por
-sub-piezas-. M3 SIGUE ABIERTO en 4 de 7: faltan P08b, P08c completa y P09a).
+Ultima actualizacion: 2026-07-31 (P08c sub-pieza PIVOTPHASE CERRADA: merge f0a728b en
+main, Actions verde 3/3 run 30664591767. P08c NO entregada -avanza por sub-piezas-. M3
+SIGUE ABIERTO en 4 de 7: faltan P08b, P08c completa y P09a).
+
+Anterior: 2026-07-30 (P08c sub-pieza MATERIALIZACION CERRADA: merge ca4d5f4
+en main, Actions verde 3/3 run 30564656066, ci_local 24/24).
 
 Anterior: 2026-07-26 (P07c ENTREGADA: orderbook L2 con estado, cierre formal
 Central+CSA firmado por Alvaro; HEAD 8869ec9, PR #3 mergeado a main).
@@ -256,6 +259,38 @@ se escribio y se conserva sin tocar; queda DEROGADA hacia delante (regla
   P08c-R1); P08c cierra esta sub-pieza SIN deuda hacia P08b.
   M3: sigue 4 de 7; SIGUE ABIERTO (P08c no cuenta como entregada; faltan P08b, P08c
   completa y P09a). Ver REGISTRO_DECISIONES seccion 30.
+  Sub-pieza delta_momentum CERRADA. Merge commit 9025588. Cablea
+  orderflow.delta_momentum como DAG de 2o NIVEL (DerivedSeriesSpec sobre
+  orderflow.delta, MAT-08): cierra el unico "sin cablear" que dejaba la sub-pieza de
+  materializacion.
+  Sub-pieza PIVOTPHASE CERRADA 2026-07-31. Merge commit f0a728b (wip/p08c-pivot-wire ->
+  main, --no-ff). Actions run 30664591767, 3/3 success sobre el merge. ci_local en la
+  maquina local 23/24 con el UNICO rojo el check 7.8 (ema_snapshot, tabla de la pieza
+  hermana P08b viva en el Postgres local compartido y AJENA a esta rama: clausula A del
+  DICTAMEN P08c-CI-01); en CI, que aprovisiona la BD solo con las migraciones de la
+  rama, el 7.8 sale VERDE y la bateria queda 24/24.
+  Que deja en pie: la FSM de pivote 0-5 (IDLE / IMPULSE / ENCOUNTER / ABSORPTION /
+  EXHAUSTION / FLIP) en paridad SEMANTICA con v4, como nucleo PURO y determinista
+  (solo Decimal, ADR-007), mas un modelo de CONFIANZA 0-100 declarado por factores.
+  FACTORES ACTIVOS: F2 (agotamiento), F4 (esfuerzo/resultado) y F6 (contexto de volume
+  profile, por DISTANCIA del precio a vp.hvn/vp.lvn). FACTORES DIFERIDOS: F1
+  (absorption.*/candle.open, P08b), F3 (swing.*, P08b), F5 (imbalance) y F7 (notrade,
+  hoy NO consumible en el catalogo). Con 3 de 7 factores activos el TECHO de confianza
+  alcanzable es 60, no 100: es una limitacion DECLARADA, no un defecto.
+  Materializacion RECURSIVE propia: pivotphase.phase y pivotphase.confidence se sirven
+  replayando la FSM desde IDLE sobre (history_bars + NORM_WINDOW=100) barras, con las
+  primeras NORM_WINDOW como lookback que AVANZA la FSM sin emitirse (Estrategia A,
+  PIVOT-09). Como las secuencias de la FSM son bounded (< NORM_WINDOW), ese bootstrap
+  reconstruye el estado entero y el snapshot queda como AS-OF/auditoria, no como
+  continuidad. Migracion nueva: 0024 (pivotphase_snapshot, scope=system, append-only,
+  el rol ce_v5_rules escribe su propio estado de replay).
+  Fuentes NUEVAS o cableadas en esta sub-pieza: footprint.price_range (POINT_LOCAL,
+  fuente nueva que consume F4), vp.hvn y vp.lvn (WINDOWED, con regla determinista de
+  seleccion -mayor/menor volumen, empate a menor precio- y fallbacks documentados),
+  pivotphase.phase y pivotphase.confidence (RECURSIVE, declaradas en el catalogo vivo
+  Y registradas en SOURCE_MATERIALIZERS: cableado CE-14 completo).
+  M3: sigue 4 de 7; SIGUE ABIERTO. Ver REGISTRO_DECISIONES seccion 32
+  (PIVOT-01..PIVOT-10).
 
 ## Nota EXP-M3-01 (2026-07-17): M3 AMPLIADO A PARIDAD FUNCIONAL v4
 M3 queda AMPLIADO a paridad funcional v4. Firmado por Alvaro 2026-07-17, con doble

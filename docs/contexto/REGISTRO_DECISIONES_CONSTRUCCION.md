@@ -2105,3 +2105,161 @@ orderflow.delta_momentum.
 
 ADR: sin ADR nuevo. Esta sub-pieza NO cierra P08c ni M3.
 =====================================================================
+
+31. CIERRE DE SUB-PIEZA P08c - orderflow.delta_momentum (DAG DE 2o NIVEL)
+=====================================================================
+Estado: CERRADA (sub-pieza). Merge commit 9025588. Cierra el UNICO "sin cablear" que
+dejaba la sub-pieza de materializacion (seccion 30).
+
+QUE RESUELVE. orderflow.delta_momentum se cablea como DAG de SEGUNDO NIVEL: consume otra
+fuente DERIVADA (orderflow.delta), no el footprint crudo. Materializador nuevo
+DerivedSeriesSpec (base_source_id + transform de serie + lookback), que materializa la
+base por su propio source_id contra el registro y aplica el transform puro sobre la serie
+completa. lookback=1 (el diff barra-a-barra necesita la barra previa para que el primer
+valor de la ventana pedida use su contexto real).
+
+MAT-08. Si la fuente BASE de un DerivedSeriesSpec no esta en el registro, se levanta
+UnwiredSourceError: el fallo ruidoso de MAT-06 se extiende al DAG de 2o nivel, para que
+una cadena rota no sirva una serie equivocada.
+
+ADR: sin ADR nuevo. Esta sub-pieza NO cierra P08c ni M3.
+=====================================================================
+
+32. CIERRE DE SUB-PIEZA P08c - PIVOTPHASE (FSM + CONFIANZA + CABLEADO CE-14)
+=====================================================================
+Estado: CERRADA (sub-pieza; P08c como PIEZA sigue EN CURSO). Rama wip/p08c-pivot-wire,
+merge commit f0a728b (--no-ff). Fecha 2026-07-31. Actions run 30664591767, 3/3 success
+sobre el merge.
+Rango de commits de la sub-pieza: c1803ae..5dfe278 (12 commits sobre f0bed3c).
+
+NOTA SOBRE ci_local (clausula A, DICTAMEN P08c-CI-01). En la maquina local la bateria da
+23/24 con UN UNICO rojo: el check 7.8 (tenancy/RLS) por la tabla ema_snapshot, que crea
+la migracion 0023 de la pieza HERMANA P08b y vive en el PostgreSQL local COMPARTIDO entre
+worktrees. Es AJENA a esta rama (P08c llega a 0022 y anade la 0024). En CI, donde la BD
+se aprovisiona desde cero solo con las migraciones de la propia rama, el 7.8 sale VERDE y
+la bateria es 24/24 -- confirmado en el run del merge. La clausula A declara ese rojo como
+el UNICO aceptable en local; cualquier otro obliga a detenerse.
+
+DICTAMENES DE LA SUB-PIEZA (PIVOT-*):
+
+PIVOT-02  FRONTERA P4/P5, opcion R1. P4 = MODELO (normalizacion semilla, direccion
+          documentada, combinacion S, escala 0-100, estructura de factores diferidos,
+          explicabilidad por desglose). P5 = CABLEADO (extraccion de los escalares crudos
+          desde las series reales, snapshot/replay, alta en catalogo). Sin logica de
+          modelo en P5.
+
+PIVOT-03  SNAPSHOT DE ESTADO (migracion 0024, pivotphase_snapshot). Q1: se RECHAZAN las
+          columnas explicitas por campo de PivotState (acoplarian el esquema a la
+          estructura interna del estado); se guarda `state` como texto canonico. Q2
+          opcion (d): confidence NULL/None se proyecta como 0 en la serie. params_version
+          entra en la PK (un cambio de parametros o de formula produce un replay DISTINTO
+          y su snapshot no puede colisionar con el de otra version; mismo concepto que
+          reset_policy en cvd_snapshot). scope=system, append-only; el rol ce_v5_rules
+          escribe su propio estado de replay (categoria RULES_STATE_TABLES, como 0022).
+
+PIVOT-04  impulse_score = VARIANTE 6a (opcion B del AHP REV 2): escalado de |delta| por
+          PERCENTIL de su distribucion reciente, 0-100. NO es el motor compuesto de v4.
+          Es DERIVA FIRMADA respecto a v4, no un olvido.
+
+PIVOT-05  F6 CORREGIDO A DISTANCIA. El F6 inicial se especifico como vol_ratio y era
+          IMPOSIBLE: las fuentes vp.* exponen PRECIOS, no ratios de volumen. F6 pasa a
+          normalizarse por DISTANCIA del precio del pivote a los niveles VP servibles
+          (vp.hvn / vp.lvn). Se retiran los cortes previos y formula_version sube a 2.
+          Las formas semilla de F2/F4 quedan ratificadas [A CALIBRAR AHP].
+
+PIVOT-06  Q1 footprint.price_range es fuente NUEVA (POINT_LOCAL, span de precio de la
+          barra = max-min del precio de las celdas); la consume F4 y la reaprovechara
+          absorption cuando se active. Q3 el codec de PivotState es CLAVE=VALOR en orden
+          alfabetico fijo, un campo por linea, Decimals como str exacto, con parser
+          inverso de round-trip BIT-EXACTO (sin JSON: legible, sin dependencia, sin
+          reordenamiento de claves). Q4 NORM_WINDOW = 100 [PARIDAD v4, A CALIBRAR]. Q5
+          params_version es la huella canonica (clave=valor;...) de PivotParams en ORDEN
+          FIJO + formula_version + NORM_WINDOW.
+
+PIVOT-07  Q1 replay_from_series es la LOGICA PURA del replay (sin BD): recibe las series
+          ya materializadas y el estado ancla, y emite (phase, confidence) por barra. Q2
+          ventanas trailing INCLUSIVE hasta la barra i; proyeccion opcion (d): IDLE o
+          NOT_EVALUABLE -> 0. Q3 WARM-UP natural: sin distribucion suficiente el
+          impulse_score es None y los factores no evaluables aportan 0. Q6 el vp_touch de
+          la barra es el nivel VP mas cercano al precio entre {poc, vah, val}, empate a
+          poc.
+
+PIVOT-08  REGLA DE SELECCION DE NODO para vp.hvn/vp.lvn: vp.hvn = el nodo HVN de MAYOR
+          volumen; vp.lvn = el nodo LVN de MENOR volumen; empate de volumen -> MENOR
+          precio. Cada fuente emite UN Decimal por barra (el precio del nodo elegido).
+
+PIVOT-08-bis  OPCION A tras una DETENCION del periferico. compute_volume_nodes devolvia
+          solo PRECIOS (tuplas ordenadas por precio): el volumen por nodo se calculaba
+          dentro y se DESCARTABA, asi que la regla de PIVOT-08 no era aplicable a su
+          salida, y ademas no habia fallback natural para un transform que debe devolver
+          un Decimal NO opcional. Se ratifica: (i) factorizar el nucleo de deteccion en un
+          helper compartido (_volume_node_indices) que devuelve los candidatos en orden de
+          PRIORIDAD -HVN por (-volumen, indice), LVN por (volumen, indice)-, reusado por
+          compute_volume_nodes SIN cambiar su contrato publico ni sus tests; (ii)
+          select_hvn_price/select_lvn_price toman el PRIMER candidato de ese orden; (iii)
+          FALLBACKS deterministas OBLIGATORIOS: perfil valido sin candidato sobre/bajo
+          umbral -> HVN = bin de MAYOR volumen (el POC) / LVN = bin OCUPADO de MENOR
+          volumen; rango DEGENERADO (todo el volumen a un precio) -> HVN = LVN = ese
+          precio.
+
+PIVOT-09  REPLAY, ESTRATEGIA A (enmienda a la logica pura de T4c-1). Las barras de
+          lookback PASAN A AVANZAR la FSM (antes solo cebaban las ventanas) y
+          replay_from_series devuelve ademas el PivotState final (ReplayResult). La FSM
+          bootstrapea DESDE IDLE sobre toda la ventana; las primeras NORM_WINDOW barras
+          avanzan la FSM y ceban las distribuciones pero NO se emiten. Como las secuencias
+          de la FSM son BOUNDED (< NORM_WINDOW), ese bootstrap reconstruye el estado
+          entero: el snapshot queda como AS-OF / auditoria, NO como continuidad. Doble
+          replay TOLERADO (las dos specs replayan por separado; es determinista, ADR-007).
+
+PIVOT-10  CONSUMES RECONCILIADO A 9 ARISTAS, identico para pivotphase.phase y
+          pivotphase.confidence: market.close, orderflow.delta, orderflow.delta_momentum,
+          footprint.price_range, vp.poc, vp.vah, vp.val, vp.hvn, vp.lvn.
+          notrade.score RETIRADO de la tupla (y borrada su constante local, que quedaba
+          sin uso). El precio es market.close (constante MARKET_CLOSE_SOURCE_ID de
+          rawclose). Se retira el comentario-candado ("NO cableada en discovery todavia")
+          y las dos declaraciones entran en el catalogo vivo Y en SOURCE_MATERIALIZERS.
+
+DECISIONES QUE CENTRAL ORDENA REGISTRAR EXPLICITAMENTE:
+- F3 DIFERIDO: espera swing.* (P08b).
+- F7 DIFERIDO: notrade NO es consumible en el catalogo hoy (verificado en T0).
+- F6 CORREGIDO: distancia a vp.hvn/vp.lvn, NO vol_ratio (ver PIVOT-05).
+- impulse_score = 6a (delta normalizado por percentil), NO el motor compuesto de v4.
+- REPLAY bootstrap-desde-IDLE (Estrategia A, PIVOT-09); snapshot AS-OF.
+- CONSUMES reconciliado a 9 aristas (PIVOT-10); notrade.score retirado.
+- footprint.price_range es FUENTE NUEVA; vp.hvn y vp.lvn quedan CABLEADOS.
+
+FACTORES: ACTIVOS F2 (agotamiento), F4 (esfuerzo/resultado) y F6 (contexto VP por
+distancia). DIFERIDOS con su GATILLO: F1 -> absorption.* / candle.open (P08b);
+F3 -> swing.* (P08b); F5 -> imbalance; F7 -> notrade consumible en catalogo.
+CONSECUENCIA DECLARADA: con 3 de 7 factores activos el TECHO de confianza alcanzable es
+60, no 100. Es limitacion declarada, no defecto; un factor ausente aporta 0 y NO se
+renormaliza el denominador (DEC-PROVISIONAL-02: la evidencia ausente no infla).
+
+CORRECCION DE UBICACION REGISTRADA (ADR-002 / DOC_ESTRUCTURA sec.6). El glue del replay
+se escribio primero en platform/rules/ y el check 7.1 lo tumbo: importaba
+ce_v5.infra.db.* y ce_v5.entrypoints.*, que platform tiene PROHIBIDO. El periferico
+DETUVO la tanda y reporto en vez de parchear. Se movio a
+entrypoints/worker_rules/pivotphase_materializer.py -- el composition root, unica capa
+que ve infra y platform a la vez -- y el import de SOURCE_MATERIALIZERS quedo DIFERIDO
+dentro de la funcion para no crear ciclo con materializers.py, que ahora importa las dos
+specs para registrarlas.
+
+ENTREGABLES EN MAIN: nucleo puro de la FSM 0-5 (pivotphase.py); modelo de confianza
+(pivotphase_confidence.py); extraccion de senales -impulse_score 6a, features F2/F4-
+(pivotphase_signals.py); codec canonico de PivotState (pivotphase_state_codec.py); logica
+pura del replay con ReplayResult (pivotphase_replay.py); glue de BD + las dos specs
+(entrypoints/worker_rules/pivotphase_materializer.py); store del snapshot
+(infra/db/pivotphase_snapshot.py) y migracion 0024; fuente footprint.price_range;
+materializadores de vp.hvn/vp.lvn (select_hvn_price/select_lvn_price + helper factorizado);
+alta en discovery y en SOURCE_MATERIALIZERS; test de integracion end-to-end del glue
+contra PostgreSQL real.
+
+SECUENCIA FIRMADA DE SIGUIENTES PASOS:
+  1) P08c -> MAT-05-Q2
+  2) P08b -> swing.*
+  3) P08b -> LOTE3
+  4) P08b -> LOTE4
+  5) D1   -> LOTE5
+
+ADR: sin ADR nuevo. Esta sub-pieza NO cierra P08c ni M3.
+=====================================================================

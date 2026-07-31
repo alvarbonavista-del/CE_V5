@@ -563,3 +563,69 @@ puede arrancar ya sobre este mecanismo: sus fuentes candle-derived se declaran y
 materializan con el MISMO patron, sin reabrirlo. orderflow.delta_momentum (WINDOWED sobre
 una fuente derivada, DAG de 2o nivel) sigue SIN cablear a proposito: si una regla la
 referencia, el motor falla ruidoso en vez de servir una serie equivocada.
+
+## CIERRE: sub-pieza P08c delta_momentum - merge 9025588
+orderflow.delta_momentum CABLEADA como DAG de 2o NIVEL: consume otra fuente DERIVADA
+(orderflow.delta), no el footprint crudo, mediante un DerivedSeriesSpec nuevo
+(base_source_id + transform de serie + lookback=1). MAT-08: si la base de un
+DerivedSeriesSpec no esta en el registro se levanta UnwiredSourceError, extendiendo el
+fallo ruidoso de MAT-06 al segundo nivel del DAG. Con esto queda cerrado el unico
+"sin cablear" que dejaba la sub-pieza de materializacion.
+
+## CIERRE: sub-pieza P08c PIVOTPHASE (FSM + confidence + CE-14) - 2026-07-31
+Estado: CERRADA. Merge f0a728b en main (--no-ff) con Actions VERDE 3/3 (run 30664591767).
+Rango c1803ae..5dfe278. OJO: cierra la SUB-PIEZA, no la pieza P08c ni M3.
+
+LECTURA DE ci_local (para que no se lea como regresion). En LOCAL la bateria da 23/24 con
+un unico rojo: el check 7.8 por la tabla ema_snapshot, que crea la migracion 0023 de la
+pieza HERMANA P08b y vive en el PostgreSQL local COMPARTIDO entre worktrees. Es AJENA a
+esta rama (P08c llega a 0022 y anade la 0024). En CI la BD se aprovisiona desde cero solo
+con las migraciones de la rama: alli el 7.8 sale VERDE y la bateria es 24/24. Es la
+"clausula A" del DICTAMEN P08c-CI-01, y el unico rojo tolerado en local.
+
+QUE QUEDA CONSTRUIDO. La FSM de pivote 0-5 (IDLE / IMPULSE / ENCOUNTER / ABSORPTION /
+EXHAUSTION / FLIP) en paridad SEMANTICA con v4, como nucleo PURO y determinista, mas un
+modelo de CONFIANZA 0-100 por factores ponderados que sustituye la formula simple de v4
+(50 + zone_strength/2). pivotphase.phase y pivotphase.confidence estan DECLARADAS en el
+catalogo vivo (discovery) Y REGISTRADAS en SOURCE_MATERIALIZERS: el cableado CE-14 esta
+completo, no a medias.
+
+FACTORES: ACTIVOS F2 (agotamiento de delta), F4 (esfuerzo vs resultado) y F6 (contexto de
+volume profile). DIFERIDOS con gatillo explicito: F1 (absorption.*/candle.open, P08b), F3
+(swing.*, P08b), F5 (imbalance) y F7 (notrade, hoy NO consumible en el catalogo).
+
+PUNTOS QUE EL CSA DEBE TENER PRESENTES (no son deuda, son contexto vivo):
+- TECHO DE CONFIANZA 60, NO 100. Con 3 de 7 factores activos, la confianza maxima
+  alcanzable es 60. Es una limitacion DECLARADA, coherente con DEC-PROVISIONAL-02: un
+  factor ausente aporta 0 y NO se renormaliza el denominador (la evidencia ausente no
+  infla). Si se lee un 60 como "confianza mediocre" se estara leyendo mal: es el maximo.
+- F6 SE CORRIGIO SOBRE LA MARCHA (PIVOT-05). Se habia especificado como vol_ratio y era
+  IMPOSIBLE de construir: las fuentes vp.* exponen PRECIOS, no ratios de volumen. Pasa a
+  normalizarse por DISTANCIA del precio a vp.hvn/vp.lvn, y formula_version sube a 2.
+- impulse_score ES LA VARIANTE 6a, NO EL MOTOR DE v4. Escalado de |delta| por percentil
+  de su distribucion reciente (0-100). Es DERIVA FIRMADA respecto a v4, registrada como
+  tal, no un olvido.
+- EL SNAPSHOT ES AS-OF, NO CONTINUIDAD (PIVOT-09, Estrategia A). El replay bootstrapea la
+  FSM DESDE IDLE sobre (history_bars + NORM_WINDOW=100) barras; las primeras NORM_WINDOW
+  avanzan la FSM sin emitirse. Como las secuencias de la FSM son BOUNDED (< NORM_WINDOW),
+  el bootstrap reconstruye el estado entero, asi que el snapshot vale como auditoria y no
+  como cadena de continuidad. Consecuencia aceptada: DOBLE REPLAY (las dos specs replayan
+  por separado), tolerado por ser determinista (ADR-007).
+- EL PERIFERICO SE DETUVO DOS VECES EN VEZ DE IMPROVISAR, y las dos veces tenia razon:
+  (i) la regla de seleccion de vp.hvn/vp.lvn no era aplicable porque compute_volume_nodes
+  DESCARTABA el volumen por nodo -> se ratifico la opcion A (helper factorizado
+  _volume_node_indices + select_hvn_price/select_lvn_price con fallbacks deterministas
+  obligatorios, sin tocar el contrato publico de VolumeNodes); (ii) el glue del replay,
+  escrito primero en platform/rules/, violaba la frontera de capas (importaba infra y
+  entrypoints) y el check 7.1 lo tumbo -> se movio al composition root
+  (entrypoints/worker_rules/pivotphase_materializer.py), con el import de
+  SOURCE_MATERIALIZERS diferido dentro de la funcion para no crear ciclo.
+- MIGRACION 0024 (pivotphase_snapshot). El numero 0023 lo ocupa EN PARALELO P08b
+  (ema_snapshot): coordinacion 5.34. scope=system, append-only; params_version entra en
+  la PK porque un cambio de parametros o de formula produce un replay DISTINTO.
+
+PARA LA PROXIMA REVISION: la secuencia firmada de siguientes pasos es P08c -> MAT-05-Q2,
+luego P08b -> swing.*, P08b -> LOTE3, P08b -> LOTE4 y D1 -> LOTE5. Los factores diferidos
+F1/F3 se desbloquean con P08b (absorption.*/candle.open y swing.*), asi que el techo de
+confianza sube conforme P08b entregue sus fuentes: activarlos es anadir peso + funcion +
+input, NO reestructurar el modelo.
