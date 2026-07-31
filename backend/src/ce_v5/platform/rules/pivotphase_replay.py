@@ -7,10 +7,13 @@ barras oldest->newest manteniendo las ventanas trailing de NORM_WINDOW, arma Bar
 estado por evaluate_bar (P3) y gradua por compute_confidence (P4), y emite (phase,
 confidence) por barra. Sin BD: el glue (replay_pivotphase) materializa y persiste.
 
-Ventanas INCLUSIVE hasta la barra i (Q2). Las primeras `lookback` barras solo CEBAN las
-ventanas (Q5): no se emiten ni avanzan la FSM; la continuidad RECURSIVE la ancla el
-snapshot. WARM-UP natural (Q3): sin distribucion suficiente, impulse_score None (la FSM
-no arranca) y los factores no evaluables aportan 0. Determinista, solo Decimal.
+Ventanas INCLUSIVE hasta la barra i (Q2). Estrategia A (DICTAMEN P08c-PIVOT-09): la FSM
+avanza DESDE IDLE sobre toda la ventana; las primeras `lookback` barras (NORM_WINDOW)
+AVANZAN la FSM y ceban las ventanas pero NO se emiten. Como las secuencias del FSM son
+bounded (< NORM_WINDOW), el bootstrap-desde-IDLE con ese lookback reconstruye el estado
+entero (el snapshot es as-of/auditoria, no continuidad). WARM-UP natural (Q3): sin
+distribucion suficiente, impulse_score None y los factores no evaluables aportan 0.
+Determinista, solo Decimal.
 """
 
 from __future__ import annotations
@@ -79,6 +82,18 @@ class BarOutcome:
     confidence: Decimal
 
 
+@dataclass(frozen=True, slots=True)
+class ReplayResult:
+    """Resultado del replay: outcomes por barra EMITIDA + estado final de la FSM.
+
+    final_state = PivotState tras la ULTIMA barra recorrida (la vigente); el glue lo
+    serializa para el snapshot (as-of / auditoria).
+    """
+
+    outcomes: tuple[BarOutcome, ...]
+    final_state: PivotState
+
+
 def _nearest_vp_touch(
     price: Decimal, poc: Decimal, vah: Decimal, val: Decimal
 ) -> VpTouch:
@@ -102,11 +117,13 @@ def replay_from_series(
     conf_params: ConfidenceParams,
     norm_window: int,
     lookback: int,
-) -> tuple[BarOutcome, ...]:
+) -> ReplayResult:
     """Recorre las barras, hila el estado y emite (phase, confidence) por barra emitida.
 
-    Las primeras `lookback` barras solo ceban ventanas (no emiten ni avanzan la FSM); el
-    resto emite. Ventanas trailing INCLUSIVE de norm_window. Ver docstring del modulo.
+    La FSM AVANZA en TODAS las barras (DICTAMEN P08c-PIVOT-09, Estrategia A): las
+    primeras `lookback` barras avanzan la FSM y ceban las ventanas, pero NO se emiten ni
+    gradua su confianza; a partir de `lookback` se emite. Ventanas trailing INCLUSIVE de
+    norm_window. Devuelve el estado final para el snapshot. Ver docstring del modulo.
     """
     abs_delta: list[Decimal] = []
     f2_raws: list[Decimal] = []
@@ -123,8 +140,6 @@ def replay_from_series(
             f2_raws.append(f2_raw)
         if f4_raw is not None:
             f4_raws.append(f4_raw)
-        if i < lookback:
-            continue
         bar = BarSignals(
             price=series.price[i],
             delta=delta,
@@ -136,6 +151,8 @@ def replay_from_series(
             absorption=None,
         )
         state, _event = evaluate_bar(state, bar, params)
+        if i < lookback:
+            continue
         inputs = ConfidenceInputs(
             f2=(
                 FactorInput(raw=f2_raw, distribution=tuple(f2_raws[-norm_window:]))
@@ -160,4 +177,4 @@ def replay_from_series(
                 confidence=_project_confidence(state.phase, result.confidence),
             )
         )
-    return tuple(outcomes)
+    return ReplayResult(outcomes=tuple(outcomes), final_state=state)

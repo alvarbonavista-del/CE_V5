@@ -1,8 +1,8 @@
 """Tests de replay_from_series (P08c P5 T4c): propiedades con modulos reales + helpers.
 
-Las propiedades (fase 0-5, confianza 0-100, determinismo, conteo de emision) se cumplen
-sea cual sea el detalle del FSM; el comportamiento fino del FSM/confianza ya lo cubren
-P3/P4 y el test de integracion del replay (ci_local).
+Las propiedades (fase 0-5, confianza 0-100, determinismo, conteo, estado final) se
+cumplen sea cual sea el detalle del FSM; el comportamiento fino ya lo cubren P3/P4 y el
+test de integracion del replay (ci_local).
 """
 
 from decimal import Decimal
@@ -47,7 +47,7 @@ def test_project_confidence_idle_and_none_give_zero() -> None:
 
 
 def test_emits_bars_after_lookback() -> None:
-    outcomes = replay_from_series(
+    result = replay_from_series(
         _series(10),
         PivotState(),
         PivotParams(),
@@ -55,11 +55,11 @@ def test_emits_bars_after_lookback() -> None:
         norm_window=3,
         lookback=4,
     )
-    assert len(outcomes) == 6
+    assert len(result.outcomes) == 6
 
 
-def test_phase_and_confidence_in_range() -> None:
-    outcomes = replay_from_series(
+def test_phase_confidence_in_range_and_final_state() -> None:
+    result = replay_from_series(
         _series(20),
         PivotState(),
         PivotParams(),
@@ -67,14 +67,16 @@ def test_phase_and_confidence_in_range() -> None:
         norm_window=5,
         lookback=5,
     )
-    assert outcomes
-    for outcome in outcomes:
+    assert result.outcomes
+    for outcome in result.outcomes:
         assert 0 <= outcome.phase <= 5
         assert Decimal(0) <= outcome.confidence <= Decimal(100)
+    assert isinstance(result.final_state, PivotState)
+    assert 0 <= result.final_state.phase <= 5
 
 
 def test_deterministic() -> None:
-    def run() -> tuple[object, ...]:
+    def run() -> object:
         return replay_from_series(
             _series(15),
             PivotState(),
