@@ -187,7 +187,7 @@ OUTBOX_TABLE = "outbox"
 # La escritura se acota a INSERT: append-only real. Un snapshot ya tomado NO se
 # reescribe (una correccion es un snapshot NUEVO en su barra), asi que
 # UPDATE/DELETE/TRUNCATE son NEGATIVOS que rompen el build igual que los de mercado.
-RULES_STATE_TABLES: tuple[str, ...] = ("cvd_snapshot",)
+RULES_STATE_TABLES: tuple[str, ...] = ("cvd_snapshot", "ema_snapshot")
 
 # Privilegios que el motor SI necesita sobre su estado propio (positivos de la 0022).
 _STATE_REQUIRED_PRIVILEGES: tuple[str, ...] = ("SELECT", "INSERT")

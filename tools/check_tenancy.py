@@ -101,6 +101,9 @@ TABLAS_SIN_TENANT_PERMITIDAS: dict[str, str] = {
     # sentidos: sin SELECT+INSERT no puede hacer replay; con los destructivos podria
     # reescribir un ancla ya tomada y el replay dejaria de ser reproducible (ADR-007).
     "cvd_snapshot": "system",
+    # ema_snapshot: estado de replay del RECURSIVE ema.value; scope=system SIN tenant_id
+    # (shared_evaluation public_cross_tenant, como cvd_snapshot); append-only.
+    "ema_snapshot": "system",
 }
 
 # Roles de RUNTIME: los que se conectan con una credencial en un proceso vivo.
