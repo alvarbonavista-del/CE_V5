@@ -101,6 +101,11 @@ TABLAS_SIN_TENANT_PERMITIDAS: dict[str, str] = {
     # sentidos: sin SELECT+INSERT no puede hacer replay; con los destructivos podria
     # reescribir un ancla ya tomada y el replay dejaria de ser reproducible (ADR-007).
     "cvd_snapshot": "system",
+    # Estado de replay de pivotphase (RECURSIVE) del motor (P08c P5, migracion 0024).
+    # Mismo regimen que cvd_snapshot: system, sin tenant_id (pivotphase.phase/confidence
+    # son shared_evaluation/public_cross_tenant; darle tenant_id duplicaria el mismo
+    # estado por tenant, la explosion que ADR-014 evita). Escritura acotada a INSERT.
+    "pivotphase_snapshot": "system",
 }
 
 # Roles de RUNTIME: los que se conectan con una credencial en un proceso vivo.
