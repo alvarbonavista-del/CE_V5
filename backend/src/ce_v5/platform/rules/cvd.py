@@ -101,6 +101,31 @@ def declarations() -> tuple[DataSourceDeclaration, ...]:
     return (cvd_declaration(),)
 
 
+def session_starts(
+    open_times: Sequence[int], *, previous_open_time: int | None = None
+) -> tuple[bool, ...]:
+    """Por barra: si ABRE una sesion UTC nueva respecto a su predecesora.
+
+    previous_open_time es la barra ANTERIOR a la ventana -- el ANCLA del replay -- o
+    None si la ventana arranca la secuencia. La primera barra sin predecesora NO abre
+    sesion: arranca el acumulado, no lo resetea (por eso el bootstrap y el replay desde
+    ancla dan la MISMA cola, ADR-007).
+
+    Es el UNICO sitio donde vive la frontera de sesion: compute_cvd y el materializador
+    INTEGRATOR (que siembra desde snapshot y no puede usar compute_cvd tal cual) la
+    comparten en vez de reimplementarla cada uno.
+    """
+    starts: list[bool] = []
+    previous_day = (
+        None if previous_open_time is None else previous_open_time // _MS_PER_DAY
+    )
+    for open_time in open_times:
+        day = open_time // _MS_PER_DAY
+        starts.append(previous_day is not None and day != previous_day)
+        previous_day = day
+    return tuple(starts)
+
+
 def compute_cvd(
     bars: Sequence[tuple[int, Decimal]],
     *,
@@ -109,22 +134,20 @@ def compute_cvd(
     """Acumulado del delta (oldest->newest) segun reset_policy. Serie de igual longitud.
 
     Cada barra es (open_time_ms, delta). rolling: acumulado continuo, sin reset.
-    session_utc: el acumulado vuelve a cero al cambiar el dia UTC
-    (open_time // _MS_PER_DAY). Ventana vacia -> tupla vacia. El ancla (donde arranca la
-    secuencia) lo decide el materializer (CE-14); aqui el acumulado arranca en el primer
-    elemento recibido.
+    session_utc: el acumulado vuelve a cero al cambiar el dia UTC (session_starts).
+    Ventana vacia -> tupla vacia. El ancla (donde arranca la secuencia) lo decide el
+    materializer (CE-14); aqui el acumulado arranca en el primer elemento recibido.
     """
     if not bars:
         return ()
+    resets = (
+        session_starts([open_time for open_time, _ in bars])
+        if reset_policy is ResetPolicy.SESSION_UTC
+        else (False,) * len(bars)
+    )
     cvd: list[Decimal] = []
     running = Decimal(0)
-    previous_day: int | None = None
-    for open_time, delta in bars:
-        if reset_policy is ResetPolicy.SESSION_UTC:
-            day = open_time // _MS_PER_DAY
-            if previous_day is not None and day != previous_day:
-                running = Decimal(0)
-            previous_day = day
-        running += delta
+    for (_open_time, delta), starts_session in zip(bars, resets, strict=True):
+        running = delta if starts_session else running + delta
         cvd.append(running)
     return tuple(cvd)

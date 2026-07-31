@@ -32,6 +32,7 @@ import redis
 from ce_v5.entrypoints.worker_rules.materializers import (
     SOURCE_MATERIALIZERS,
     FootprintWindowedSpec,
+    ParameterizedMaterializer,
 )
 from ce_v5.infra.bus_redis import RedisBusConfig, RedisEventBus, create_client
 from ce_v5.infra.db.cvd_snapshot import read_cvd_snapshot_before, write_cvd_snapshot
@@ -66,6 +67,7 @@ from source.families.footprint import (
 )
 from source.families.market import MarketType, Timeframe
 from source.families.registry import expected_event_schema_version
+from source.rules.scalar import ScalarType, ScalarValue
 from source.time import MaturityState
 
 _DSN = os.environ.get("CE_V5_DATABASE_URL")
@@ -1170,6 +1172,30 @@ def _materializar_cvd(
         )
 
 
+def _materializar_cvd_session_utc(
+    rules_db: PsycopgDatabase, open_time: int, history_bars: int
+) -> tuple[Decimal, ...]:
+    """cvd.value con el param EFECTIVO reset_policy=session_utc (MAT-05 Q2).
+
+    Liga el spec del registro con el param, igual que hace el dispatch cuando el plan
+    trae el override; el registro conserva su instancia rolling.
+    """
+    spec = SOURCE_MATERIALIZERS[CVD_SOURCE_ID]
+    assert isinstance(spec, ParameterizedMaterializer)
+    ligada = spec.with_params(
+        {
+            "reset_policy": ScalarValue(
+                scalar_type=ScalarType.STRING,
+                string_value=ResetPolicy.SESSION_UTC.value,
+            )
+        }
+    )
+    with rules_db.transaction() as session:
+        return ligada.materialize(
+            session, "binance", "BTC-USDT", _TF.value, open_time, history_bars
+        )
+
+
 class TestCvdIntegratorReplayDesdeSnapshot:
     """cvd.value INTEGRATOR: replay ACOTADO desde snapshot contra PostgreSQL (MAT-07).
 
@@ -1278,6 +1304,109 @@ class TestCvdIntegratorReplayDesdeSnapshot:
         # falsa que envenenaria todos los replays posteriores.
         assert _materializar_cvd(rules_db, _OPEN, 5) == ()
         assert _leer_ancla(rules_db, _OPEN + 10 * _TF.duration_ms) is None
+
+
+class TestCvdSessionUtcPorParametroEfectivo:
+    """MAT-05 Q2 end-to-end: el param de la regla CAMBIA el hecho materializado.
+
+    Es el consumidor de referencia de la propagacion de params: cvd.value con
+    reset_policy=session_utc materializa una serie DISTINTA de la rolling por defecto,
+    contra PostgreSQL real y por el spec del REGISTRO (no uno de prueba). Si el param se
+    perdiera por el camino, las dos series saldrian iguales y este test peta.
+    """
+
+    def _sembrar_a_caballo_de_medianoche(
+        self, persistir: Persistir
+    ) -> list[FootprintClosedPayload]:
+        """Cuatro barras: dos del dia UTC anterior y dos del siguiente.
+
+        _OPEN cae EXACTAMENTE en medianoche UTC (multiplo de 86_400_000), asi que las
+        dos primeras barras quedan en el dia D-1 y la tercera ABRE el dia D. Sin cruce
+        no habria nada que distinguir entre rolling y session_utc.
+        """
+        assert _OPEN % 86_400_000 == 0
+        escritas: list[FootprintClosedPayload] = []
+        for indice, desplazamiento in enumerate((-2, -1, 0, 1)):
+            payload = _closed(
+                open_time=_OPEN + desplazamiento * _TF.duration_ms,
+                offset=Decimal(indice),
+            )
+            assert (
+                persistir(
+                    payload, MarketFootprintEventType.FOOTPRINT_CLOSED, _EVENT_TIME
+                )
+                is True
+            )
+            escritas.append(payload)
+        return escritas
+
+    def test_session_utc_resetea_en_medianoche_y_rolling_no(
+        self,
+        rules_db: PsycopgDatabase,
+        migrator_db: PsycopgDatabase,
+        persistir_footprint: Persistir,
+        limpiar_footprint: None,
+        limpiar_cvd_snapshot: None,
+    ) -> None:
+        escritas = self._sembrar_a_caballo_de_medianoche(persistir_footprint)
+        deltas = [barra.bar_delta for barra in escritas]
+        assert len(set(deltas)) == 4  # cada barra distinguible por su delta.
+        ultimo = escritas[-1].open_time
+
+        rolling = _materializar_cvd(rules_db, ultimo, 4)
+        _borrar_snapshots(migrator_db)
+        session = _materializar_cvd_session_utc(rules_db, ultimo, 4)
+
+        # rolling: acumulado continuo por las cuatro barras.
+        assert rolling == tuple(_cumsum(deltas))
+        # session_utc: la tercera barra ABRE dia UTC nuevo y reinicia el acumulado.
+        assert session == (
+            deltas[0],
+            deltas[0] + deltas[1],
+            deltas[2],
+            deltas[2] + deltas[3],
+        )
+        # Lo que prueba que el param VIAJA: las dos series no son la misma.
+        assert session != rolling
+
+    def test_el_param_efectivo_es_bit_exacto_y_reproducible(
+        self,
+        rules_db: PsycopgDatabase,
+        migrator_db: PsycopgDatabase,
+        persistir_footprint: Persistir,
+        limpiar_footprint: None,
+        limpiar_cvd_snapshot: None,
+    ) -> None:
+        # ADR-007: misma base + mismo param -> MISMA serie, bit a bit. Se borra el
+        # snapshot entre pasadas para que la segunda recorra el mismo camino que la
+        # primera (bootstrap), no uno sembrado por ella.
+        escritas = self._sembrar_a_caballo_de_medianoche(persistir_footprint)
+        ultimo = escritas[-1].open_time
+
+        primera = _materializar_cvd_session_utc(rules_db, ultimo, 4)
+        _borrar_snapshots(migrator_db)
+        segunda = _materializar_cvd_session_utc(rules_db, ultimo, 4)
+
+        assert primera == segunda
+
+    def test_el_snapshot_de_session_no_contamina_al_rolling(
+        self,
+        rules_db: PsycopgDatabase,
+        persistir_footprint: Persistir,
+        limpiar_footprint: None,
+        limpiar_cvd_snapshot: None,
+    ) -> None:
+        # reset_policy entra en la IDENTIDAD de cvd_snapshot: el ancla de un session-CVD
+        # no puede sembrar un rolling-CVD. Sin esto, materializar una politica
+        # envenenaria la otra.
+        escritas = self._sembrar_a_caballo_de_medianoche(persistir_footprint)
+        deltas = [barra.bar_delta for barra in escritas]
+        ultimo = escritas[-1].open_time
+
+        _materializar_cvd_session_utc(rules_db, ultimo, 4)
+        rolling = _materializar_cvd(rules_db, ultimo, 4)
+
+        assert rolling == tuple(_cumsum(deltas))
 
 
 def _materializar_delta_momentum(

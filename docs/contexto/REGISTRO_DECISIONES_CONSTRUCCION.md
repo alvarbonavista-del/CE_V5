@@ -2263,3 +2263,69 @@ SECUENCIA FIRMADA DE SIGUIENTES PASOS:
 
 ADR: sin ADR nuevo. Esta sub-pieza NO cierra P08c ni M3.
 =====================================================================
+
+33. MAT-05 Q2 - PROPAGACION DE PARAMS DE FUENTE (OPCION A)
+=====================================================================
+Estado: construida en wip/p08c-params sobre 1a8c2ab. El compilador deja de rechazar
+ref.params: los VALIDA contra la declaracion y los PROPAGA como params EFECTIVOS
+(defaults + overrides) hasta el materializador. Consumidor de referencia: cvd.value con
+reset_policy=session_utc.
+
+RECON PREVIO QUE OBLIGO A ELEVAR (incognita Q-D). El plan asumia que el cache_key o bien
+ya codificaba los params por valor (cambio menor) o bien no los codificaba (cambio
+mayor). La realidad era un TERCER estado: el cache_key existe SOLO como ESQUEMA de
+nombres (cache_key_schema, validado por cache_key_validator) y NINGUN codigo construye un
+cache_key-VALOR; la cache de evaluacion compartida NO esta implementada en v5.0
+(shared_evaluation/sharing_scope se declaran y nadie los consume). El periferico DETUVO
+la tanda y elevo en vez de inventar el formato de la clave, que es contrato entre piezas.
+Central ratifico la OPCION A: construir la propagacion ahora y DIFERIR el cache_key-valor.
+
+DIFERIDO GATEADO (MAT-05 Q2): constructor de cache_key-VALOR + tests 5/6
+ anti-colision. Dueno: pieza de cache de evaluacion compartida (no implementada
+ en v5.0). Gate: cuando se implemente la cache de evaluacion, el constructor de
+ cache_key DEBE codificar los params EFECTIVOS (no el default); los tests 5/6
+ anti-colision son OBLIGATORIOS. Hoy el esquema ya declara los params como
+ dimensiones (cache_key_validator lo exige); la cache futura hereda el requisito.
+
+NO se construye el codificador ahora: sin consumidor seria codigo muerto (regla 5.11).
+
+QUE SE CONSTRUYE:
+- COMPILADOR. _effective_params valida cada override contra los params DECLARADOS
+  (nombre existente + tipo que casa) y resuelve efectivos = defaults + overrides,
+  ordenados por nombre (forma canonica). ResolvedSource gana el campo params y el
+  accesor param(name). FAIL-LOUD en cuatro casos: param desconocido, tipo incompatible,
+  override de window_bars (constante FIJA de materializacion, MAT-05 Q3, con mensaje
+  propio) y -NUEVO, lo introduce esta tanda- dos referencias a la MISMA fuente con
+  params efectivos DISTINTOS (la serie del plan se indexa por source_id: son hechos
+  distintos y solo cabria uno; servir uno a ambas seria la deuda D-E2.1 otra vez).
+- DISPATCH. Protocolo ParameterizedMaterializer (runtime_checkable) con with_params:
+  si la fuente trae efectivos y su materializador lo implementa, el dispatch pide una
+  COPIA ligada; el registro conserva su instancia con defaults (es compartida por todas
+  las reglas, no se muta). Un materializador que no lo implementa ignora los params por
+  construccion, no por olvido.
+- CVD session_utc. session_starts (cvd.py) queda como UNICO dueno de la frontera de
+  sesion UTC y lo comparten compute_cvd y el materializador INTEGRATOR -- que siembra
+  desde snapshot y por eso no puede llamar a compute_cvd tal cual. El paso de sesion
+  (_cvd_session_step) sigue siendo PURO: el flag de "abre dia" se precalcula, no se
+  guarda estado en el fold. reset_policy ya estaba en la identidad de cvd_snapshot, asi
+  que el ancla de un session-CVD nunca siembra un rolling-CVD ni al reves (probado).
+  El DOMINIO del valor (que el texto sea una ResetPolicy real) se valida en with_params,
+  no en el compilador: es semantica de la fuente. Fuera del enum -> fallo ruidoso.
+- GUARDA RETIRADA. La guarda-cuarentena de MAT-05 Q4 desaparece y su test se INVIERTE:
+  antes afirmaba que un override se rechaza, ahora afirma que llega al plan.
+
+PENDIENTE CONOCIDO (no es deuda de esta tanda): vp.* declara bin_count como param y su
+transform sigue fijando DEFAULT_BIN_COUNT. La maquinaria ya lo propaga hasta el
+materializador; cablear el consumo en FootprintWindowedSpec es trabajo de su propia
+tanda. Hoy un override de bin_count compila y viaja, pero el perfil se sigue binando
+con 50: queda anotado aqui para que no pase por cableado completo.
+
+TESTS: 1 (override valido -> efectivos), 2 (param desconocido -> CompilationError),
+3 (tipo erroneo -> CompilationError), 4 (sin params -> defaults, D7), 7 (window_bars ->
+CompilationError), 8 (integracion contra PostgreSQL real: session_utc materializa
+DISTINTO de rolling, es bit-exacto entre pasadas y su snapshot no contamina al rolling),
+9 (aditividad: market.close sin params, tupla vacia de efectivos). Los tests 5 y 6
+(anti-colision de cache_key) quedan en el diferido gateado de arriba.
+
+ADR: sin ADR nuevo.
+=====================================================================
