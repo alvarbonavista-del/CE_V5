@@ -1,0 +1,491 @@
+"""Tests del nucleo PURO de la FSM de pivote 0-5 (pivotphase, P08c P3).
+
+Senales INYECTADAS a mano (BarSignals construidos en el test), sin BD, sin IO, sin
+catalogo vivo: el nucleo se prueba en aislamiento total. Cubre las dos secuencias
+COMPLETAS (bullish y bearish, 0->1->2->3->4->5 CONFIRMED con vuelta a IDLE), las tres
+invalidaciones con gatillo vivo, la paridad de los 10 params, la mordida (mutar un
+umbral rompe la confirmacion), el determinismo, el gate estructural de absorcion y el
+NOT_EVALUABLE de impulse_score.
+
+PHASE3_ZONE_BREAK queda PENDIENTE (test skipped): la constante existe en el modulo por
+paridad v4 pero NO tiene gatillo vivo en este nucleo, porque absorption.* esta DIFERIDA
+(candle.open, P08b). Se cubrira cuando el gate exista; no se fuerza codigo muerto.
+"""
+
+from __future__ import annotations
+
+from dataclasses import replace
+from decimal import Decimal
+
+import pytest
+
+from ce_v5.platform.rules.pivotphase import (
+    BEARISH,
+    BULLISH,
+    PIVOTPHASE_CONFIDENCE_SOURCE_ID,
+    PIVOTPHASE_PHASE_SOURCE_ID,
+    AbsorptionZone,
+    BarSignals,
+    Invalidation,
+    Phase,
+    PivotEvent,
+    PivotParams,
+    PivotState,
+    VpTouch,
+    declarations,
+    evaluate_bar,
+)
+from source.datasource import MemoryModel, Servibility, SourceType
+from source.rules.scalar import ScalarType
+
+_D = Decimal
+_PARAMS = PivotParams()
+_LEVEL = _D("100")
+
+
+def _run(
+    bars: list[BarSignals],
+    params: PivotParams = _PARAMS,
+    state: PivotState | None = None,
+) -> tuple[PivotState, list[PivotEvent]]:
+    """Pasa la secuencia de barras por la FSM y devuelve (estado_final, eventos)."""
+    current = state if state is not None else PivotState()
+    events: list[PivotEvent] = []
+    for bar in bars:
+        current, event = evaluate_bar(current, bar, params)
+        events.append(event)
+    return current, events
+
+
+# --- Secuencias COMPLETAS -------------------------------------------------------
+
+
+def _bullish_sequence() -> list[BarSignals]:
+    """0->1->2->3->4->5: impulso alcista, encuentro en VAH, absorcion bajista, flip."""
+    return [
+        # Fase 1: dos velas de impulso alcista con score >= 70.
+        BarSignals(price=_D("99"), delta=_D("100"), impulse_score=_D("80")),
+        BarSignals(price=_D("99.5"), delta=_D("120"), impulse_score=_D("85")),
+        # Fase 2: toque contra-direccional del nivel VP (precio pegado al VAH).
+        BarSignals(
+            price=_LEVEL,
+            delta=_D("10"),
+            vp_touch=VpTouch(level_type="vah", level_price=_LEVEL),
+        ),
+        # Fase 3: zona de absorcion BAJISTA pegada al nivel (contra el impulso).
+        BarSignals(
+            price=_D("100.1"),
+            delta=_D("10"),
+            absorption=AbsorptionZone(
+                zone_price=_LEVEL, zone_type="bearish", zone_strength=_D("0.8")
+            ),
+        ),
+        # Fase 4: tres velas con |delta| < 0.5 * pico (pico = 120 -> umbral 60).
+        BarSignals(price=_D("100.1"), delta=_D("10")),
+        BarSignals(price=_D("100.1"), delta=_D("8")),
+        BarSignals(price=_D("100.1"), delta=_D("5")),
+        # Fase 5: dos velas con delta invertido (flip bajista).
+        BarSignals(price=_D("99.9"), delta=_D("-30")),
+        BarSignals(price=_D("99.7"), delta=_D("-40")),
+    ]
+
+
+def _bearish_sequence() -> list[BarSignals]:
+    """Simetrica: impulso bajista, encuentro en VAL, absorcion alcista, flip alcista."""
+    return [
+        BarSignals(price=_D("101"), delta=_D("-100"), impulse_score=_D("80")),
+        BarSignals(price=_D("100.5"), delta=_D("-120"), impulse_score=_D("85")),
+        BarSignals(
+            price=_LEVEL,
+            delta=_D("-10"),
+            vp_touch=VpTouch(level_type="val", level_price=_LEVEL),
+        ),
+        BarSignals(
+            price=_D("99.9"),
+            delta=_D("-10"),
+            absorption=AbsorptionZone(
+                zone_price=_LEVEL, zone_type="bullish", zone_strength=_D("0.8")
+            ),
+        ),
+        BarSignals(price=_D("99.9"), delta=_D("-10")),
+        BarSignals(price=_D("99.9"), delta=_D("-8")),
+        BarSignals(price=_D("99.9"), delta=_D("-5")),
+        BarSignals(price=_D("100.1"), delta=_D("30")),
+        BarSignals(price=_D("100.3"), delta=_D("40")),
+    ]
+
+
+def test_secuencia_completa_bullish_confirma_y_vuelve_a_idle() -> None:
+    final, events = _run(_bullish_sequence())
+    kinds = [(e.kind, e.phase) for e in events]
+    assert kinds == [
+        ("none", int(Phase.IDLE)),
+        ("advance", int(Phase.IMPULSE)),
+        ("advance", int(Phase.ENCOUNTER)),
+        ("advance", int(Phase.ABSORPTION)),
+        ("none", int(Phase.IDLE)),
+        ("none", int(Phase.IDLE)),
+        ("advance", int(Phase.EXHAUSTION)),
+        ("none", int(Phase.IDLE)),
+        ("confirmed", int(Phase.FLIP)),
+    ]
+    assert events[-1].direction == BULLISH
+    # Tras confirmar, la FSM vuelve a IDLE limpia (lista para la siguiente secuencia).
+    assert final == PivotState()
+    assert final.phase == int(Phase.IDLE)
+
+
+def test_secuencia_completa_bearish_confirma_y_vuelve_a_idle() -> None:
+    final, events = _run(_bearish_sequence())
+    kinds = [(e.kind, e.phase) for e in events]
+    assert kinds == [
+        ("none", int(Phase.IDLE)),
+        ("advance", int(Phase.IMPULSE)),
+        ("advance", int(Phase.ENCOUNTER)),
+        ("advance", int(Phase.ABSORPTION)),
+        ("none", int(Phase.IDLE)),
+        ("none", int(Phase.IDLE)),
+        ("advance", int(Phase.EXHAUSTION)),
+        ("none", int(Phase.IDLE)),
+        ("confirmed", int(Phase.FLIP)),
+    ]
+    assert events[-1].direction == BEARISH
+    assert final == PivotState()
+
+
+def test_estado_intermedio_recuerda_lo_de_cada_fase() -> None:
+    """El snapshot lleva la memoria de secuencia (pico, nivel, zona) para el replay."""
+    bars = _bullish_sequence()
+    state, _ = _run(bars[:4])
+    assert state.phase == int(Phase.ABSORPTION)
+    assert state.direction == BULLISH
+    assert state.phase1_peak_delta == _D("120")
+    assert state.phase2_level_price == _LEVEL
+    assert state.phase2_level_type == "vah"
+    assert state.phase3_zone_price == _LEVEL
+    assert state.phase3_zone_strength == _D("0.8")
+
+
+# --- Invalidaciones -------------------------------------------------------------
+
+
+def test_invalidacion_phase2_price_break_vuelve_a_idle() -> None:
+    """En fase 2 el precio rompe el nivel por encima del umbral (0.3%) -> invalida."""
+    bars = [*_bullish_sequence()[:3], BarSignals(price=_D("101"), delta=_D("10"))]
+    final, events = _run(bars)
+    assert events[-1] == PivotEvent(
+        "invalidated",
+        int(Phase.ENCOUNTER),
+        BULLISH,
+        Invalidation.PHASE2_PRICE_BREAK,
+    )
+    assert final == PivotState()
+
+
+def test_invalidacion_phase2_price_break_bearish() -> None:
+    """Simetrico: en bajista rompe por debajo de level * (1 - 0.003) = 99.7."""
+    bars = [*_bearish_sequence()[:3], BarSignals(price=_D("99"), delta=_D("-10"))]
+    final, events = _run(bars)
+    assert events[-1].reason == Invalidation.PHASE2_PRICE_BREAK
+    assert events[-1].direction == BEARISH
+    assert final == PivotState()
+
+
+def test_invalidacion_phase4_delta_regrowth_vuelve_a_idle() -> None:
+    """En fase 4 el delta re-crece en la direccion original (> pico * drop * 2)."""
+    # 7 barras dejan la FSM en EXHAUSTION; luego delta = 150 > 120 * 0.5 * 2 = 120.
+    bars = [*_bullish_sequence()[:7], BarSignals(price=_D("100.1"), delta=_D("150"))]
+    final, events = _run(bars)
+    assert events[-1] == PivotEvent(
+        "invalidated",
+        int(Phase.EXHAUSTION),
+        BULLISH,
+        Invalidation.PHASE4_DELTA_REGROWTH,
+    )
+    assert final == PivotState()
+
+
+def test_invalidacion_phase5_timeout_vuelve_a_idle() -> None:
+    """Sin flip suficiente en phase5_timeout_candles (5) velas -> timeout a la 6a."""
+    quiet = BarSignals(price=_D("100.1"), delta=_D("10"))  # ni flip ni re-crecimiento
+    bars = [*_bullish_sequence()[:7], *([quiet] * 6)]
+    final, events = _run(bars)
+    # Las cinco primeras velas de fase 5 no producen evento; la sexta invalida.
+    assert [e.kind for e in events[7:]] == [
+        "none",
+        "none",
+        "none",
+        "none",
+        "none",
+        "invalidated",
+    ]
+    assert events[-1].reason == Invalidation.PHASE5_TIMEOUT
+    assert final == PivotState()
+
+
+@pytest.mark.skip(
+    reason=(
+        "PHASE3_ZONE_BREAK: PENDIENTE. La constante existe por paridad v4 pero no "
+        "tiene gatillo vivo en el nucleo v5 porque absorption.* esta DIFERIDA "
+        "(candle.open, P08b). No se fuerza codigo muerto: se cubre en P5."
+    )
+)
+def test_invalidacion_phase3_zone_break() -> None:  # pragma: no cover
+    raise AssertionError("pendiente: sin gatillo vivo (absorption.* diferida)")
+
+
+def test_phase3_zone_break_declarada_pero_sin_gatillo() -> None:
+    """Lo que SI se puede afirmar hoy: la constante existe y no la emite nadie."""
+    assert Invalidation.PHASE3_ZONE_BREAK == "phase3_zone_break"
+    _, events = _run(_bullish_sequence())
+    assert all(e.reason != Invalidation.PHASE3_ZONE_BREAK for e in events)
+
+
+# --- Paridad de los 10 parametros -----------------------------------------------
+
+
+def test_semillas_de_paridad_v4() -> None:
+    """Los 10 params tienen exactamente las semillas [PARIDAD v4], en Decimal."""
+    p = PivotParams()
+    assert p.phase1_impulse_min == _D("70")
+    assert p.phase1_min_candles == 2
+    assert p.phase2_near_tolerance == _D("0.001")
+    assert p.phase2_break_threshold == _D("0.003")
+    assert p.phase3_zone_match == _D("0.002")
+    assert p.phase4_exhaustion_min == _D("60")
+    assert p.phase4_min_candles == 3
+    assert p.phase4_delta_drop == _D("0.5")
+    assert p.phase5_flip_min_candles == 2
+    assert p.phase5_timeout_candles == 5
+
+
+def test_param_phase1_min_candles_gobierna_el_arranque() -> None:
+    params = replace(_PARAMS, phase1_min_candles=3)
+    bars = _bullish_sequence()
+    state, events = _run(bars[:2], params)
+    assert events[1].kind == "none"  # con 3 velas exigidas, dos no bastan
+    assert state.phase == int(Phase.IDLE)
+    assert state.impulse_count == 2
+
+
+def test_param_phase2_break_threshold_gobierna_la_ruptura() -> None:
+    """Con el umbral por defecto 100.2 NO rompe; bajandolo a 0.001, SI."""
+    bars = [*_bullish_sequence()[:3], BarSignals(price=_D("100.2"), delta=_D("10"))]
+    _, events = _run(bars)
+    assert events[-1].kind == "none"
+    _, strict = _run(bars, replace(_PARAMS, phase2_break_threshold=_D("0.001")))
+    assert strict[-1].reason == Invalidation.PHASE2_PRICE_BREAK
+
+
+def test_param_phase3_zone_match_gobierna_la_cercania_de_la_zona() -> None:
+    """Una zona a 0.5% del nivel esta FUERA del 0.2% por defecto: no avanza."""
+    far = BarSignals(
+        price=_D("100.1"),
+        delta=_D("10"),
+        absorption=AbsorptionZone(
+            zone_price=_D("100.5"), zone_type="bearish", zone_strength=_D("0.8")
+        ),
+    )
+    state, events = _run([*_bullish_sequence()[:3], far])
+    assert events[-1].kind == "none"
+    assert state.phase == int(Phase.ENCOUNTER)
+    wide, wide_events = _run(
+        [*_bullish_sequence()[:3], far], replace(_PARAMS, phase3_zone_match=_D("0.01"))
+    )
+    assert wide_events[-1] == PivotEvent("advance", int(Phase.ABSORPTION), BULLISH)
+    assert wide.phase == int(Phase.ABSORPTION)
+
+
+def test_param_phase4_delta_drop_y_min_candles_gobiernan_el_agotamiento() -> None:
+    """Con drop 0.05 el umbral cae a 6: las velas de delta 10 y 8 ya no cuentan."""
+    params = replace(_PARAMS, phase4_delta_drop=_D("0.05"))
+    state, events = _run(_bullish_sequence()[:7], params)
+    assert [e.kind for e in events[4:]] == ["none", "none", "none"]
+    assert state.phase == int(Phase.ABSORPTION)
+    assert state.exhaustion_count == 1  # solo la vela de delta 5 (< 6) computo
+    # Y con min_candles=1 basta la primera vela mermada para pasar a fase 4.
+    quick, quick_events = _run(
+        _bullish_sequence()[:5], replace(_PARAMS, phase4_min_candles=1)
+    )
+    assert quick_events[-1] == PivotEvent("advance", int(Phase.EXHAUSTION), BULLISH)
+    assert quick.phase == int(Phase.EXHAUSTION)
+
+
+def test_param_phase5_flip_min_candles_gobierna_la_confirmacion() -> None:
+    """Con 3 velas de flip exigidas, las dos de la secuencia ya no confirman."""
+    params = replace(_PARAMS, phase5_flip_min_candles=3)
+    state, events = _run(_bullish_sequence(), params)
+    assert events[-1].kind == "none"
+    assert state.phase == int(Phase.EXHAUSTION)
+    assert state.flip_count == 2
+
+
+def test_param_phase5_timeout_candles_gobierna_el_timeout() -> None:
+    quiet = BarSignals(price=_D("100.1"), delta=_D("10"))
+    bars = [*_bullish_sequence()[:7], *([quiet] * 3)]
+    _, events = _run(bars)
+    assert events[-1].kind == "none"  # con timeout 5, tres velas quietas no bastan
+    _, short = _run(bars, replace(_PARAMS, phase5_timeout_candles=2))
+    assert short[-1].reason == Invalidation.PHASE5_TIMEOUT
+
+
+def test_phase4_exhaustion_min_no_es_gate_estructural() -> None:
+    """Decision 6b: el gate de fase 4 es el delta menguante, NO el proxy notrade.
+
+    Mutar phase4_exhaustion_min a cualquier valor NO altera la secuencia: se conserva
+    inyectable solo para el factor F2 de la confianza (P4).
+    """
+    baseline, base_events = _run(_bullish_sequence())
+    for value in (_D("0"), _D("100"), _D("99999")):
+        mutated, events = _run(
+            _bullish_sequence(), replace(_PARAMS, phase4_exhaustion_min=value)
+        )
+        assert mutated == baseline
+        assert events == base_events
+
+
+def test_phase2_near_tolerance_no_es_gate_estructural() -> None:
+    """phase2_near_tolerance tampoco se lee: fase 2 usa phase3_zone_match.
+
+    Se conserva por paridad de los 10 params; se eleva a Central en el informe de P3.
+    """
+    baseline, base_events = _run(_bullish_sequence())
+    mutated, events = _run(
+        _bullish_sequence(), replace(_PARAMS, phase2_near_tolerance=_D("0.5"))
+    )
+    assert mutated == baseline
+    assert events == base_events
+
+
+# --- Mordida, determinismo y gates de no-evaluable -------------------------------
+
+
+def test_muerde_mutar_phase1_impulse_min_rompe_la_confirmacion() -> None:
+    """El test MUERDE: con el umbral de impulso a 999 la FSM no arranca ni confirma."""
+    sane, sane_events = _run(_bullish_sequence())
+    assert sane_events[-1].kind == "confirmed"
+    assert sane == PivotState()
+    mutated, events = _run(
+        _bullish_sequence(), replace(_PARAMS, phase1_impulse_min=_D("999"))
+    )
+    assert all(e.kind == "none" for e in events)
+    assert mutated == PivotState()
+    assert mutated.phase == int(Phase.IDLE)
+
+
+def test_determinismo_dos_ejecuciones_identicas() -> None:
+    """Mismo estado + misma barra + mismos params -> mismo resultado, bit a bit."""
+    first_state, first_events = _run(_bullish_sequence())
+    second_state, second_events = _run(_bullish_sequence())
+    assert first_state == second_state
+    assert first_events == second_events
+    # Y a nivel de barra suelta: evaluate_bar no muta el estado de entrada.
+    state = PivotState(
+        phase=int(Phase.IMPULSE), direction=BULLISH, phase1_peak_delta=_D("120")
+    )
+    bar = _bullish_sequence()[2]
+    out_a, event_a = evaluate_bar(state, bar, _PARAMS)
+    out_b, event_b = evaluate_bar(state, bar, _PARAMS)
+    assert out_a == out_b
+    assert event_a == event_b
+    assert state.phase == int(Phase.IMPULSE)  # la entrada sigue intacta
+
+
+def test_absorption_none_mantiene_la_fsm_en_fase_2() -> None:
+    """Gate ESTRUCTURAL: absorcion DIFERIDA (None) -> la FSM no confirma en vivo."""
+    bars = _bullish_sequence()
+    sin_absorcion = replace(bars[3], absorption=None)
+    state, events = _run([*bars[:3], sin_absorcion, *bars[4:]])
+    assert state.phase == int(Phase.ENCOUNTER)
+    assert all(e.kind != "confirmed" for e in events)
+    assert all(e.kind != "advance" or e.phase < int(Phase.ABSORPTION) for e in events)
+
+
+def test_impulse_score_none_no_arranca_la_fsm() -> None:
+    """NOT_EVALUABLE: sin impulse_score (historia insuficiente) no se inventa fase 1."""
+    bars = [
+        BarSignals(price=_D("99"), delta=_D("100")),
+        BarSignals(price=_D("99.5"), delta=_D("120")),
+        BarSignals(price=_D("99.8"), delta=_D("140")),
+    ]
+    state, events = _run(bars)
+    assert all(e.kind == "none" for e in events)
+    assert state == PivotState()
+    assert state.impulse_count == 0
+
+
+def test_impulse_score_none_a_media_secuencia_resetea_el_conteo() -> None:
+    """Una vela sin impulso corta la racha: el conteo vuelve a cero (no acumula)."""
+    bars = [
+        BarSignals(price=_D("99"), delta=_D("100"), impulse_score=_D("80")),
+        BarSignals(price=_D("99.5"), delta=_D("120")),  # no evaluable -> corta
+        BarSignals(price=_D("99.8"), delta=_D("140"), impulse_score=_D("80")),
+    ]
+    state, events = _run(bars)
+    assert all(e.kind == "none" for e in events)
+    assert state.phase == int(Phase.IDLE)
+    assert state.impulse_count == 1  # volvio a empezar en la tercera vela
+
+
+def test_vp_touch_none_mantiene_la_fsm_en_fase_1() -> None:
+    """Sin toque de nivel VP la FSM se queda en impulso, actualizando el pico."""
+    bars = [*_bullish_sequence()[:2], BarSignals(price=_D("99.9"), delta=_D("200"))]
+    state, events = _run(bars)
+    assert events[-1].kind == "none"
+    assert state.phase == int(Phase.IMPULSE)
+    assert state.phase1_peak_delta == _D("200")
+
+
+# --- Declaracion ADR-008 (declarada, NO cableada) --------------------------------
+
+
+def test_declarations_publica_phase_y_confidence() -> None:
+    ids = {d.source_id for d in declarations()}
+    assert ids == {PIVOTPHASE_PHASE_SOURCE_ID, PIVOTPHASE_CONFIDENCE_SOURCE_ID}
+
+
+def test_declaracion_phase_forma_adr_008() -> None:
+    phase = next(d for d in declarations() if d.source_id == PIVOTPHASE_PHASE_SOURCE_ID)
+    assert phase.source_type is SourceType.OBSERVABLE
+    assert phase.servibility is Servibility.CONTINUOUS
+    assert phase.memory_model is MemoryModel.RECURSIVE
+    assert phase.value_type is ScalarType.INTEGER
+    assert phase.cache_key_schema == (
+        "exchange",
+        "symbol",
+        "market_type",
+        "timeframe",
+        "reset_policy",
+        "formula_version",
+    )
+
+
+def test_declaracion_confidence_solo_declarada() -> None:
+    confidence = next(
+        d for d in declarations() if d.source_id == PIVOTPHASE_CONFIDENCE_SOURCE_ID
+    )
+    assert confidence.memory_model is MemoryModel.RECURSIVE
+    assert confidence.value_type is ScalarType.DECIMAL
+    assert confidence.servibility is Servibility.CONTINUOUS
+
+
+def test_consumes_no_incluye_absorption_todavia() -> None:
+    """absorption.* se ANADE en P5: listarla ahora romperia el DAG del catalogo vivo."""
+    for declaration in declarations():
+        assert declaration.consumes == (
+            "orderflow.delta",
+            "orderflow.delta_momentum",
+            "vp.poc",
+            "vp.vah",
+            "vp.val",
+            "notrade.score",
+        )
+        assert not any(c.startswith("absorption.") for c in declaration.consumes)
+
+
+def test_declaracion_no_esta_cableada_en_el_discovery_vivo() -> None:
+    """P3 NO cablea: el catalogo vivo sigue sin pivotphase.* (cableado en P5)."""
+    from ce_v5.platform.rules.discovery import discover_declarations
+
+    ids = {d.source_id for d in discover_declarations()}
+    assert not any(i.startswith("pivotphase.") for i in ids)
