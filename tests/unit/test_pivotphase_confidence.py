@@ -75,6 +75,8 @@ def test_f7_penalizes_higher_void_lowers_confidence() -> None:
     }
     low = compute_confidence(ConfidenceInputs(**base, f7=_fin(1)), default_params())
     high = compute_confidence(ConfidenceInputs(**base, f7=_fin(5)), default_params())
+    assert high.confidence is not None
+    assert low.confidence is not None
     assert high.confidence < low.confidence
 
 
