@@ -104,6 +104,11 @@ TABLAS_SIN_TENANT_PERMITIDAS: dict[str, str] = {
     # ema_snapshot: estado de replay del RECURSIVE ema.value; scope=system SIN tenant_id
     # (shared_evaluation public_cross_tenant, como cvd_snapshot); append-only.
     "ema_snapshot": "system",
+    # Estado de replay de pivotphase (RECURSIVE) del motor (P08c P5, migracion 0024).
+    # Mismo regimen que cvd_snapshot: system, sin tenant_id (pivotphase.phase/confidence
+    # son shared_evaluation/public_cross_tenant; darle tenant_id duplicaria el mismo
+    # estado por tenant, la explosion que ADR-014 evita). Escritura acotada a INSERT.
+    "pivotphase_snapshot": "system",
 }
 
 # Roles de RUNTIME: los que se conectan con una credencial en un proceso vivo.

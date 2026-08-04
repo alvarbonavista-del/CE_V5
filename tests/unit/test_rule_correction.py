@@ -28,16 +28,18 @@ from ce_v5.platform.rules.correction import (
     correction_scope,
     is_within_window,
 )
+from ce_v5.platform.rules.cvd import CVD_SOURCE_ID, ResetPolicy
 from ce_v5.platform.rules.discovery import discover_declarations
 from ce_v5.platform.rules.rawclose import (
     MARKET_CLOSE_SOURCE_ID,
     market_close_declaration,
 )
-from ce_v5.platform.rules.volume_profile import VP_POC_SOURCE_ID
+from ce_v5.platform.rules.volume_profile import DEFAULT_BIN_COUNT, VP_POC_SOURCE_ID
 from source.datasource import (
     DataSourceDeclaration,
     HistoryUnit,
     MemoryModel,
+    ParamSpec,
     Servibility,
     SharingScope,
     SourceType,
@@ -475,29 +477,185 @@ def _catalogo_vivo() -> DataSourceCatalog:
     return catalog
 
 
-def test_compile_rechaza_params_de_fuente_mat05_q4() -> None:
-    """GUARDA MAT-05 Q4: un override de parametro se RECHAZA, no se sirve por defecto.
+def test_compile_propaga_params_de_fuente_mat05_q2() -> None:
+    """MAT-05 Q2 (INVIERTE la guarda-cuarentena de Q4): el override se PROPAGA.
 
-    El contrato SI admite params en la referencia (DataSourceRef.params) y el validador
-    semantico los acepta como legitimos, pero el compilador los DESCARTA y la
-    materializacion usa el default de la declaracion. Servir 50 a quien pidio 7 seria la
-    deuda D-E2.1 de v4 ("pedir rsi(period=7) ejecutaba rsi(14) SIN AVISO"), y mentiria
-    la cache_key, que SI discrimina por bin_count. Se rechaza en compilacion.
+    Hasta MAT-05 Q2 el compilador RECHAZABA cualquier ref.params (cuarentena), porque
+    descartarlos y servir el default seria la deuda D-E2.1 de v4 ("pedir rsi(period=7)
+    ejecutaba rsi(14) SIN AVISO"). Ahora no se descarta ni se rechaza: se valida contra
+    la declaracion y viaja al plan como param EFECTIVO, que es lo que el materializador
+    consume. Este test es el que MUERDE si alguien volviera a descartarlos.
+
+    Usa cvd.value/reset_policy (OVERRIDE-HABILITADO) y no vp.bin_count: desde el fix
+    de fail-loud selectivo (REGISTRO_DECISIONES seccion 34) bin_count quedo DEFAULT-ONLY
+    porque su materializador no lo consume; cvd.value es el consumidor de referencia de
+    esta propagacion (with_params, MAT-05 Q2).
     """
     condicion = _condition(
-        VP_POC_SOURCE_ID,
+        CVD_SOURCE_ID,
         params=(
             DataSourceParam(
-                name="bin_count",
-                value=ScalarValue(scalar_type=ScalarType.INTEGER, integer_value=7),
+                name="reset_policy",
+                value=ScalarValue(
+                    scalar_type=ScalarType.STRING,
+                    string_value=ResetPolicy.SESSION_UTC.value,
+                ),
             ),
         ),
     )
-    with pytest.raises(CompilationError, match="parametros de fuente"):
+    plan = compile(_rule(condicion), _catalogo_vivo())
+    cvd = next(s for s in plan.resolved_sources if s.source_id == CVD_SOURCE_ID)
+    efectivo = cvd.param("reset_policy")
+    assert efectivo is not None
+    assert efectivo.string_value == ResetPolicy.SESSION_UTC.value
+
+
+def test_compile_rechaza_override_no_habilitado_vp_bin_count() -> None:
+    """FIX fail-loud selectivo (REGISTRO_DECISIONES seccion 34): vp.bin_count es
+    DEFAULT-ONLY porque FootprintWindowedSpec no lo consume todavia (PENDIENTE
+    CONOCIDO de la seccion 33). Antes de este fix el override compilaba y viajaba, y
+    el perfil se seguia binando con el default en silencio; ahora se rechaza en
+    compilacion.
+    """
+    condicion = _condition(
+        VP_POC_SOURCE_ID,
+        params=_params(
+            "bin_count", ScalarValue(scalar_type=ScalarType.INTEGER, integer_value=100)
+        ),
+    )
+    with pytest.raises(CompilationError, match="DEFAULT-ONLY"):
         compile(_rule(condicion), _catalogo_vivo())
 
 
+def test_compile_rechaza_reset_policy_fuera_de_dominio() -> None:
+    """Dominio en compilacion (OPCIONAL Q4, seccion 34): reset_policy fuera del enum
+    de ResetPolicy se rechaza EN COMPILACION, no solo en with_params.
+    """
+    condicion = _condition(
+        CVD_SOURCE_ID,
+        params=_params(
+            "reset_policy",
+            ScalarValue(scalar_type=ScalarType.STRING, string_value="semanal"),
+        ),
+    )
+    with pytest.raises(CompilationError, match="dominio"):
+        compile(_rule(condicion), _catalogo_vivo())
+
+
+def _ema_con_period_default_only() -> DataSourceDeclaration:
+    """Fuente sintetica con un param DEFAULT-ONLY, generica sobre ema.value: no hay
+    materializador de ema en v5.0 (solo sirve para probar el rechazo de compilacion
+    sin depender de una fuente real del catalogo vivo).
+    """
+    return DataSourceDeclaration(
+        source_id="ema.value",
+        source_type=SourceType.OBSERVABLE,
+        servibility=Servibility.CONTINUOUS,
+        memory_model=MemoryModel.RECURSIVE,
+        value_type=ScalarType.DECIMAL,
+        evaluation_contexts=("1h",),
+        history_units=(HistoryUnit.BARS,),
+        params=(
+            ParamSpec(
+                name="period",
+                value_type=ScalarType.INTEGER,
+                default=ScalarValue(scalar_type=ScalarType.INTEGER, integer_value=14),
+            ),
+        ),
+        shared_evaluation=True,
+        sharing_scope=SharingScope.PUBLIC_CROSS_TENANT,
+        cache_key_schema=("exchange", "symbol", "timeframe"),
+    )
+
+
+def test_compile_rechaza_override_default_only_generico() -> None:
+    """FIX fail-loud selectivo (seccion 34): un param declarado SIN estar en
+    overridable_params es DEFAULT-ONLY para CUALQUIER fuente, no solo vp.bin_count.
+    """
+    catalog = DataSourceCatalog()
+    catalog.register(_ema_con_period_default_only())
+    catalog.validate()
+    condicion = _condition(
+        "ema.value",
+        params=_params(
+            "period", ScalarValue(scalar_type=ScalarType.INTEGER, integer_value=20)
+        ),
+    )
+    with pytest.raises(CompilationError, match="DEFAULT-ONLY"):
+        compile(_rule(condicion), catalog)
+
+
 def test_compile_admite_la_misma_fuente_sin_params() -> None:
-    """La guarda es QUIRURGICA: sin override, vp.poc compila con su default."""
+    """ADITIVIDAD D7: sin override, vp.poc compila y toma el DEFAULT declarado."""
     plan = compile(_rule(_condition(VP_POC_SOURCE_ID)), _catalogo_vivo())
-    assert VP_POC_SOURCE_ID in {s.source_id for s in plan.resolved_sources}
+    poc = next(s for s in plan.resolved_sources if s.source_id == VP_POC_SOURCE_ID)
+    por_defecto = poc.param("bin_count")
+    assert por_defecto is not None
+    assert por_defecto.integer_value == DEFAULT_BIN_COUNT
+
+
+def _params(name: str, value: ScalarValue) -> tuple[DataSourceParam, ...]:
+    return (DataSourceParam(name=name, value=value),)
+
+
+def test_compile_rechaza_param_desconocido() -> None:
+    """Un param que la fuente NO declara se rechaza: nunca se degrada al default."""
+    condicion = _condition(
+        VP_POC_SOURCE_ID,
+        params=_params(
+            "periodo_inventado",
+            ScalarValue(scalar_type=ScalarType.INTEGER, integer_value=7),
+        ),
+    )
+    with pytest.raises(CompilationError, match="no declara el parametro"):
+        compile(_rule(condicion), _catalogo_vivo())
+
+
+def test_compile_rechaza_param_con_tipo_erroneo() -> None:
+    """reset_policy se declara STRING: pasarlo como entero es un tipo incompatible.
+
+    Usa cvd.reset_policy (OVERRIDE-HABILITADO) y no vp.bin_count: bin_count es
+    DEFAULT-ONLY desde el fix de la seccion 34 y el override se rechazaria antes de
+    llegar al chequeo de tipo, sin ejercitarlo.
+    """
+    condicion = _condition(
+        CVD_SOURCE_ID,
+        params=_params(
+            "reset_policy",
+            ScalarValue(scalar_type=ScalarType.INTEGER, integer_value=7),
+        ),
+    )
+    with pytest.raises(CompilationError, match="tipos incompatibles"):
+        compile(_rule(condicion), _catalogo_vivo())
+
+
+def test_compile_rechaza_override_de_window_bars() -> None:
+    """window_bars NO es param: es constante FIJA de materializacion (MAT-05 Q3).
+
+    Se rechaza con mensaje PROPIO, no con el generico de param desconocido: quien la
+    escribe cree que es configurable por regla y merece saber por que no lo es.
+    """
+    condicion = _condition(
+        VP_POC_SOURCE_ID,
+        params=_params(
+            "window_bars",
+            ScalarValue(scalar_type=ScalarType.INTEGER, integer_value=25),
+        ),
+    )
+    with pytest.raises(CompilationError, match="constante fija de materializacion"):
+        compile(_rule(condicion), _catalogo_vivo())
+
+
+def test_compile_aditividad_market_close_sin_params() -> None:
+    """ADITIVIDAD D7: market.close no declara params y compila EXACTAMENTE como antes.
+
+    Su tupla de efectivos es vacia (no una con defaults inventados), asi que el dispatch
+    ni siquiera entra en la rama de ligado: el camino de las reglas que ya existian no
+    cambia de comportamiento.
+    """
+    plan = compile(_rule(_condition(MARKET_CLOSE_SOURCE_ID)), _catalogo_vivo())
+    close = next(
+        s for s in plan.resolved_sources if s.source_id == MARKET_CLOSE_SOURCE_ID
+    )
+    assert close.params == ()
+    assert close.param("bin_count") is None

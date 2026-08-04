@@ -18,6 +18,14 @@ El validador enforce 1 y 2 (lo verificable y lo que el consumidor -- P08b -- nec
 ACEPTA formula_version/as_of como dims opcionales. Es ADITIVO: pasa todas las
 declaraciones ya construidas. El HANDOFF documenta cuando aplican 3 y 4 por naturaleza,
 con un ejemplo por memory_model.
+
+ALCANCE: esto valida el ESQUEMA (los nombres de las dimensiones). El cache_key-VALOR no
+existe en v5.0 -- no hay cache de evaluacion compartida que lo consuma, y construirlo
+sin consumidor seria codigo muerto (5.11). DIFERIDO GATEADO (MAT-05 Q2): cuando esa se
+implemente, su constructor DEBE codificar los params EFECTIVOS del plan
+(ResolvedSource.params, ya propagados por el compilador), NO los defaults de la
+declaracion, y los tests 5/6 anti-colision son OBLIGATORIOS. Ver REGISTRO_DECISIONES
+seccion 33.
 """
 
 from __future__ import annotations

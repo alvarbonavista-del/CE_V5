@@ -19,6 +19,7 @@ from ce_v5.platform.rules.cvd import (
     ResetPolicy,
     compute_cvd,
     cvd_declaration,
+    session_starts,
 )
 from ce_v5.platform.rules.orderflow import (
     ORDERFLOW_DELTA_SOURCE_ID,
@@ -118,3 +119,29 @@ class TestComputeCvd:
 
     def test_una_sola_barra(self) -> None:
         assert compute_cvd([(1000, Decimal("7"))]) == (Decimal("7"),)
+
+
+class TestSessionStarts:
+    """La frontera de sesion UTC, unica para compute_cvd y el materializador."""
+
+    def test_la_primera_barra_sin_predecesora_no_abre_sesion(self) -> None:
+        # Arranca el acumulado, no lo resetea: por eso el bootstrap y el replay desde
+        # ancla dan la MISMA cola (ADR-007).
+        assert session_starts([10 * _DAY + 1000]) == (False,)
+
+    def test_marca_el_cruce_de_medianoche(self) -> None:
+        open_times = [10 * _DAY + 1000, 10 * _DAY + 2000, 11 * _DAY + 500]
+        assert session_starts(open_times) == (False, False, True)
+
+    def test_el_ancla_es_la_predecesora_de_la_primera_barra(self) -> None:
+        # Con ancla en el dia 10, la primera barra del dia 11 SI abre sesion: es lo que
+        # permite que el replay acotado resetee donde lo haria el acumulado completo.
+        assert session_starts(
+            [11 * _DAY + 500], previous_open_time=10 * _DAY + 2000
+        ) == (True,)
+        assert session_starts(
+            [10 * _DAY + 3000], previous_open_time=10 * _DAY + 2000
+        ) == (False,)
+
+    def test_ventana_vacia(self) -> None:
+        assert session_starts([]) == ()

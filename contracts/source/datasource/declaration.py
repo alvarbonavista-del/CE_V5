@@ -120,13 +120,33 @@ class SharingScope(StrEnum):
 
 
 class ParamSpec(BaseModel):
-    """Parametro declarado de una fuente: nombre, tipo, default (INFORME 6 sec 12.2)."""
+    """Parametro declarado de una fuente: nombre, tipo, default (INFORME 6 sec 12.2).
+
+    valid_values (OPCIONAL, MAT-05 Q2 fix) es el DOMINIO del parametro como strings
+    PLANOS: el modulo de la fuente conoce su propio enum (p.ej. ResetPolicy de cvd) y
+    lo vierte aqui sin que este contrato importe platform. Vacio = sin restriccion de
+    dominio (el compilador solo valida nombre+tipo). Solo tiene sentido junto a
+    value_type STRING: un dominio de enteros/decimales no se representa como texto
+    plano sin perder precision.
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     name: str = Field(pattern=PARAM_NAME_PATTERN)
     value_type: ScalarType
     default: ScalarValue | None = None
+    valid_values: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def _dominio_solo_en_string(self) -> "ParamSpec":
+        if self.valid_values and self.value_type is not ScalarType.STRING:
+            msg = (
+                f"ParamSpec {self.name!r}: valid_values exige value_type STRING "
+                f"(recibe {self.value_type.value!r}); un dominio de texto plano no "
+                "representa otros tipos sin perder precision."
+            )
+            raise ValueError(msg)
+        return self
 
 
 class DataSourceDeclaration(BaseModel):
@@ -155,6 +175,11 @@ class DataSourceDeclaration(BaseModel):
     evaluation_contexts: tuple[ContextToken, ...] = Field(min_length=1)
     history_units: tuple[HistoryUnit, ...] = Field(min_length=1)
     params: tuple[ParamSpec, ...] = ()
+    # Subconjunto de params.name que el materializador CONSUME hoy (MAT-05 Q2 fix).
+    # Un param declarado sin estar aqui es DEFAULT-ONLY: viaja con su default, pero un
+    # override de regla se rechaza en compilacion (fail-loud) en vez de compilar y
+    # ser ignorado en silencio por un materializador que nunca lo lee.
+    overridable_params: tuple[str, ...] = ()
     shared_evaluation: bool
     sharing_scope: SharingScope
     cache_key_schema: tuple[str, ...] = Field(min_length=1)
@@ -166,5 +191,19 @@ class DataSourceDeclaration(BaseModel):
     def _sin_autoconsumo(self) -> "DataSourceDeclaration":
         if self.source_id in self.consumes:
             msg = "una fuente no puede consumirse a si misma (grafo sin ciclos)."
+            raise ValueError(msg)
+        return self
+
+    @model_validator(mode="after")
+    def _overridable_params_declarados(self) -> "DataSourceDeclaration":
+        declarados = {spec.name for spec in self.params}
+        desconocidos = [
+            name for name in self.overridable_params if name not in declarados
+        ]
+        if desconocidos:
+            msg = (
+                f"{self.source_id}: overridable_params {desconocidos!r} no estan "
+                f"declarados en params ({sorted(declarados)!r})."
+            )
             raise ValueError(msg)
         return self

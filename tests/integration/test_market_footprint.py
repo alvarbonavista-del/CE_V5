@@ -32,6 +32,7 @@ import redis
 from ce_v5.entrypoints.worker_rules.materializers import (
     SOURCE_MATERIALIZERS,
     FootprintWindowedSpec,
+    ParameterizedMaterializer,
 )
 from ce_v5.infra.bus_redis import RedisBusConfig, RedisEventBus, create_client
 from ce_v5.infra.db.cvd_snapshot import read_cvd_snapshot_before, write_cvd_snapshot
@@ -41,9 +42,16 @@ from ce_v5.infra.db.market_footprint import (
     read_footprint_window,
 )
 from ce_v5.infra.db.outbox_publisher import OutboxPublisher, topic_for
+from ce_v5.infra.db.pivotphase_snapshot import (
+    read_pivotphase_snapshot_before,
+    write_pivotphase_snapshot,
+)
 from ce_v5.infra.db.psycopg_adapter import PsycopgDatabase
 from ce_v5.platform.rules.cvd import CVD_SOURCE_ID, ResetPolicy
-from ce_v5.platform.rules.orderflow import ORDERFLOW_DELTA_SOURCE_ID
+from ce_v5.platform.rules.orderflow import (
+    ORDERFLOW_DELTA_MOMENTUM_SOURCE_ID,
+    ORDERFLOW_DELTA_SOURCE_ID,
+)
 from ce_v5.platform.rules.volume_profile import (
     DEFAULT_BIN_COUNT,
     compute_volume_profile,
@@ -59,6 +67,7 @@ from source.families.footprint import (
 )
 from source.families.market import MarketType, Timeframe
 from source.families.registry import expected_event_schema_version
+from source.rules.scalar import ScalarType, ScalarValue
 from source.time import MaturityState
 
 _DSN = os.environ.get("CE_V5_DATABASE_URL")
@@ -896,6 +905,138 @@ class TestStoreDelSnapshotDeCvd:
         assert ancla[1] == valor
 
 
+@pytest.fixture
+def limpiar_pivotphase_snapshot(migrator_db: PsycopgDatabase) -> Iterator[None]:
+    """pivotphase_snapshot: sin FK a nadie, se acumularia entre ejecuciones (como
+    cvd_snapshot).
+
+    Se limpia con el rol de MIGRACIONES a proposito: el rol de reglas NO tiene DELETE
+    sobre su propio estado (append-only, 0024), asi que no podria hacerlo ni para un
+    test -- y eso es exactamente lo que el check 5.20 garantiza.
+    """
+
+    def _wipe() -> None:
+        with migrator_db.transaction() as session:
+            session.execute("DELETE FROM pivotphase_snapshot")
+
+    _wipe()
+    yield
+    _wipe()
+
+
+_PARAMS_VERSION = "v1"
+_PARAMS_VERSION_B = "v2"
+
+
+def _escribir_pivotphase_snapshot(
+    rules_db: PsycopgDatabase,
+    open_time: int,
+    state: str,
+    confidence: Decimal | None,
+    params_version: str = _PARAMS_VERSION,
+) -> None:
+    """Escribe un snapshot con el rol de REGLAS (el INSERT que le dio la 0024)."""
+    with rules_db.transaction() as session:
+        write_pivotphase_snapshot(
+            session,
+            "binance",
+            "BTC-USDT",
+            _TF.value,
+            params_version,
+            open_time,
+            state,
+            confidence,
+        )
+
+
+def _leer_pivotphase_ancla(
+    rules_db: PsycopgDatabase,
+    open_time: int,
+    params_version: str = _PARAMS_VERSION,
+) -> tuple[int, str, Decimal | None] | None:
+    with rules_db.transaction() as session:
+        return read_pivotphase_snapshot_before(
+            session, "binance", "BTC-USDT", _TF.value, params_version, open_time
+        )
+
+
+class TestStoreDelSnapshotDePivotphase:
+    """P08c P5 T1: el estado de replay del RECURSIVE pivotphase, escrito y leido por
+    el ROL DE REGLAS (mismo regimen que cvd_snapshot, 0024).
+    """
+
+    def test_write_y_read_before_devuelve_el_snapshot_escrito(
+        self,
+        rules_db: PsycopgDatabase,
+        limpiar_pivotphase_snapshot: None,
+    ) -> None:
+        _escribir_pivotphase_snapshot(
+            rules_db, _OPEN, "estado-serializado", Decimal("42.50")
+        )
+        assert _leer_pivotphase_ancla(rules_db, _OPEN) == (
+            _OPEN,
+            "estado-serializado",
+            Decimal("42.50"),
+        )
+
+    def test_reinsertar_la_misma_barra_es_idempotente(
+        self,
+        rules_db: PsycopgDatabase,
+        limpiar_pivotphase_snapshot: None,
+    ) -> None:
+        # Reevaluar la misma barra recomputa el MISMO estado (determinista), asi que
+        # el segundo INSERT es un duplicado exacto: ON CONFLICT DO NOTHING lo absorbe.
+        _escribir_pivotphase_snapshot(rules_db, _OPEN, "estado", Decimal("10"))
+        _escribir_pivotphase_snapshot(rules_db, _OPEN, "estado", Decimal("10"))
+
+        assert (
+            _contar(
+                rules_db,
+                "SELECT count(*) FROM pivotphase_snapshot WHERE open_time = %s",
+                (_OPEN,),
+            )
+            == 1
+        )
+
+    def test_sin_ancla_anterior_devuelve_none(
+        self,
+        rules_db: PsycopgDatabase,
+        limpiar_pivotphase_snapshot: None,
+    ) -> None:
+        # None NO es un cero ni un IDLE implicito: significa "no hay ancla", y el
+        # materializador arranca desde PivotState() (bootstrap).
+        assert _leer_pivotphase_ancla(rules_db, _OPEN) is None
+
+    def test_aislamiento_por_params_version(
+        self,
+        rules_db: PsycopgDatabase,
+        limpiar_pivotphase_snapshot: None,
+    ) -> None:
+        # Dos params_version son HECHOS DISTINTOS (como reset_policy en cvd_snapshot,
+        # OA-1): un snapshot de una version no es el ancla de otra.
+        _escribir_pivotphase_snapshot(
+            rules_db, _OPEN, "estado-v1", Decimal("50"), _PARAMS_VERSION
+        )
+        assert _leer_pivotphase_ancla(rules_db, _OPEN, _PARAMS_VERSION_B) is None
+        assert _leer_pivotphase_ancla(rules_db, _OPEN, _PARAMS_VERSION) == (
+            _OPEN,
+            "estado-v1",
+            Decimal("50"),
+        )
+
+    def test_confidence_none_se_guarda_y_se_lee_como_none(
+        self,
+        rules_db: PsycopgDatabase,
+        limpiar_pivotphase_snapshot: None,
+    ) -> None:
+        # confidence None (NOT_EVALUABLE, ningun factor activo evaluable) es un dato
+        # legitimo del modelo: debe persistir y volver como None, no como 0.
+        _escribir_pivotphase_snapshot(rules_db, _OPEN, "estado-not-evaluable", None)
+        ancla = _leer_pivotphase_ancla(rules_db, _OPEN)
+        assert ancla is not None
+        assert ancla[2] is None
+
+
 class TestLectorDeRangoDeBarDelta:
     """3.2: los deltas POSTERIORES al ancla, leidos por RANGO con el rol de reglas.
 
@@ -1031,6 +1172,30 @@ def _materializar_cvd(
         )
 
 
+def _materializar_cvd_session_utc(
+    rules_db: PsycopgDatabase, open_time: int, history_bars: int
+) -> tuple[Decimal, ...]:
+    """cvd.value con el param EFECTIVO reset_policy=session_utc (MAT-05 Q2).
+
+    Liga el spec del registro con el param, igual que hace el dispatch cuando el plan
+    trae el override; el registro conserva su instancia rolling.
+    """
+    spec = SOURCE_MATERIALIZERS[CVD_SOURCE_ID]
+    assert isinstance(spec, ParameterizedMaterializer)
+    ligada = spec.with_params(
+        {
+            "reset_policy": ScalarValue(
+                scalar_type=ScalarType.STRING,
+                string_value=ResetPolicy.SESSION_UTC.value,
+            )
+        }
+    )
+    with rules_db.transaction() as session:
+        return ligada.materialize(
+            session, "binance", "BTC-USDT", _TF.value, open_time, history_bars
+        )
+
+
 class TestCvdIntegratorReplayDesdeSnapshot:
     """cvd.value INTEGRATOR: replay ACOTADO desde snapshot contra PostgreSQL (MAT-07).
 
@@ -1139,3 +1304,175 @@ class TestCvdIntegratorReplayDesdeSnapshot:
         # falsa que envenenaria todos los replays posteriores.
         assert _materializar_cvd(rules_db, _OPEN, 5) == ()
         assert _leer_ancla(rules_db, _OPEN + 10 * _TF.duration_ms) is None
+
+
+class TestCvdSessionUtcPorParametroEfectivo:
+    """MAT-05 Q2 end-to-end: el param de la regla CAMBIA el hecho materializado.
+
+    Es el consumidor de referencia de la propagacion de params: cvd.value con
+    reset_policy=session_utc materializa una serie DISTINTA de la rolling por defecto,
+    contra PostgreSQL real y por el spec del REGISTRO (no uno de prueba). Si el param se
+    perdiera por el camino, las dos series saldrian iguales y este test peta.
+    """
+
+    def _sembrar_a_caballo_de_medianoche(
+        self, persistir: Persistir
+    ) -> list[FootprintClosedPayload]:
+        """Cuatro barras: dos del dia UTC anterior y dos del siguiente.
+
+        _OPEN cae EXACTAMENTE en medianoche UTC (multiplo de 86_400_000), asi que las
+        dos primeras barras quedan en el dia D-1 y la tercera ABRE el dia D. Sin cruce
+        no habria nada que distinguir entre rolling y session_utc.
+        """
+        assert _OPEN % 86_400_000 == 0
+        escritas: list[FootprintClosedPayload] = []
+        for indice, desplazamiento in enumerate((-2, -1, 0, 1)):
+            payload = _closed(
+                open_time=_OPEN + desplazamiento * _TF.duration_ms,
+                offset=Decimal(indice),
+            )
+            assert (
+                persistir(
+                    payload, MarketFootprintEventType.FOOTPRINT_CLOSED, _EVENT_TIME
+                )
+                is True
+            )
+            escritas.append(payload)
+        return escritas
+
+    def test_session_utc_resetea_en_medianoche_y_rolling_no(
+        self,
+        rules_db: PsycopgDatabase,
+        migrator_db: PsycopgDatabase,
+        persistir_footprint: Persistir,
+        limpiar_footprint: None,
+        limpiar_cvd_snapshot: None,
+    ) -> None:
+        escritas = self._sembrar_a_caballo_de_medianoche(persistir_footprint)
+        deltas = [barra.bar_delta for barra in escritas]
+        assert len(set(deltas)) == 4  # cada barra distinguible por su delta.
+        ultimo = escritas[-1].open_time
+
+        rolling = _materializar_cvd(rules_db, ultimo, 4)
+        _borrar_snapshots(migrator_db)
+        session = _materializar_cvd_session_utc(rules_db, ultimo, 4)
+
+        # rolling: acumulado continuo por las cuatro barras.
+        assert rolling == tuple(_cumsum(deltas))
+        # session_utc: la tercera barra ABRE dia UTC nuevo y reinicia el acumulado.
+        assert session == (
+            deltas[0],
+            deltas[0] + deltas[1],
+            deltas[2],
+            deltas[2] + deltas[3],
+        )
+        # Lo que prueba que el param VIAJA: las dos series no son la misma.
+        assert session != rolling
+
+    def test_el_param_efectivo_es_bit_exacto_y_reproducible(
+        self,
+        rules_db: PsycopgDatabase,
+        migrator_db: PsycopgDatabase,
+        persistir_footprint: Persistir,
+        limpiar_footprint: None,
+        limpiar_cvd_snapshot: None,
+    ) -> None:
+        # ADR-007: misma base + mismo param -> MISMA serie, bit a bit. Se borra el
+        # snapshot entre pasadas para que la segunda recorra el mismo camino que la
+        # primera (bootstrap), no uno sembrado por ella.
+        escritas = self._sembrar_a_caballo_de_medianoche(persistir_footprint)
+        ultimo = escritas[-1].open_time
+
+        primera = _materializar_cvd_session_utc(rules_db, ultimo, 4)
+        _borrar_snapshots(migrator_db)
+        segunda = _materializar_cvd_session_utc(rules_db, ultimo, 4)
+
+        assert primera == segunda
+
+    def test_el_snapshot_de_session_no_contamina_al_rolling(
+        self,
+        rules_db: PsycopgDatabase,
+        persistir_footprint: Persistir,
+        limpiar_footprint: None,
+        limpiar_cvd_snapshot: None,
+    ) -> None:
+        # reset_policy entra en la IDENTIDAD de cvd_snapshot: el ancla de un session-CVD
+        # no puede sembrar un rolling-CVD. Sin esto, materializar una politica
+        # envenenaria la otra.
+        escritas = self._sembrar_a_caballo_de_medianoche(persistir_footprint)
+        deltas = [barra.bar_delta for barra in escritas]
+        ultimo = escritas[-1].open_time
+
+        _materializar_cvd_session_utc(rules_db, ultimo, 4)
+        rolling = _materializar_cvd(rules_db, ultimo, 4)
+
+        assert rolling == tuple(_cumsum(deltas))
+
+
+def _materializar_delta_momentum(
+    rules_db: PsycopgDatabase, open_time: int, history_bars: int
+) -> tuple[Decimal, ...]:
+    """delta_momentum con el spec REAL del registro, leyendo con el rol de reglas."""
+    spec = SOURCE_MATERIALIZERS[ORDERFLOW_DELTA_MOMENTUM_SOURCE_ID]
+    with rules_db.transaction() as session:
+        return spec.materialize(
+            session, "binance", "BTC-USDT", _TF.value, open_time, history_bars
+        )
+
+
+class TestDeltaMomentumSobreLaSerieDeDelta:
+    """orderflow.delta_momentum: DAG de 2o NIVEL contra PostgreSQL real (MAT-08).
+
+    Es la primera fuente que se materializa sobre otra fuente DERIVADA
+    (orderflow.delta), no sobre el footprint crudo: el DerivedSeriesSpec pide la serie
+    de la base a SU materializador del registro y le aplica la funcion pura de paridad
+    v4. Lo que estos dos tests separan es el borde: con historia por delante, el primer
+    valor de la ventana usa su prior REAL (lookback=1); en la primera barra ABSOLUTA no
+    hay prior y la funcion pura da 0.
+    """
+
+    def test_con_historia_previa_el_primer_valor_usa_su_prior_real(
+        self,
+        rules_db: PsycopgDatabase,
+        persistir_footprint: Persistir,
+        limpiar_footprint: None,
+    ) -> None:
+        # 5.1 EL TEST DEL LOOKBACK. Con 5 barras y history_bars=3, la ventana pedida son
+        # las barras 2, 3 y 4. Si el spec no pidiera la barra 1 de mas, el primer valor
+        # saldria 0 (borde falso) en vez de d2-d1: un cambio de delta INVENTADO justo en
+        # el punto donde una regla de momentum dispararia.
+        escritas = _escribir_barras(persistir_footprint, 5)
+        deltas = [barra.bar_delta for barra in escritas]
+        assert len(set(deltas)) == 5  # cada barra distinguible por su delta.
+
+        serie = _materializar_delta_momentum(rules_db, escritas[-1].open_time, 3)
+
+        assert serie == (
+            deltas[2] - deltas[1],
+            deltas[3] - deltas[2],
+            deltas[4] - deltas[3],
+        )
+        assert serie[0] != Decimal(0)  # el borde falso NO aparece.
+
+    def test_en_la_primera_barra_absoluta_no_hay_prior_y_vale_cero(
+        self,
+        rules_db: PsycopgDatabase,
+        persistir_footprint: Persistir,
+        limpiar_footprint: None,
+    ) -> None:
+        # 5.2 El borde REAL: pidiendo TODA la historia, la barra 0 no tiene barra previa
+        # que exista, asi que compute_delta_momentum da 0 [PARIDAD v4]. Eso NO es el
+        # borde falso del test anterior: aqui el cero es la respuesta correcta.
+        escritas = _escribir_barras(persistir_footprint, 5)
+        deltas = [barra.bar_delta for barra in escritas]
+
+        serie = _materializar_delta_momentum(rules_db, escritas[-1].open_time, 5)
+
+        assert serie == (
+            Decimal(0),
+            deltas[1] - deltas[0],
+            deltas[2] - deltas[1],
+            deltas[3] - deltas[2],
+            deltas[4] - deltas[3],
+        )
+        assert len(serie) == 5
