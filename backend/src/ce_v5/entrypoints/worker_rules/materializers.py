@@ -254,9 +254,11 @@ class CvdIntegratorSpec:
     def with_params(self, params: Mapping[str, ScalarValue]) -> SourceMaterializer:
         """Copia ligada al reset_policy EFECTIVO de la regla (MAT-05 Q2).
 
-        El compilador ya valido nombre y tipo; aqui se valida el DOMINIO (que el texto
-        sea una ResetPolicy real), que es semantica de esta fuente y no del compilador.
-        Un valor fuera del enum falla RUIDOSO, no materializa rolling en silencio.
+        El compilador ya valido nombre, tipo Y dominio (fix MAT-05 Q2, seccion 34:
+        ParamSpec.valid_values) para todo override que pase por compile(). Este chequeo
+        queda como ULTIMA linea de defensa para quien llame with_params directamente
+        (fuera de un ExecutionPlan compilado): un valor fuera del enum falla RUIDOSO,
+        no materializa rolling en silencio.
         """
         value = params.get("reset_policy")
         if value is None or value.string_value is None:

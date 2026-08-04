@@ -2317,8 +2317,10 @@ QUE SE CONSTRUYE:
 PENDIENTE CONOCIDO (no es deuda de esta tanda): vp.* declara bin_count como param y su
 transform sigue fijando DEFAULT_BIN_COUNT. La maquinaria ya lo propaga hasta el
 materializador; cablear el consumo en FootprintWindowedSpec es trabajo de su propia
-tanda. Hoy un override de bin_count compila y viaja, pero el perfil se sigue binando
-con 50: queda anotado aqui para que no pase por cableado completo.
+tanda. SUPERADO por el fix de la seccion 34: un override de bin_count YA NO compila
+en silencio -- se rechaza en compilacion (DEFAULT-ONLY) hasta que ese cableado exista --
+asi que el riesgo original (perfil binado a 50 pese al override) queda cerrado; lo que
+sigue pendiente es unicamente cablear el consumo real, no la superficie fail-loud.
 
 TESTS: 1 (override valido -> efectivos), 2 (param desconocido -> CompilationError),
 3 (tipo erroneo -> CompilationError), 4 (sin params -> defaults, D7), 7 (window_bars ->
@@ -2328,4 +2330,32 @@ DISTINTO de rolling, es bit-exacto entre pasadas y su snapshot no contamina al r
 (anti-colision de cache_key) quedan en el diferido gateado de arriba.
 
 ADR: sin ADR nuevo.
+=====================================================================
+
+34. MAT-05 Q2 FIX - OVERRIDE-HABILITADO SELECTIVO (FAIL-LOUD)
+=====================================================================
+Estado: construida en wip/p08c-params. Ratificado por Central: retirar la guarda-
+cuarentena EN BLOQUE (seccion 33) sin mas resguardo dejaba un hueco -- un override de
+un param DECLARADO pero que el materializador NO consume (p.ej. vp.bin_count) compilaba,
+viajaba al plan y se IGNORABA en silencio (perfil binado a 50 pese a pedir 100). Eso es
+la deuda D-E2.1 otra vez, solo que un nivel mas abajo (en el materializador, no en el
+compilador).
+
+QUE SE CONSTRUYE: DataSourceDeclaration gana overridable_params (subconjunto de
+params.name que el materializador CONSUME hoy); un param declarado fuera de ese
+subconjunto es DEFAULT-ONLY. El compilador (_effective_params) rechaza con
+CompilationError un override sobre un param DEFAULT-ONLY, ademas de lo que ya rechazaba
+(desconocido, tipo incompatible, window_bars). Ademas, ParamSpec gana valid_values
+(strings planos, OPCIONAL): el modulo de la fuente vierte su propio enum sin que el
+contrato importe platform, y el compilador valida el DOMINIO del override en compilacion
+(antes vivia solo en with_params, semantica de la fuente). cvd.value/reset_policy queda
+OVERRIDE-HABILITADO con su dominio (ResetPolicy); vp.*/bin_count queda DEFAULT-ONLY
+(PENDIENTE CONOCIDO de la seccion 33, ahora cerrado en su superficie fail-loud).
+
+CONSECUENCIA HEREDADA (cache_key-valor, diferido gateado de la seccion 33): el
+compilador rechaza dos refs a la misma fuente con params distintos HASTA que el
+cache_key-valor exista y permita indexar por instancia. P08b LOTE 3 lo hereda: un cruce
+de dos periodos EMA (EMA20 vs EMA50) NO compila hasta entonces.
+
+ADR: sin ADR nuevo. Esta sub-pieza NO cierra P08c ni M3.
 =====================================================================

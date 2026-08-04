@@ -87,8 +87,14 @@ def cvd_declaration() -> DataSourceDeclaration:
                     scalar_type=ScalarType.STRING,
                     string_value=ResetPolicy.ROLLING.value,
                 ),
+                # Dominio en strings planos (MAT-05 Q2 fix): cvd.py conoce su propio
+                # enum y lo vierte aqui; el contrato no importa platform.
+                valid_values=tuple(policy.value for policy in ResetPolicy),
             ),
         ),
+        # OVERRIDE-HABILITADO (MAT-05 Q2 fix): with_params (materializers.py) lo
+        # consume hoy. Es el consumidor de referencia de la propagacion de params.
+        overridable_params=("reset_policy",),
         shared_evaluation=True,
         sharing_scope=SharingScope.PUBLIC_CROSS_TENANT,
         cache_key_schema=_CVD_CACHE_KEY_SCHEMA,

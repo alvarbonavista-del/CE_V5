@@ -107,6 +107,10 @@ def _vp_declaration(source_id: str) -> DataSourceDeclaration:
                 ),
             ),
         ),
+        # bin_count queda DEFAULT-ONLY (fuera de overridable_params, MAT-05 Q2 fix):
+        # FootprintWindowedSpec todavia fija DEFAULT_BIN_COUNT y no lo consume
+        # (PENDIENTE CONOCIDO, REGISTRO_DECISIONES seccion 33). Un override compilaria
+        # y viajaria sin que nadie lo lea; se rechaza en compilacion hasta cablear eso.
         shared_evaluation=True,
         sharing_scope=SharingScope.PUBLIC_CROSS_TENANT,
         cache_key_schema=VP_CACHE_KEY_SCHEMA,

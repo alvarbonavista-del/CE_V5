@@ -301,8 +301,10 @@ class TestCvdIntegratorRegistrada:
         assert spec.with_params({}) is spec
 
     def test_with_params_rechaza_una_politica_fuera_del_enum(self) -> None:
-        # El compilador valida NOMBRE y TIPO; el DOMINIO es semantica de esta fuente.
-        # Un texto valido pero sin sentido falla RUIDOSO, no cae a rolling en silencio.
+        # Desde el fix de la seccion 34 el compilador YA rechaza este dominio para
+        # cualquier override que pase por compile(); este test cubre la llamada
+        # DIRECTA a with_params (fuera de un plan compilado), su ultima linea de
+        # defensa. Un texto valido pero sin sentido falla RUIDOSO, no cae a rolling.
         spec = SOURCE_MATERIALIZERS[CVD_SOURCE_ID]
         assert isinstance(spec, CvdIntegratorSpec)
         with pytest.raises(UnwiredSourceError, match="no es una politica de cvd"):

@@ -115,10 +115,15 @@ def _effective_params(
 ) -> tuple[tuple[str, ScalarValue], ...]:
     """Params EFECTIVOS de una referencia: defaults de la declaracion + overrides.
 
-    Valida cada override contra los params DECLARADOS (MAT-05 Q2): el nombre existe y
-    el tipo casa. FAIL-LOUD siempre: un override desconocido, mal tipado o sobre una
+    Valida cada override contra los params DECLARADOS (MAT-05 Q2): el nombre existe, el
+    param esta OVERRIDE-HABILITADO (fix MAT-05 Q2: el materializador lo consume hoy,
+    `declaration.overridable_params`) y el tipo casa; si la fuente declara un dominio
+    (`ParamSpec.valid_values`), el valor debe pertenecer a el. FAIL-LOUD siempre: un
+    override desconocido, DEFAULT-ONLY, mal tipado, fuera de dominio o sobre una
     constante fija se RECHAZA en compilacion, nunca se degrada al default en silencio
-    -- servir 50 a quien pidio 7 es exactamente la deuda D-E2.1 de v4.
+    -- servir 50 a quien pidio 7 es exactamente la deuda D-E2.1 de v4. Un param
+    DECLARADO pero no override-habilitado es el mismo riesgo: compilaria, viajaria y el
+    materializador que no lo lee lo ignoraria callado (ratificado por Central).
 
     Devuelve la tupla ORDENADA por nombre (forma canonica, como DataSourceRef.params):
     el mismo par (declaracion, referencia) produce SIEMPRE la misma tupla.
@@ -145,12 +150,27 @@ def _effective_params(
                 "recomputable (fail-loud)."
             )
             raise CompilationError(msg)
+        if override.name not in declaration.overridable_params:
+            msg = (
+                f"el parametro {override.name!r} de {source_id!r} es DEFAULT-ONLY: "
+                "esta declarado pero el materializador todavia no lo consume, asi "
+                "que un override compilaria, viajaria al plan y se ignoraria en "
+                "silencio (fail-loud, fix MAT-05 Q2)."
+            )
+            raise CompilationError(msg)
         if override.value.scalar_type is not spec.value_type:
             msg = (
                 f"el parametro {override.name!r} de {source_id!r} se declara "
                 f"{spec.value_type.value!r} y la regla lo pasa como "
                 f"{override.value.scalar_type.value!r}: tipos incompatibles "
                 "(fail-loud)."
+            )
+            raise CompilationError(msg)
+        if spec.valid_values and override.value.string_value not in spec.valid_values:
+            msg = (
+                f"el parametro {override.name!r} de {source_id!r} recibe "
+                f"{override.value.string_value!r}, fuera de su dominio valido "
+                f"{spec.valid_values!r} (fail-loud)."
             )
             raise CompilationError(msg)
         overridden[override.name] = override.value
