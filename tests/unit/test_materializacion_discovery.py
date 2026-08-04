@@ -26,6 +26,8 @@ _EXPECTED = {
     "volume.ratio_vs_avg",
     "vwap.value",
     "vwap.distance_pct",
+    "swing.high",
+    "swing.low",
 }
 
 

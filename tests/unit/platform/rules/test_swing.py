@@ -7,17 +7,29 @@ flotante): coincidencia EXACTA, sin tolerancia.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from decimal import Decimal
 
 import pytest
 
 from ce_v5.platform.rules.indicators.swing import (
     SWING_FORMULA_VERSION,
+    SWING_HIGH_SOURCE_ID,
+    SWING_LOW_SOURCE_ID,
     Pivot,
     PivotKind,
+    swing_high_declaration,
+    swing_low_declaration,
     symmetric_pivots,
 )
+from ce_v5.platform.rules.indicators.swing import declarations as swing_declarations
+from source.datasource import (
+    DataSourceDeclaration,
+    MemoryModel,
+    Servibility,
+    SharingScope,
+)
+from source.rules.scalar import ScalarType
 
 
 def _s(*vals: int) -> list[Decimal]:
@@ -130,3 +142,41 @@ def test_empty_and_short_series() -> None:
 
 def test_formula_version_pinned() -> None:
     assert SWING_FORMULA_VERSION == 1
+
+
+class TestDeclaracion:
+    """Cara declarativa de swing.high/swing.low (dictamen P08b-SWING-01)."""
+
+    @pytest.mark.parametrize(
+        ("declaration_fn", "expected_source_id"),
+        [
+            (swing_high_declaration, SWING_HIGH_SOURCE_ID),
+            (swing_low_declaration, SWING_LOW_SOURCE_ID),
+        ],
+    )
+    def test_forma_de_la_declaracion(
+        self,
+        declaration_fn: Callable[[], DataSourceDeclaration],
+        expected_source_id: str,
+    ) -> None:
+        declaration = declaration_fn()
+        assert declaration.source_id == expected_source_id
+        assert declaration.memory_model is MemoryModel.WINDOWED
+        assert declaration.servibility is Servibility.CONTINUOUS
+        assert declaration.value_type is ScalarType.DECIMAL
+        assert declaration.consumes == ("market.close",)
+        assert "strength" in declaration.cache_key_schema
+        assert "strength" in declaration.overridable_params
+        assert declaration.shared_evaluation is True
+        assert declaration.sharing_scope is SharingScope.PUBLIC_CROSS_TENANT
+
+        strength_spec = next(
+            spec for spec in declaration.params if spec.name == "strength"
+        )
+        assert strength_spec.value_type is ScalarType.INTEGER
+        assert strength_spec.default is not None
+        assert strength_spec.default.integer_value == 2
+
+    def test_declarations_incluye_ambas(self) -> None:
+        ids = {d.source_id for d in swing_declarations()}
+        assert ids == {SWING_HIGH_SOURCE_ID, SWING_LOW_SOURCE_ID}

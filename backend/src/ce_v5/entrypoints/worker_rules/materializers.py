@@ -36,7 +36,7 @@ from ce_v5.entrypoints.worker_rules.pivotphase_materializer import (
     PivotphasePhaseSpec,
 )
 from ce_v5.infra.db.cvd_snapshot import read_cvd_snapshot_before, write_cvd_snapshot
-from ce_v5.infra.db.market_candles import read_ohlcv_window
+from ce_v5.infra.db.market_candles import read_close_window, read_ohlcv_window
 from ce_v5.infra.db.market_footprint import (
     read_footprint_delta_range,
     read_footprint_window,
@@ -53,6 +53,13 @@ from ce_v5.platform.rules.indicators.candle import (
     body_pct,
     lower_shadow_pct,
     upper_shadow_pct,
+)
+from ce_v5.platform.rules.indicators.swing import (
+    SWING_HIGH_SOURCE_ID,
+    SWING_LOW_SOURCE_ID,
+    SWING_STRENGTH_DEFAULT,
+    PivotKind,
+    symmetric_pivots,
 )
 from ce_v5.platform.rules.indicators.volume import (
     LOOKBACK_DEFAULT,
@@ -110,6 +117,10 @@ PROFILE_WINDOW_BARS = 100
 # Q2 una regla puede pedir session_utc por parametro y el dispatch la propaga
 # (with_params); sin override se sigue sirviendo rolling.
 CVD_RESET_POLICY_V5 = ResetPolicy.ROLLING.value
+
+# Ventana rodante de swing.high/low. FIJA, NO param, NO cache_key (MAT-05 Q3, dictamen
+# P08b-SWING-01 Q2): la resolucion del pivote depende de strength, no de window_bars.
+SWING_WINDOW_BARS = 100
 
 
 class UnwiredSourceError(RuntimeError):
@@ -268,6 +279,76 @@ class CandleWindowedSpec:
             window_bars=self.window_bars,
             history_bars=history_bars,
         )
+
+
+@dataclass(frozen=True, slots=True)
+class SwingWindowedSpec:
+    """Materializador WINDOWED de swing.high/low (dictamen P08b-SWING-01).
+
+    Por barra emite el value del ultimo pivote confirmado del tipo (kind) en la
+    ventana rodante de window_bars cierres; si no hay pivote del tipo, FALLBACK = max
+    (HIGH) / min (LOW) de la ventana (paridad v4). WINDOWED puro: sin estado, recomputa
+    la ventana. strength es overridable (with_params); el registro guarda la instancia
+    con default.
+    """
+
+    kind: PivotKind
+    strength: int = SWING_STRENGTH_DEFAULT
+    window_bars: int = SWING_WINDOW_BARS
+
+    def _transform(self, window: Sequence[Decimal]) -> Decimal:
+        pivots = symmetric_pivots(window, self.strength)
+        matching = [p.value for p in pivots if p.kind is self.kind]
+        if matching:
+            # symmetric_pivots devuelve en orden de ancla ascendente: el ultimo es
+            # el mas reciente confirmado dentro de la ventana.
+            return matching[-1]
+        return max(window) if self.kind is PivotKind.HIGH else min(window)
+
+    def materialize(
+        self,
+        session: Session,
+        exchange: str,
+        symbol: str,
+        timeframe: str,
+        open_time: int,
+        history_bars: int,
+    ) -> tuple[Decimal, ...]:
+        base = read_close_window(
+            session,
+            exchange,
+            symbol,
+            timeframe,
+            open_time,
+            history_bars + self.window_bars - 1,
+        )
+        return materialize_windowed(
+            base,
+            self._transform,
+            window_bars=self.window_bars,
+            history_bars=history_bars,
+        )
+
+    def with_params(self, params: Mapping[str, ScalarValue]) -> SourceMaterializer:
+        """Copia ligada al strength EFECTIVO de la regla (MAT-05 Q2).
+
+        El compilador ya valido nombre y tipo (ParamSpec.value_type=INTEGER) para todo
+        override que pase por compile(). Este chequeo queda como ULTIMA linea de defensa
+        para quien llame with_params directamente (fuera de un ExecutionPlan compilado):
+        un valor fuera de dominio (strength < 1) falla RUIDOSO, no materializa con el
+        default en silencio.
+        """
+        value = params.get("strength")
+        if value is None or value.integer_value is None:
+            return self
+        strength = value.integer_value
+        if strength < 1:
+            msg = (
+                f"strength {strength!r} no es una fuerza simetrica valida (exige "
+                ">= 1): no se materializa (fail-loud)."
+            )
+            raise UnwiredSourceError(msg)
+        return replace(self, strength=strength)
 
 
 def _cvd_step(previous: Decimal, delta: Decimal) -> Decimal:
@@ -580,4 +661,6 @@ SOURCE_MATERIALIZERS: dict[str, SourceMaterializer] = {
     VWAP_DISTANCE_PCT_SOURCE_ID: CandleWindowedSpec(
         transform=_vwap_distance_pct, window_bars=N_CANDLES_DEFAULT
     ),
+    SWING_HIGH_SOURCE_ID: SwingWindowedSpec(kind=PivotKind.HIGH),
+    SWING_LOW_SOURCE_ID: SwingWindowedSpec(kind=PivotKind.LOW),
 }

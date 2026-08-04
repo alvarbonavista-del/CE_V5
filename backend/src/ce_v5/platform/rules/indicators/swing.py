@@ -26,6 +26,19 @@ from dataclasses import dataclass
 from decimal import Decimal
 from enum import StrEnum
 
+from ce_v5.platform.rules.rawclose import MARKET_CLOSE_SOURCE_ID
+from source.datasource import (
+    DataSourceDeclaration,
+    HistoryUnit,
+    MemoryModel,
+    ParamSpec,
+    Servibility,
+    SharingScope,
+    SourceType,
+)
+from source.families.market import Timeframe
+from source.rules.scalar import ScalarType, ScalarValue
+
 SWING_FORMULA_VERSION = 1
 
 
@@ -71,3 +84,59 @@ def symmetric_pivots(series: Sequence[Decimal], strength: int) -> tuple[Pivot, .
                 pivots.append(Pivot(a, v, PivotKind.LOW))
         i = b + 1
     return tuple(pivots)
+
+
+SWING_HIGH_SOURCE_ID = "swing.high"
+SWING_LOW_SOURCE_ID = "swing.low"
+
+# Fuerza simetrica N=R por defecto: el fractal (DA-I03-1). Param overridable.
+SWING_STRENGTH_DEFAULT = 2
+
+
+def _swing_declaration(source_id: str) -> DataSourceDeclaration:
+    """Declaracion comun de swing.high/swing.low (WINDOWED, dictamen P08b-SWING-01).
+
+    Pivote geometrico servible por barra: el ultimo pivote confirmado del tipo en la
+    ventana acotada, o el extremo de la ventana si no hay ninguno (fallback paridad v4).
+    WINDOWED (ficha A-1.4: recomputa ventana, SIN snapshot). strength = fuerza simetrica
+    N=R, overridable (default 2, fractal). consumes market.close (la serie de precio).
+    """
+    return DataSourceDeclaration(
+        source_id=source_id,
+        source_type=SourceType.OBSERVABLE,
+        servibility=Servibility.CONTINUOUS,
+        memory_model=MemoryModel.WINDOWED,
+        value_type=ScalarType.DECIMAL,
+        evaluation_contexts=tuple(tf.value for tf in Timeframe),
+        history_units=(HistoryUnit.BARS,),
+        params=(
+            ParamSpec(
+                name="strength",
+                value_type=ScalarType.INTEGER,
+                default=ScalarValue(
+                    scalar_type=ScalarType.INTEGER,
+                    integer_value=SWING_STRENGTH_DEFAULT,
+                ),
+            ),
+        ),
+        overridable_params=("strength",),
+        shared_evaluation=True,
+        sharing_scope=SharingScope.PUBLIC_CROSS_TENANT,
+        cache_key_schema=("exchange", "symbol", "timeframe", "strength"),
+        consumes=(MARKET_CLOSE_SOURCE_ID,),
+    )
+
+
+def swing_high_declaration() -> DataSourceDeclaration:
+    """swing.high: ultimo pivote HIGH confirmado en ventana, o max de la ventana."""
+    return _swing_declaration(SWING_HIGH_SOURCE_ID)
+
+
+def swing_low_declaration() -> DataSourceDeclaration:
+    """swing.low: ultimo pivote LOW confirmado en ventana, o min de la ventana."""
+    return _swing_declaration(SWING_LOW_SOURCE_ID)
+
+
+def declarations() -> tuple[DataSourceDeclaration, ...]:
+    """Declaraciones que este modulo publica al catalogo vivo (discovery, MAT-02)."""
+    return (swing_high_declaration(), swing_low_declaration())

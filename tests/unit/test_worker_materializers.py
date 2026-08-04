@@ -19,10 +19,12 @@ from ce_v5.entrypoints.worker_rules.materializers import (
     CVD_RESET_POLICY_V5,
     PROFILE_WINDOW_BARS,
     SOURCE_MATERIALIZERS,
+    SWING_WINDOW_BARS,
     CvdIntegratorSpec,
     DerivedSeriesSpec,
     FootprintPointLocalSpec,
     FootprintWindowedSpec,
+    SwingWindowedSpec,
     UnwiredSourceError,
     _cvd_session_step,
     _cvd_step,
@@ -33,6 +35,12 @@ from ce_v5.platform.rules.indicators.candle import (
     CANDLE_BODY_PCT_SOURCE_ID,
     CANDLE_LOWER_SHADOW_PCT_SOURCE_ID,
     CANDLE_UPPER_SHADOW_PCT_SOURCE_ID,
+)
+from ce_v5.platform.rules.indicators.swing import (
+    SWING_HIGH_SOURCE_ID,
+    SWING_LOW_SOURCE_ID,
+    SWING_STRENGTH_DEFAULT,
+    PivotKind,
 )
 from ce_v5.platform.rules.indicators.volume import VOLUME_RATIO_VS_AVG_SOURCE_ID
 from ce_v5.platform.rules.indicators.vwap import (
@@ -160,6 +168,8 @@ class TestRegistroPorSourceId:
             VOLUME_RATIO_VS_AVG_SOURCE_ID,
             VWAP_VALUE_SOURCE_ID,
             VWAP_DISTANCE_PCT_SOURCE_ID,
+            SWING_HIGH_SOURCE_ID,
+            SWING_LOW_SOURCE_ID,
         }
 
     @pytest.mark.parametrize(
@@ -447,3 +457,85 @@ class TestDispatchFalloRuidoso:
         # Si alguien la cableara, los dos tests de arriba dejarian de probar nada en
         # silencio. Esto lo impide.
         assert _FUENTE_SINTETICA not in SOURCE_MATERIALIZERS
+
+
+def _cierres(*vals: int) -> list[Decimal]:
+    return [Decimal(str(v)) for v in vals]
+
+
+class TestSwingWindowedRegistrada:
+    """5: swing.high/swing.low cableadas como WINDOWED sobre cierres (P08b-SWING-01).
+
+    Sin BD: el binding, el transform puro (pivote confirmado o fallback max/min) y
+    with_params. La lectura real via read_close_window vive en el test de integracion.
+    """
+
+    def test_esta_cableada_con_un_spec_windowed_high(self) -> None:
+        spec = SOURCE_MATERIALIZERS[SWING_HIGH_SOURCE_ID]
+        assert isinstance(spec, SwingWindowedSpec)
+        assert spec.kind is PivotKind.HIGH
+        assert spec.window_bars == SWING_WINDOW_BARS == 100
+        assert spec.strength == SWING_STRENGTH_DEFAULT == 2
+
+    def test_esta_cableada_con_un_spec_windowed_low(self) -> None:
+        spec = SOURCE_MATERIALIZERS[SWING_LOW_SOURCE_ID]
+        assert isinstance(spec, SwingWindowedSpec)
+        assert spec.kind is PivotKind.LOW
+        assert spec.window_bars == SWING_WINDOW_BARS == 100
+        assert spec.strength == SWING_STRENGTH_DEFAULT == 2
+
+    def test_el_transform_con_pivote_es_el_value_del_ultimo_pivote(self) -> None:
+        high = SwingWindowedSpec(kind=PivotKind.HIGH, strength=2)
+        assert high._transform(_cierres(1, 2, 3, 2, 1)) == Decimal(3)
+        low = SwingWindowedSpec(kind=PivotKind.LOW, strength=2)
+        assert low._transform(_cierres(3, 2, 1, 2, 3)) == Decimal(1)
+
+    def test_el_transform_sin_pivote_cae_al_fallback_max_min(self) -> None:
+        # Serie estrictamente creciente: symmetric_pivots no confirma ningun pivote.
+        ventana = _cierres(1, 2, 3, 4, 5)
+        high = SwingWindowedSpec(kind=PivotKind.HIGH, strength=2)
+        assert high._transform(ventana) == Decimal(5)
+        low = SwingWindowedSpec(kind=PivotKind.LOW, strength=2)
+        assert low._transform(ventana) == Decimal(1)
+
+    def test_el_transform_con_pivote_no_devuelve_el_extremo_de_la_ventana(self) -> None:
+        # "Muerde": el pivote confirmado NO coincide con el max/min de la ventana, asi
+        # que si el transform devolviera el extremo por error este test lo atrapa.
+        high = SwingWindowedSpec(kind=PivotKind.HIGH, strength=1)
+        ventana_high = _cierres(1, 3, 1, 4)
+        assert high._transform(ventana_high) == Decimal(3)
+        assert max(ventana_high) == Decimal(4)
+
+        low = SwingWindowedSpec(kind=PivotKind.LOW, strength=1)
+        ventana_low = _cierres(4, 2, 4, 1)
+        assert low._transform(ventana_low) == Decimal(2)
+        assert min(ventana_low) == Decimal(1)
+
+    def test_with_params_liga_el_strength_efectivo_sin_mutar_el_registro(self) -> None:
+        spec = SOURCE_MATERIALIZERS[SWING_HIGH_SOURCE_ID]
+        assert isinstance(spec, SwingWindowedSpec)
+        ligada = spec.with_params(
+            {"strength": ScalarValue(scalar_type=ScalarType.INTEGER, integer_value=3)}
+        )
+        assert isinstance(ligada, SwingWindowedSpec)
+        assert ligada.strength == 3
+        assert spec.strength == SWING_STRENGTH_DEFAULT
+
+    def test_with_params_sin_el_param_devuelve_el_mismo_spec(self) -> None:
+        spec = SOURCE_MATERIALIZERS[SWING_LOW_SOURCE_ID]
+        assert isinstance(spec, SwingWindowedSpec)
+        assert spec.with_params({}) is spec
+
+    def test_with_params_rechaza_un_strength_fuera_de_dominio(self) -> None:
+        # Como CvdIntegratorSpec.with_params: ultima linea de defensa para quien llame
+        # with_params directamente (fuera de un plan compilado). El compilador ya exige
+        # value_type INTEGER; aqui se valida el DOMINIO (strength >= 1).
+        spec = SwingWindowedSpec(kind=PivotKind.HIGH)
+        with pytest.raises(UnwiredSourceError, match="fuerza simetrica"):
+            spec.with_params(
+                {
+                    "strength": ScalarValue(
+                        scalar_type=ScalarType.INTEGER, integer_value=0
+                    )
+                }
+            )
