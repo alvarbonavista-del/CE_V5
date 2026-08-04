@@ -2416,3 +2416,37 @@ DECISIONES REGISTRADAS EN ESTA PIEZA: MAT-01..MAT-08 (sec.30-31), PIVOT-01..PIVO
 
 ADR: sin ADR nuevo. P08c NO cierra M3 (faltan P08b y P09a).
 =====================================================================
+
+=====================================================================
+36. REGLA 5.37 - SEPARACION DE ROLES CENTRAL/PERIFERICO EN EDICION
+    DE ARCHIVOS (nace en cierre de P08c) - 2026-08-04
+=====================================================================
+ORIGEN: Alvaro detecto que Central edito directamente los 4 archivos de
+contexto usando las herramientas de archivo de Cowork, invadiendo la labor
+de los perifericos. Central debe orquestar, NO ejecutar.
+
+REGLA 5.37: Central tiene PROHIBIDO editar archivos del repositorio
+directamente. La edicion de archivos es labor EXCLUSIVA de los perifericos
+(Claude Code u otro periferico designado). Central redacta la tanda, el
+periferico la ejecuta.
+
+EXCEPCION - METODO COWORK PARA PERIFERICOS: cuando la tarea de edicion es
+sencilla (actualizacion de archivos de contexto, correcciones menores,
+append de secciones a documentos existentes) y NO requiere compilacion,
+tests ni git, un periferico con acceso Cowork PUEDE usar las herramientas
+de archivo de Cowork (Read/Edit/Write) en lugar de Claude Code. Esto
+ahorra tokens (elimina el ciclo completo de relay Central->Alvaro->Claude
+Code->Alvaro->Central). El periferico Cowork NO puede hacer git (su bash
+corre en sandbox aislado), asi que el commit final sigue requiriendo
+Claude Code o que Alvaro ejecute el comando.
+
+RESUMEN:
+- Central: orquesta, redacta tandas, NO edita archivos. JAMAS.
+- Periferico Claude Code: edita archivos + git + tests + compilacion.
+- Periferico Cowork: edita archivos sencillos (sin git/tests/compilacion).
+  Opcion valida cuando la tarea no justifica levantar Claude Code.
+- La eleccion de periferico (Claude Code vs Cowork) la decide Central en
+  la tanda, no el propio periferico.
+
+FIRMADO POR ALVARO: 2026-08-04.
+=====================================================================

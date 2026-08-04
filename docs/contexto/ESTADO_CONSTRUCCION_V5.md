@@ -323,3 +323,7 @@ Hash del commit de cierre de contexto "docs(contexto): cierre T-03": ee40df620b2
 - REGLA 5.22 (nace en el cierre de P08): un check bloqueante que existe pero no esta
   enganchado en ci.yml es un check que NO existe. El DoD de cierre debe verificar el
   enganche y demostrar el verde en Actions, no solo en el barrido local.
+- REGLA 5.37 (nace en el cierre de P08c): Central tiene PROHIBIDO editar archivos del
+  repositorio directamente. La edicion es labor EXCLUSIVA de perifericos. Metodo Cowork
+  (Read/Edit/Write) disponible como alternativa a Claude Code para perifericos cuando la
+  tarea es sencilla y no requiere git/tests/compilacion. Ver REGISTRO_DECISIONES sec.36.
