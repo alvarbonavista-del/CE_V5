@@ -4,18 +4,17 @@ Archivo vivo de estado de proceso (sin logica). Lo mantiene Claude Code
 en disco; Alvaro lo resube al knowledge cada vez que se cierra una pieza
 o un hito (DOC_ENTREGABLES sec.8).
 
-Ultima actualizacion: 2026-07-31 (P08c sub-pieza PIVOTPHASE CERRADA: FSM 0-5 (paridad
-v4), modelo de confianza con F2/F4/F6 activos, snapshot/replay RECURSIVE y cableado
-CE-14 completo (pivotphase.phase + pivotphase.confidence en catalogo y en
-SOURCE_MATERIALIZERS). Merge f0a728b en main, Actions verde 3/3, ci_local 23/24 en local
-con el UNICO rojo 7.8 ema_snapshot -tabla de P08b ausente en esta rama, clausula A- y
-24/24 en CI. P08c NO entregada aun -sigue por sub-piezas-; M3 SIGUE ABIERTO. Ver
-REGISTRO_DECISIONES seccion 32).
+Ultima actualizacion: 2026-08-04 (P08c ENTREGADA: pieza CERRADA con doble revision
+Central+CSA CONFORME y firma de Alvaro. 9 merges en main (19bed2b, 6c3b63b, ca4d5f4,
+9025588, 89f8534, 6905aa7, f0a728b, 1a8c2ab, 06d739f). Entregables: materializacion
+CE-14, delta_momentum, AHP pre-registros, pivotphase (FSM+confianza+cableado), MAT-05 Q2
+(propagacion params+fail-loud selectivo). 1527 tests passed, 1 skip autorizado
+(phase3_zone_break, gateado a absorption.*/P08b), cero deuda. M3 SIGUE ABIERTO en 3 de 7:
+faltan P08b, P09a. Ver REGISTRO_DECISIONES secciones 30-34).
 
-Anterior: 2026-07-30 (P08c sub-pieza MATERIALIZACION CERRADA: catalogo vivo
-por discovery explicito, materializadores POINT_LOCAL/WINDOWED/INTEGRATOR cableados y
-cvd.value con replay desde snapshot. Merge ca4d5f4 en main, Actions verde 3/3, ci_local
-24/24. Ver REGISTRO_DECISIONES seccion 30).
+Anterior: 2026-07-31 (P08c sub-pieza PIVOTPHASE CERRADA: merge f0a728b).
+
+Anterior: 2026-07-30 (P08c sub-pieza MATERIALIZACION CERRADA: merge ca4d5f4).
 
 Anterior: 2026-07-26 (P07c ENTREGADA: cierre formal con doble revision
 Central+CSA, firmada por Alvaro. Orderbook L2 con estado (snapshots top-K
@@ -39,11 +38,8 @@ no reabre ADR). Piezas de M3 y su estado:
   - P07b (trades + footprint) ........................ ENTREGADA
   - P07c (orderbook L2 con estado) ................... ENTREGADA
   - P08  (motor de reglas) ........................... ENTREGADA
-  - P08b (DataSources candle-derived) ................ PENDIENTE
-  - P08c (DataSources footprint/L2-derived) .......... EN CURSO
-      (sub-pieza MATERIALIZACION CERRADA 2026-07-30, merge ca4d5f4;
-       sub-pieza delta_momentum CERRADA, merge 9025588;
-       sub-pieza PIVOTPHASE CERRADA 2026-07-31, merge f0a728b)
+  - P08b (DataSources candle-derived) ................ EN PAUSA (gateada)
+  - P08c (DataSources footprint/L2-derived) .......... ENTREGADA
   - P09a (router de notificaciones backend) .......... PENDIENTE
 Orden: P07 -> T-03 -> P07b -> P07c -> P08 -> P08b -> P08c -> P09a.
 Paralelismo admitido: P08 || P07b || P07c || P08b; P08c tras P07b+P07c;
@@ -109,52 +105,9 @@ P07 - Ingesta de market data (hibrida), ADR-014: ENTREGADA. ABRE el hito M3
   cola en el arbol.)
 
 ## Pieza en curso
-P08c (DataSources footprint/L2-derived) EN CURSO, por sub-piezas. Estan CERRADAS las
-sub-piezas de MATERIALIZACION (CE-14), delta_momentum y PIVOTPHASE (ver "Sub-piezas
-cerradas de P08c"); P08c como pieza NO esta entregada todavia. P08b y P09a siguen
-PENDIENTES.
+P08b (DataSources candle-derived) PENDIENTE (en pausa gateada; reactivacion tras cierre
+de P08c). P09a (router de notificaciones backend) PENDIENTE.
 T-05 (visor de desarrollo, transversal): CERRADA (ver "Transversales cerradas").
-
-## Sub-piezas cerradas de P08c
-- P08c pivotphase: CERRADA. Rama wip/p08c-pivot-wire, merge commit f0a728b; fecha
-  2026-07-31. Actions verde 3/3 sobre el merge (run 30664591767). ci_local en local
-  23/24 con el UNICO rojo el check 7.8 (ema_snapshot, tabla de la pieza hermana P08b
-  presente en el Postgres local compartido y AJENA a esta rama: clausula A del DICTAMEN
-  P08c-CI-01); en CI, donde la BD se aprovisiona solo con las migraciones de la rama,
-  el 7.8 sale VERDE y la bateria es 24/24.
-  Entregables: nucleo FSM 0-5 (paridad v4); modelo de confianza con F2/F4/F6 ACTIVOS
-  (F1/F3/F5/F7 diferidos -> techo de confianza 60); snapshot/replay RECURSIVE
-  (bootstrap-desde-IDLE, NORM_WINDOW=100, snapshot as-of); footprint.price_range (fuente
-  NUEVA, POINT_LOCAL); vp.hvn/vp.lvn CABLEADOS (materializadores con regla de seleccion
-  mayor/menor volumen + fallbacks deterministas); impulse_score normalizado (variante 6a:
-  delta normalizado por percentil, NO el motor compuesto de v4); cableado CE-14 completo
-  (pivotphase.phase + pivotphase.confidence declaradas en el catalogo vivo por discovery
-  Y registradas en SOURCE_MATERIALIZERS).
-  Migracion nueva: 0024 (pivotphase_snapshot, scope=system, append-only).
-  FACTORES DIFERIDOS Y SUS GATILLOS (registrados, no olvidados):
-    F1 -> gatillo: absorption.* / candle.open servibles (P08b).
-    F3 -> gatillo: swing.* servible (P08b).
-    F5 -> gatillo: imbalance servible.
-    F7 -> gatillo: notrade consumible en el catalogo (T0 verifico que hoy NO lo es).
-  Ver REGISTRO_DECISIONES seccion 32 (PIVOT-01..PIVOT-10).
-- P08c delta_momentum: CERRADA. Merge commit 9025588. orderflow.delta_momentum cableada
-  como DAG de 2o nivel (DerivedSeriesSpec sobre orderflow.delta, MAT-08); cierra el
-  "sin cablear" que dejaba abierto la sub-pieza de materializacion.
-- P08c materializacion (CE-14): CERRADA. Rango de commits 873453f..c762ffc; merge commit
-  ca4d5f4; fecha 2026-07-30. APROBADO FINAL (Central + Alvaro). ci_local 24/24 y Actions
-  verde 3/3 sobre el merge (run 30564656066). SIN deuda hacia P08b.
-  Entregables: discovery explicito (declarations() por modulo productor /
-  discover_declarations); nucleos puros materialize_windowed y materialize_recursive;
-  cache_key_validator (MAT-03); read_footprint_window; dispatch por SOURCE_ID (registro
-  polimorfico con el Protocol SourceMaterializer); read_footprint_delta_range; tabla
-  cvd_snapshot (migracion 0022); cvd.value INTEGRATOR con replay desde snapshot (GATE
-  ADR-007); handoff docs/HANDOFF_P08c_MATERIALIZACION.md; pytest del dispatch de
-  market.close; correccion de validate_rules_worker.py.
-  Fuentes CABLEADAS en vivo: market.close (POINT_LOCAL), vp.poc/vah/val (WINDOWED),
-  orderflow.delta (POINT_LOCAL), cvd.value (INTEGRATOR).
-  SIN cablear: orderflow.delta_momentum (fallo ruidoso UnwiredSourceError si una regla
-  la referencia; no se sirve serie por defecto).
-  Ver REGISTRO_DECISIONES seccion 30 (MAT-01..MAT-07 y dictamenes de correccion).
 
 ## Piezas cerradas
 - P00 - Esqueleto de repositorio + CI base: ENTREGADA (hito M0 CERRADO).
@@ -193,7 +146,17 @@ T-05 (visor de desarrollo, transversal): CERRADA (ver "Transversales cerradas").
   #3). Actions run 30195904966, 3/3 success; ci_local 24/24; 1587+319 tests, cero
   skips/xfail. Diferido a v5.1 (5.11): libro profundo + delta-log crudo. Ver
   REGISTRO_DECISIONES seccion 29. NO cierra M3.
-Van 13 piezas cerradas de 23 (inventario ampliado de 19 a 23 por EXP-M3-01,
+- P08c - DataSources footprint/L2-derived: ENTREGADA (cierre formal, doble revision
+  Central+CSA CONFORME, firmada por Alvaro 2026-08-04). 9 merges en main (19bed2b a
+  06d739f). Materializacion CE-14 (discovery, dispatch SOURCE_ID, cache_key_validator,
+  cvd replay); delta_momentum (DAG 2o nivel); AHP pre-registros (climax/void/notrade);
+  pivotphase (FSM 0-5 paridad v4, confianza F2/F4/F6, snapshot/replay RECURSIVE, cableado
+  CE-14); MAT-05 Q2 (propagacion params selectiva + fail-loud). 1527 passed, 1 skip
+  autorizado (phase3_zone_break, gateado a absorption.*/P08b). Diferidos con dueno:
+  F1->P08b, F3->P08b, F5->imbalance, F7->notrade consumible, cache_key-valor->pieza
+  cache, multi-instancia param->cache_key-valor, calibracion->fuera de codigo.
+  Ver REGISTRO_DECISIONES secciones 30-34.
+Van 14 piezas cerradas de 23 (inventario ampliado de 19 a 23 por EXP-M3-01,
 firmada 2026-07-17: entran P07b, P07c, P08b y P08c).
 
 ## Transversales cerradas (no cuentan en las 23 piezas)

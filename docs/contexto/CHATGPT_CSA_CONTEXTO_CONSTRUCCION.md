@@ -5,12 +5,12 @@ estable para revisar las piezas. El CSA revisa coherencia y calidad
 contra los documentos-norte; NO decide (firma Alvaro). Archivo vivo
 mantenido por Claude Code.
 
-Ultima actualizacion: 2026-07-30 (P08c sub-pieza MATERIALIZACION CERRADA y firmada;
-merge ca4d5f4 en main, Actions verde 3/3. P08c NO entregada -avanza por sub-piezas-; M3
-sigue abierto -4/7-. Ver la entrada de cierre al final de este fichero).
+Ultima actualizacion: 2026-08-04 (P08c ENTREGADA: cierre formal Central+CSA CONFORME,
+firmada por Alvaro. 9 merges en main. M3 sigue abierto -5/7: faltan P08b y P09a-).
 
-Anterior: 2026-07-26 (P07c ENTREGADA: orderbook L2 con estado, firmada; HEAD
-8869ec9, PR #3 mergeado a main).
+Anterior: 2026-07-30 (P08c sub-pieza MATERIALIZACION CERRADA y firmada; merge ca4d5f4).
+
+Anterior: 2026-07-26 (P07c ENTREGADA: firmada).
 
 ## 1. Que construimos
 CE v5: plataforma comercial multiusuario de analisis cuantitativo y
@@ -629,3 +629,54 @@ luego P08b -> swing.*, P08b -> LOTE3, P08b -> LOTE4 y D1 -> LOTE5. Los factores 
 F1/F3 se desbloquean con P08b (absorption.*/candle.open y swing.*), asi que el techo de
 confianza sube conforme P08b entregue sus fuentes: activarlos es anadir peso + funcion +
 input, NO reestructurar el modelo.
+
+=====================================================================
+REVISION CSA - PIEZA P08c (hito M3) - 2026-08-04
+=====================================================================
+Veredicto: CONFORME (Central y CSA). Firmado por Alvaro 2026-08-04.
+P08c ENTREGADA (5/7 de M3). NO cierra M3: faltan P08b y P09a.
+9 merges en main: 19bed2b, 6c3b63b, ca4d5f4, 9025588, 89f8534, 6905aa7, f0a728b,
+1a8c2ab, 06d739f. 1527 passed, 1 skip autorizado (phase3_zone_break). Cero deuda.
+
+RESUMEN DE LA PIEZA: catalogo VIVO de DataSources footprint/L2-derived con materializacion
+CE-14 completa. Discovery explicito (declarations() por modulo, discover_declarations).
+Dispatch por SOURCE_ID (Protocol SourceMaterializer). 9 fuentes en el catalogo (market.close
+POINT_LOCAL, orderflow.delta POINT_LOCAL, orderflow.delta_momentum WINDOWED/DAG-2,
+footprint.price_range POINT_LOCAL, vp.poc/vah/val WINDOWED, vp.hvn/lvn WINDOWED, cvd.value
+INTEGRATOR, pivotphase.phase RECURSIVE, pivotphase.confidence RECURSIVE). Pivotphase: FSM
+0-5 paridad v4 + confianza F2/F4/F6 (techo 60) + replay bootstrap-desde-IDLE. MAT-05 Q2:
+propagacion selectiva (overridable_params) + fail-loud para params no consumidos.
+
+ARCO DE CONSTRUCCION (por los cinco puntos solicitados en el dossier):
+1. ARCO COMPLETO: CONFORME. Progresion tecnicamente coherente (fuentes -> pre-registros ->
+   infra CE-14 -> DAG 2o nivel -> FSM -> modelo estadistico -> replay/cableado -> params).
+   No se observan inversiones peligrosas del orden de construccion.
+2. DIFERIDOS: CONFORME. Todos con propietario, pieza destino, condicion de activacion. No
+   afectan al contrato vigente ni alteran el comportamiento de v5.0. Sin huerfanos.
+3. SKIP DOCUMENTADO: CONFORME CON OBSERVACION DOCUMENTAL. phase3_zone_break tiene dueno,
+   explicacion, pieza desbloqueadora (P08b), no es regresion. La observacion: el informe
+   debe decir "1 skip autorizado", no "cero skips" (5.18). Incorporado al cierre.
+4. MAT-05 Q2: CONFORME. La combinacion overridable_params + propagacion explicita +
+   fail-loud para params no consumidos evita exactamente "params que parecen propagarse pero
+   nadie usa". Respeta la filosofia fail-closed del proyecto.
+5. OBJECIONES: ninguna objecion arquitectonica demostrable. No se observa reapertura de ADR.
+
+RECOMENDACIONES (no bloqueantes, para piezas futuras):
+1. Mantener una tabla viva de factores F1-F7 (activos/diferidos/peso 0).
+2. Versionar con formula_version si F1/F3/F5 alteran la semantica de confidence.
+3. Documentar params congelados vs calibrables al llegar la calibracion.
+
+VERIFICADO EN ESTA REVISION: que el arco completo es coherente y aditivo; que no se
+reabre ningun ADR; que los diferidos tienen dueno y gatillo; que el skip esta documentado
+y gateado; que MAT-05 Q2 respeta fail-closed; que el techo de confianza 60 es limitacion
+declarada y no defecto; que F6 se corrigio sobre la marcha (PIVOT-05, formula_version=2);
+que impulse_score es variante 6a (deriva firmada, no olvido); que el replay es
+determinista (ADR-007); que la separacion FSM/confianza es limpia.
+
+PARA LA PROXIMA REVISION: P08b (DataSources candle-derived) se reactiva. Construye
+swing.* (desbloquea F3 de pivotphase), luego LOTE 3 (EMA/RSI/MACD, con la limitacion
+de multi-instancia param gateada a cache_key-valor), luego LOTE 4 (fib), luego D1 y
+LOTE 5. P09a (router de notificaciones backend) cierra M3. Para P08b el CSA debe vigilar:
+que los factores diferidos F1/F3 se activan SIN reestructurar el modelo de confianza (solo
+anadir peso+funcion+input); que el techo sube correctamente; y que formula_version se
+incrementa si la semantica cambia.

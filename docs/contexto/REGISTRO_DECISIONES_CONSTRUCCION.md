@@ -2142,6 +2142,11 @@ el UNICO aceptable en local; cualquier otro obliga a detenerse.
 
 DICTAMENES DE LA SUB-PIEZA (PIVOT-*):
 
+PIVOT-01  APERTURA DEL AREA PIVOTPHASE. absorption diferida (contribucion 0 en v5.0),
+          pivotphase NO consume L2 (solo footprint-derived y VP), nueva rama
+          wip/p08c-pivot. Registrado retroactivamente (el contenido se APLICO pero no
+          se registro formalmente en su momento; Q4 del DoD lo detecto).
+
 PIVOT-02  FRONTERA P4/P5, opcion R1. P4 = MODELO (normalizacion semilla, direccion
           documentada, combinacion S, escala 0-100, estructura de factores diferidos,
           explicabilidad por desglose). P5 = CABLEADO (extraccion de los escalares crudos
@@ -2358,4 +2363,56 @@ cache_key-valor exista y permita indexar por instancia. P08b LOTE 3 lo hereda: u
 de dos periodos EMA (EMA20 vs EMA50) NO compila hasta entonces.
 
 ADR: sin ADR nuevo. Esta sub-pieza NO cierra P08c ni M3.
+=====================================================================
+
+=====================================================================
+35. CIERRE DE PIEZA P08c - DataSources footprint/L2-derived (ENTREGADA)
+=====================================================================
+Estado: ENTREGADA. Doble revision Central + CSA CONFORME; firmada por Alvaro 2026-08-04.
+5 de 7 de M3. NO cierra M3: faltan P08b y P09a.
+
+MERGES EN MAIN (9, todos Actions verde 3/3):
+  19bed2b  DataSources derivados (vp, orderflow, CVD, absorption, HVN/LVN)
+  6c3b63b  AHP pre-registros (climax/void/notrade)
+  ca4d5f4  materializacion CE-14 (discovery, dispatch, cvd replay)
+  9025588  orderflow.delta_momentum (DAG 2o nivel, DerivedSeriesSpec)
+  89f8534  pivotphase P3 FSM (nucleo puro 0-5, paridad v4)
+  6905aa7  pivotphase P4 modelo de confianza (F2/F4/F6, techo 60)
+  f0a728b  pivotphase P5 cableado CE-14 (snapshot/replay, vp.hvn/lvn)
+  1a8c2ab  cierre contexto pivotphase
+  06d739f  MAT-05 Q2 propagacion params + fail-loud selectivo
+
+SUITE: 1527 passed, 1 skip AUTORIZADO (phase3_zone_break, gateado a absorption.*/P08b;
+regla 5.18 cumplida: un skip autorizado, no cero skips -- observacion documental del CSA
+incorporada). Cero deuda tecnica.
+
+CATALOGO VIVO P08c (fuentes con materializador en main):
+  market.close              POINT_LOCAL    CONTINUOUS
+  orderflow.delta           POINT_LOCAL    CONTINUOUS
+  orderflow.delta_momentum  WINDOWED       CONTINUOUS (DAG 2o nivel)
+  footprint.price_range     POINT_LOCAL    CONTINUOUS
+  vp.poc / vp.vah / vp.val  WINDOWED       CONTINUOUS
+  vp.hvn / vp.lvn           WINDOWED       CONTINUOUS
+  cvd.value                 INTEGRATOR     CONTINUOUS
+  pivotphase.phase          RECURSIVE      CONTINUOUS
+  pivotphase.confidence     RECURSIVE      CONTINUOUS
+
+DIFERIDOS CON DUENO (no es deuda; todos con gatillo):
+  F1 absorption.*/candle.open    -> P08b
+  F3 swing.*                     -> P08b
+  F5 imbalance                   -> cuando exista la fuente
+  F7 notrade consumible          -> cuando entre en el catalogo
+  cache_key-valor + anti-colision -> pieza cache evaluacion
+  multi-instancia param          -> gateada a cache_key-valor (sec.34)
+  calibracion                    -> fuera de codigo (corpus + analisis)
+
+RECOMENDACIONES CSA (no bloqueantes, registradas como guia):
+  1. Tabla viva F1-F7 (activos/diferidos/peso 0) para evitar ambiguedad documental.
+  2. formula_version obligatorio si F1/F3/F5 alteran la semantica de confidence.
+  3. Documentar params congelados vs calibrables al llegar la calibracion.
+
+DECISIONES REGISTRADAS EN ESTA PIEZA: MAT-01..MAT-08 (sec.30-31), PIVOT-01..PIVOT-10
+(sec.32), MAT-05 Q2 propagacion (sec.33), MAT-05 Q2 fix fail-loud (sec.34).
+
+ADR: sin ADR nuevo. P08c NO cierra M3 (faltan P08b y P09a).
 =====================================================================

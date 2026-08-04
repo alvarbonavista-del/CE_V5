@@ -3,22 +3,21 @@
 Archivo vivo (sin logica). Mantenido por Claude Code; Alvaro lo resube
 al knowledge al cerrar cada pieza o hito (DOC_ENTREGABLES sec.8).
 
-Ultima actualizacion: 2026-07-31 (P08c sub-pieza PIVOTPHASE CERRADA: merge f0a728b en
-main, Actions verde 3/3 run 30664591767. P08c NO entregada -avanza por sub-piezas-. M3
-SIGUE ABIERTO en 4 de 7: faltan P08b, P08c completa y P09a).
+Ultima actualizacion: 2026-08-04 (P08c ENTREGADA: cierre formal Central+CSA CONFORME,
+firmada por Alvaro. 9 merges en main. M3 SIGUE ABIERTO en 3 de 7: faltan P08b y P09a).
 
-Anterior: 2026-07-30 (P08c sub-pieza MATERIALIZACION CERRADA: merge ca4d5f4
-en main, Actions verde 3/3 run 30564656066, ci_local 24/24).
+Anterior: 2026-07-31 (P08c sub-pieza PIVOTPHASE CERRADA: merge f0a728b).
 
-Anterior: 2026-07-26 (P07c ENTREGADA: orderbook L2 con estado, cierre formal
-Central+CSA firmado por Alvaro; HEAD 8869ec9, PR #3 mergeado a main).
+Anterior: 2026-07-30 (P08c sub-pieza MATERIALIZACION CERRADA: merge ca4d5f4).
+
+Anterior: 2026-07-26 (P07c ENTREGADA: orderbook L2 con estado, firmada).
 
 | Hito | Definicion breve (DOC_ROADMAP sec.4) | Piezas | Estado |
 |------|--------------------------------------|--------|--------|
 | M0 | Repo creado + CI de guardarrailes en verde (base estructural) | P00 | CERRADO |
 | M1 | Un evento viaja de punta a punta con envelope, idempotencia y Clock sobre el bus externo, con outbox transaccional; reinicio sin perdida | P01, P02, P02b, P03 | CERRADO |
 | M2 | Un Componente se descubre por carpeta, aislado por tenant/RLS, con capacidades por el gate fail-closed; API/auth/realtime en pie; kill switch en caliente | P04, P05, P06, P06b | CERRADO |
-| M3 | Una Rule dispara sobre datos reales y proyecta signal.*/alert.*; el router backend entrega por un canal no-PWA/mock (sin overlay, sin ejecucion) | P07, P07b, P07c, P08, P08b, P08c, P09a | ABIERTO (4 de 7: P07, P07b, P07c y P08 ENTREGADAS; faltan P08b, P08c y P09a; EXPANDIDO por EXP-M3-01) |
+| M3 | Una Rule dispara sobre datos reales y proyecta signal.*/alert.*; el router backend entrega por un canal no-PWA/mock (sin overlay, sin ejecucion) | P07, P07b, P07c, P08, P08b, P08c, P09a | ABIERTO (5 de 7: P07, P07b, P07c, P08 y P08c ENTREGADAS; faltan P08b y P09a; EXPANDIDO por EXP-M3-01) |
 | M4 | PWA instalable con dashboard, chart y overlays de signal.* en movil real; push PWA; geo-blocking corta ejecucion, no visualizacion | P12a, P12b, P13, P09b | PENDIENTE |
 | M5 | Ejecucion gateada: bloqueo UE/EEA/UK, orden manual BYOC, autotrade BYOC, reconciliacion | P10a, P10b, P11 | PENDIENTE |
 
@@ -238,59 +237,28 @@ se escribio y se conserva sin tocar; queda DEROGADA hacia delante (regla
   a v5.1 -disparador de revision si el market data empezara a fluir a produccion antes-.
   Ver REGISTRO_DECISIONES seccion 29.
   M3: 4 de 7; SIGUE ABIERTO (faltan P08b, P08c y P09a).
-- P08c - DataSources footprint/L2-derived: EN CURSO por sub-piezas. NO entregada.
-  Sub-pieza MATERIALIZACION (CE-14) CERRADA 2026-07-30. Merge commit ca4d5f4
-  (wip/p08c -> main, --no-ff). Estado: CERRADA con APROBADO FINAL (Central + Alvaro).
-  ci_local 24/24 y Actions run 30564656066 VERDE 3/3 sobre el merge; cero skips/xfail.
-  Rango de commits de la sub-pieza: 873453f..c762ffc (11 de construccion + 2 de doc +
-  2 de correccion pre-merge).
-  Que deja en pie: el catalogo VIVO se puebla por discovery explicito (declarations()
-  por modulo productor, agregadas en discover_declarations) y se valida antes de
-  compilar (grafo completo y aciclico + cache_key por naturaleza, MAT-03). El dispatch
-  de materializacion es por SOURCE_ID contra un registro polimorfico (Protocol
-  SourceMaterializer) en el composition root del worker; una fuente servible sin
-  materializador falla RUIDOSO (UnwiredSourceError), nunca sirve una serie por defecto.
-  Cableadas en vivo: market.close (POINT_LOCAL), vp.poc/vah/val (WINDOWED),
-  orderflow.delta (POINT_LOCAL) y cvd.value (INTEGRATOR, replay desde snapshot con GATE
-  bit-exacto ADR-007). Sin cablear: orderflow.delta_momentum.
-  Migracion nueva: 0022 (cvd_snapshot, scope=system, append-only; el rol ce_v5_rules
-  ESCRIBE por primera vez su propio estado de replay, categoria RULES_STATE_TABLES).
-  Handoff a P08b entregado: docs/HANDOFF_P08c_MATERIALIZACION.md (requerimiento
-  P08c-R1); P08c cierra esta sub-pieza SIN deuda hacia P08b.
-  M3: sigue 4 de 7; SIGUE ABIERTO (P08c no cuenta como entregada; faltan P08b, P08c
-  completa y P09a). Ver REGISTRO_DECISIONES seccion 30.
-  Sub-pieza delta_momentum CERRADA. Merge commit 9025588. Cablea
-  orderflow.delta_momentum como DAG de 2o NIVEL (DerivedSeriesSpec sobre
-  orderflow.delta, MAT-08): cierra el unico "sin cablear" que dejaba la sub-pieza de
-  materializacion.
-  Sub-pieza PIVOTPHASE CERRADA 2026-07-31. Merge commit f0a728b (wip/p08c-pivot-wire ->
-  main, --no-ff). Actions run 30664591767, 3/3 success sobre el merge. ci_local en la
-  maquina local 23/24 con el UNICO rojo el check 7.8 (ema_snapshot, tabla de la pieza
-  hermana P08b viva en el Postgres local compartido y AJENA a esta rama: clausula A del
-  DICTAMEN P08c-CI-01); en CI, que aprovisiona la BD solo con las migraciones de la
-  rama, el 7.8 sale VERDE y la bateria queda 24/24.
-  Que deja en pie: la FSM de pivote 0-5 (IDLE / IMPULSE / ENCOUNTER / ABSORPTION /
-  EXHAUSTION / FLIP) en paridad SEMANTICA con v4, como nucleo PURO y determinista
-  (solo Decimal, ADR-007), mas un modelo de CONFIANZA 0-100 declarado por factores.
-  FACTORES ACTIVOS: F2 (agotamiento), F4 (esfuerzo/resultado) y F6 (contexto de volume
-  profile, por DISTANCIA del precio a vp.hvn/vp.lvn). FACTORES DIFERIDOS: F1
-  (absorption.*/candle.open, P08b), F3 (swing.*, P08b), F5 (imbalance) y F7 (notrade,
-  hoy NO consumible en el catalogo). Con 3 de 7 factores activos el TECHO de confianza
-  alcanzable es 60, no 100: es una limitacion DECLARADA, no un defecto.
-  Materializacion RECURSIVE propia: pivotphase.phase y pivotphase.confidence se sirven
-  replayando la FSM desde IDLE sobre (history_bars + NORM_WINDOW=100) barras, con las
-  primeras NORM_WINDOW como lookback que AVANZA la FSM sin emitirse (Estrategia A,
-  PIVOT-09). Como las secuencias de la FSM son bounded (< NORM_WINDOW), ese bootstrap
-  reconstruye el estado entero y el snapshot queda como AS-OF/auditoria, no como
-  continuidad. Migracion nueva: 0024 (pivotphase_snapshot, scope=system, append-only,
-  el rol ce_v5_rules escribe su propio estado de replay).
-  Fuentes NUEVAS o cableadas en esta sub-pieza: footprint.price_range (POINT_LOCAL,
-  fuente nueva que consume F4), vp.hvn y vp.lvn (WINDOWED, con regla determinista de
-  seleccion -mayor/menor volumen, empate a menor precio- y fallbacks documentados),
-  pivotphase.phase y pivotphase.confidence (RECURSIVE, declaradas en el catalogo vivo
-  Y registradas en SOURCE_MATERIALIZERS: cableado CE-14 completo).
-  M3: sigue 4 de 7; SIGUE ABIERTO. Ver REGISTRO_DECISIONES seccion 32
-  (PIVOT-01..PIVOT-10).
+- P08c - DataSources footprint/L2-derived: ENTREGADA 2026-08-04 (5 de 7 de M3). Cierre
+  formal con doble revision Central+CSA CONFORME, firmada por Alvaro. 9 merges en main:
+  19bed2b (DataSources derivados), 6c3b63b (AHP pre-registros), ca4d5f4 (materializacion
+  CE-14), 9025588 (delta_momentum), 89f8534 (pivotphase P3 FSM), 6905aa7 (pivotphase P4
+  confianza), f0a728b (pivotphase P5 cableado), 1a8c2ab (cierre contexto pivotphase),
+  06d739f (MAT-05 Q2 params). 1527 passed, 1 skip autorizado (phase3_zone_break, gateado
+  a absorption.*/P08b). Cero deuda.
+  Catalogo vivo: market.close (POINT_LOCAL), orderflow.delta (POINT_LOCAL),
+  orderflow.delta_momentum (WINDOWED, DAG 2o nivel), footprint.price_range (POINT_LOCAL),
+  vp.poc/vah/val (WINDOWED), vp.hvn/vp.lvn (WINDOWED), cvd.value (INTEGRATOR),
+  pivotphase.phase (RECURSIVE), pivotphase.confidence (RECURSIVE).
+  Pivotphase: FSM 0-5 paridad v4, confianza F2/F4/F6 activos (techo 60), replay
+  bootstrap-desde-IDLE (NORM_WINDOW=100, Estrategia A), snapshot AS-OF.
+  MAT-05 Q2: propagacion selectiva (overridable_params) + fail-loud para params no
+  consumidos. Migraciones 0022 (cvd_snapshot) y 0024 (pivotphase_snapshot).
+  Diferidos con dueno: F1->P08b (absorption/candle.open), F3->P08b (swing.*),
+  F5->imbalance, F7->notrade consumible, cache_key-valor->pieza cache,
+  multi-instancia param->cache_key-valor, calibracion->fuera de codigo.
+  Recomendaciones CSA (no bloqueantes): tabla viva F1-F7, formula_version en ampliacion,
+  control de grados de libertad en calibracion.
+  Ver REGISTRO_DECISIONES secciones 30-34.
+  M3: 5 de 7; SIGUE ABIERTO (faltan P08b y P09a).
 
 ## Nota EXP-M3-01 (2026-07-17): M3 AMPLIADO A PARIDAD FUNCIONAL v4
 M3 queda AMPLIADO a paridad funcional v4. Firmado por Alvaro 2026-07-17, con doble
