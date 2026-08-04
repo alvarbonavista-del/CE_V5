@@ -24,10 +24,11 @@ from ce_v5.entrypoints.worker_rules.materializers import (
     FootprintPointLocalSpec,
     FootprintWindowedSpec,
     UnwiredSourceError,
+    _cvd_session_step,
     _cvd_step,
 )
 from ce_v5.platform.rules.compiler import ExecutionPlan, ResolvedSource
-from ce_v5.platform.rules.cvd import CVD_SOURCE_ID
+from ce_v5.platform.rules.cvd import CVD_SOURCE_ID, ResetPolicy
 from ce_v5.platform.rules.orderflow import (
     ORDERFLOW_DELTA_MOMENTUM_SOURCE_ID,
     ORDERFLOW_DELTA_SOURCE_ID,
@@ -51,6 +52,7 @@ from ce_v5.platform.rules.volume_profile import (
 )
 from source.families.footprint import FootprintCell, FootprintClosedPayload
 from source.families.market import MarketType, Timeframe
+from source.rules.scalar import ScalarType, ScalarValue
 from source.time import MaturityState
 
 if TYPE_CHECKING:
@@ -266,21 +268,65 @@ class TestCvdIntegratorRegistrada:
         spec = SOURCE_MATERIALIZERS[CVD_SOURCE_ID]
         assert isinstance(spec, CvdIntegratorSpec)
 
-    def test_la_politica_de_reset_es_rolling(self) -> None:
-        # v5.0 solo materializa rolling: la guarda del compilador (MAT-05 Q4) rechaza
-        # params de fuente, asi que cvd.value llega siempre con su default. Si esto
-        # cambiara a session_utc sin propagar params, el motor serviria un acumulado
-        # reseteado a quien pidio el continuo.
+    def test_la_politica_de_reset_por_defecto_es_rolling(self) -> None:
+        # El REGISTRO guarda la instancia con el default: es compartida por todas las
+        # reglas y no se muta. Una regla que pida session_utc recibe una COPIA ligada
+        # (with_params), nunca cambia la del registro.
         spec = SOURCE_MATERIALIZERS[CVD_SOURCE_ID]
         assert isinstance(spec, CvdIntegratorSpec)
         assert spec.reset_policy == "rolling"
         assert spec.reset_policy == CVD_RESET_POLICY_V5
+
+    def test_with_params_liga_session_utc_sin_mutar_el_registro(self) -> None:
+        # MAT-05 Q2: el param efectivo produce una copia con otra politica, y la del
+        # registro sigue en rolling (si se mutara, una regla contaminaria a las demas).
+        spec = SOURCE_MATERIALIZERS[CVD_SOURCE_ID]
+        assert isinstance(spec, CvdIntegratorSpec)
+        ligada = spec.with_params(
+            {
+                "reset_policy": ScalarValue(
+                    scalar_type=ScalarType.STRING,
+                    string_value=ResetPolicy.SESSION_UTC.value,
+                )
+            }
+        )
+        assert isinstance(ligada, CvdIntegratorSpec)
+        assert ligada.reset_policy == ResetPolicy.SESSION_UTC.value
+        assert spec.reset_policy == ResetPolicy.ROLLING.value
+
+    def test_with_params_sin_el_param_devuelve_el_mismo_spec(self) -> None:
+        # ADITIVIDAD D7: sin override, nada cambia.
+        spec = SOURCE_MATERIALIZERS[CVD_SOURCE_ID]
+        assert isinstance(spec, CvdIntegratorSpec)
+        assert spec.with_params({}) is spec
+
+    def test_with_params_rechaza_una_politica_fuera_del_enum(self) -> None:
+        # Desde el fix de la seccion 34 el compilador YA rechaza este dominio para
+        # cualquier override que pase por compile(); este test cubre la llamada
+        # DIRECTA a with_params (fuera de un plan compilado), su ultima linea de
+        # defensa. Un texto valido pero sin sentido falla RUIDOSO, no cae a rolling.
+        spec = SOURCE_MATERIALIZERS[CVD_SOURCE_ID]
+        assert isinstance(spec, CvdIntegratorSpec)
+        with pytest.raises(UnwiredSourceError, match="no es una politica de cvd"):
+            spec.with_params(
+                {
+                    "reset_policy": ScalarValue(
+                        scalar_type=ScalarType.STRING, string_value="semanal"
+                    )
+                }
+            )
 
     def test_la_recurrencia_acumula(self) -> None:
         # cvd[T] = cvd[T-1] + delta[T], con signo: un delta negativo BAJA el acumulado.
         assert _cvd_step(Decimal(3), Decimal(-5)) == Decimal(-2)
         assert _cvd_step(Decimal(0), Decimal("1.5")) == Decimal("1.5")
         assert _cvd_step(Decimal("-2.25"), Decimal("0.25")) == Decimal(-2)
+
+    def test_la_recurrencia_de_sesion_reinicia_en_la_barra_que_abre_dia(self) -> None:
+        # La barra que ABRE dia UTC nuevo arranca en su propio delta (ignora el previo);
+        # el resto acumula como rolling.
+        assert _cvd_session_step(Decimal(100), (True, Decimal("4"))) == Decimal("4")
+        assert _cvd_session_step(Decimal(100), (False, Decimal("4"))) == Decimal("104")
 
 
 class TestDeltaMomentumDerivada:

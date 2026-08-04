@@ -41,6 +41,7 @@ from ce_v5.core.observability import log_event
 from ce_v5.entrypoints.worker_rules.cycle import process_rule_cycle
 from ce_v5.entrypoints.worker_rules.materializers import (
     SOURCE_MATERIALIZERS,
+    ParameterizedMaterializer,
     UnwiredSourceError,
 )
 from ce_v5.infra.bus_redis import RedisBusConfig, RedisEventBus, create_client
@@ -209,6 +210,10 @@ def _materialize(
     sobre footprint) pasan por su SourceMaterializer del registro. Toda otra fuente
     servible sin materializador -> UnwiredSourceError: no se sirve una serie por
     defecto (serviria un hecho falso, la deriva que mato a v4).
+
+    PARAMS EFECTIVOS (MAT-05 Q2): si la fuente los trae del plan y su materializador es
+    ParameterizedMaterializer, se le pide una copia LIGADA a ellos; el registro conserva
+    la instancia con los defaults (es compartida por todas las reglas, no se muta).
     """
     source_id = source.source_id
     if source_id == MARKET_CLOSE_SOURCE_ID:
@@ -222,6 +227,8 @@ def _materialize(
         )
     materializer = SOURCE_MATERIALIZERS.get(source_id)
     if materializer is not None:
+        if source.params and isinstance(materializer, ParameterizedMaterializer):
+            materializer = materializer.with_params(dict(source.params))
         return materializer.materialize(
             session,
             plan.exchange,
