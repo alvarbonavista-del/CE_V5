@@ -14,9 +14,20 @@ vive en tests/unit/platform/rules/test_validator.py.
 
 from __future__ import annotations
 
+from decimal import Decimal
 from uuid import uuid4
 
+from ce_v5.platform.rules.catalog import DataSourceCatalog
 from ce_v5.platform.rules.evaluator import evaluate
+from ce_v5.platform.rules.indicators.fib import (
+    FIB_DIRECTION_SOURCE_ID,
+    fib_direction_declaration,
+)
+from ce_v5.platform.rules.validator import (
+    CODE_OPERATOR_REQUIRES_NUMERIC,
+    CODE_TERM_TYPE_MISMATCH,
+    validate_rule,
+)
 from source.rules.condition import Condition
 from source.rules.feature import Feature
 from source.rules.group import Group
@@ -182,3 +193,65 @@ class TestComparacionCategoricaEqNe:
             _rule(condicion), {_BOOLEAN_SOURCE_ID: _boolean_series(True)}
         )
         assert resultado.matched is False
+
+
+class TestFibDirectionExtremoAExtremo:
+    """fib.direction end-to-end: la PRIMERA fuente STRING real que recorre el pipeline.
+
+    Los tests de arriba usan fuentes categoricas SINTETICAS; este usa la declaracion
+    REAL del catalogo (fib_direction_declaration) y sus tokens reales, que es lo que
+    demuestra que D1 sirve para algo mas que un caso de laboratorio.
+    """
+
+    def _catalogo(self) -> DataSourceCatalog:
+        catalog = DataSourceCatalog()
+        catalog.register(fib_direction_declaration())
+        return catalog
+
+    def _regla_direction(
+        self, operator: ComparisonOperator, constante: Term
+    ) -> AlertRule:
+        return _rule(
+            _condition(_source_term(FIB_DIRECTION_SOURCE_ID), operator, constante)
+        )
+
+    def test_eq_contra_above_dispara_cuando_el_grid_dice_above(self) -> None:
+        regla = self._regla_direction(ComparisonOperator.EQ, _string_constant("above"))
+        serie = {FIB_DIRECTION_SOURCE_ID: _string_series("above")}
+        assert evaluate(regla, serie).matched is True
+
+    def test_eq_contra_above_no_dispara_cuando_el_grid_dice_below(self) -> None:
+        regla = self._regla_direction(ComparisonOperator.EQ, _string_constant("above"))
+        serie = {FIB_DIRECTION_SOURCE_ID: _string_series("below")}
+        assert evaluate(regla, serie).matched is False
+
+    def test_ne_contra_above_dispara_con_below(self) -> None:
+        regla = self._regla_direction(ComparisonOperator.NE, _string_constant("above"))
+        serie = {FIB_DIRECTION_SOURCE_ID: _string_series("below")}
+        assert evaluate(regla, serie).matched is True
+
+    def test_el_bloque_3_admite_eq_contra_una_constante_string(self) -> None:
+        # Control positivo: la regla que SI tiene sentido pasa la admision. Sin esto,
+        # los dos rechazos de abajo podrian estar pasando por el motivo equivocado.
+        regla = self._regla_direction(ComparisonOperator.EQ, _string_constant("above"))
+        diagnostics = validate_rule(regla, self._catalogo())
+        assert diagnostics == []
+
+    def test_el_bloque_3_rechaza_un_operador_de_orden(self) -> None:
+        # "fib.direction > 'above'" no significa nada: se rechaza en ADMISION.
+        regla = self._regla_direction(ComparisonOperator.GT, _string_constant("above"))
+        diagnostics = validate_rule(regla, self._catalogo())
+        assert any(d.code == CODE_OPERATOR_REQUIRES_NUMERIC for d in diagnostics)
+
+    def test_el_bloque_3_rechaza_una_constante_decimal(self) -> None:
+        # "fib.direction == 1" mezcla tipos: tambien se rechaza en ADMISION, no en
+        # runtime -- el evaluador ya no revalida tipos (5A, P08b-D1-03).
+        decimal_constant = Term(
+            term_kind=TermKind.CONSTANT,
+            constant=ScalarValue(
+                scalar_type=ScalarType.DECIMAL, decimal_value=Decimal("1")
+            ),
+        )
+        regla = self._regla_direction(ComparisonOperator.EQ, decimal_constant)
+        diagnostics = validate_rule(regla, self._catalogo())
+        assert any(d.code == CODE_TERM_TYPE_MISMATCH for d in diagnostics)

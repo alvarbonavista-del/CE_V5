@@ -8,6 +8,7 @@ from fractions import Fraction
 import pytest
 
 from ce_v5.platform.rules.indicators.fib import (
+    FIB_DIRECTION_SOURCE_ID,
     FIB_FORMULA_VERSION,
     FIB_LEVEL_PCT_SOURCE_ID,
     FIB_NEAREST_LEVEL_SOURCE_ID,
@@ -15,6 +16,8 @@ from ce_v5.platform.rules.indicators.fib import (
     FibOutput,
     declarations,
     direction,
+    fib_direction_declaration,
+    fib_direction_token,
     fib_level_pct_declaration,
     fib_levels,
     fib_nearest_level_declaration,
@@ -404,16 +407,91 @@ class TestDeclaraciones:
         for prohibido in ("ratio", "ratios", "min_dist", "hysteresis", "touch_pct"):
             assert prohibido not in d.cache_key_schema
 
-    def test_declarations_publica_las_dos_escalares(self) -> None:
+    def test_declarations_publica_las_tres_servibles(self) -> None:
         publicadas = declarations()
-        assert len(publicadas) == 2
+        assert len(publicadas) == 3
         ids = {d.source_id for d in publicadas}
-        assert ids == {FIB_NEAREST_LEVEL_SOURCE_ID, FIB_LEVEL_PCT_SOURCE_ID}
+        assert ids == {
+            FIB_NEAREST_LEVEL_SOURCE_ID,
+            FIB_LEVEL_PCT_SOURCE_ID,
+            FIB_DIRECTION_SOURCE_ID,
+        }
 
-    def test_levels_y_direction_siguen_diferidas(self) -> None:
-        # LOTE 5 gate D1: no se declaran porque el marco de v5.0 sirve ESCALARES, y
-        # fib.levels es una lista y fib.direction un categorico. Que no esten en
-        # declarations() es lo que las mantiene fuera del catalogo (aditividad).
+    def test_levels_sigue_diferida(self) -> None:
+        # fib.levels es un VECTOR por barra (17 niveles) y ningun ScalarType lo
+        # representa: D1 cerro el carrier para tipos CATEGORICOS (de ahi que
+        # fib.direction ya entre), no para vectores. Que no este en declarations() es
+        # lo que la mantiene fuera del catalogo (aditividad), no un if del validador.
         ids = {d.source_id for d in declarations()}
         assert "fib.levels" not in ids
-        assert "fib.direction" not in ids
+
+
+class TestDeclaracionDireccion:
+    """fib.direction: la primera fuente CATEGORICA servible del catalogo (LOTE 5).
+
+    Comparte rango, snapshot (0027) y param con sus dos hermanas numericas; lo unico
+    que cambia es el value_type. Que esa simetria se mantenga es lo que garantiza que
+    las tres se alinean barra a barra.
+    """
+
+    def test_es_string_continuous_recursive(self) -> None:
+        d = fib_direction_declaration()
+        assert d.source_id == FIB_DIRECTION_SOURCE_ID == "fib.direction"
+        assert d.value_type == ScalarType.STRING
+        assert d.servibility == Servibility.CONTINUOUS
+        # RECURSIVE: no anade estado propio, pero HEREDA el del rango con histeresis.
+        assert d.memory_model == MemoryModel.RECURSIVE
+
+    def test_comparte_forma_con_nearest_level(self) -> None:
+        # MISMOS params, cache_key y consumes: si divergieran, direction se tenderia
+        # sobre un rango distinto del de nearest_level y dejarian de ser coherentes.
+        direccion = fib_direction_declaration()
+        nivel = fib_nearest_level_declaration()
+        assert direccion.cache_key_schema == nivel.cache_key_schema
+        assert direccion.consumes == nivel.consumes
+        assert direccion.overridable_params == nivel.overridable_params
+        assert [p.name for p in direccion.params] == [p.name for p in nivel.params]
+        assert direccion.sharing_scope == nivel.sharing_scope
+
+    def test_solo_cambia_el_value_type(self) -> None:
+        # Y lo que SI cambia, cambia: numerica vs categorica.
+        assert fib_nearest_level_declaration().value_type == ScalarType.DECIMAL
+        assert fib_direction_declaration().value_type == ScalarType.STRING
+
+
+class TestTokenDeDireccion:
+    """fib_direction_token: el token servible, sin vocabulario nuevo."""
+
+    def test_los_tokens_son_los_del_enum_existente(self) -> None:
+        # NO se inventa vocabulario: los dos unicos tokens posibles son los .value del
+        # FibDirection que ya devolvia direction().
+        posibles = {m.value for m in FibDirection}
+        assert posibles == {"above", "below"}
+        for price in (_d(-500), _d(0), _d(40), _d(100), _d(500)):
+            assert fib_direction_token(_d(100), _d(0), price) in posibles
+
+    def test_coincide_con_la_funcion_pura_direction(self) -> None:
+        # El token ES direction(...).value: una sola fuente de verdad para la regla.
+        for price in (_d(-200), _d("38.2"), _d(40), _d(99), _d(300)):
+            assert fib_direction_token(_d(100), _d(0), price) == (
+                direction(_d(100), _d(0), price).value
+            )
+
+    def test_above_y_below_se_distinguen_de_verdad(self) -> None:
+        # Muerde: un token constante pasaria los dos tests de arriba.
+        assert fib_direction_token(_d(100), _d(0), _d(500)) == "above"
+        assert fib_direction_token(_d(100), _d(0), _d(-500)) == "below"
+
+    def test_rango_degenerado_usa_el_mismo_criterio_que_el_fallback_numerico(
+        self,
+    ) -> None:
+        # fib_levels rechaza el rango cero, pero el materializador no puede dejar hueco:
+        # con el grid colapsado en range_high, la direccion sale de comparar el precio
+        # con ESE nivel -- el mismo que fib_output devuelve como nearest_level.
+        with pytest.raises(ValueError):
+            direction(_d(100), _d(100), _d(150))
+        assert fib_output(_d(100), _d(100), _d(150), FibOutput.NEAREST_LEVEL) == _d(100)
+        assert fib_direction_token(_d(100), _d(100), _d(150)) == "above"
+        assert fib_direction_token(_d(100), _d(100), _d(50)) == "below"
+        # Frontera: price == nivel colapsado -> ABOVE, como el empate de direction().
+        assert fib_direction_token(_d(100), _d(100), _d(100)) == "above"

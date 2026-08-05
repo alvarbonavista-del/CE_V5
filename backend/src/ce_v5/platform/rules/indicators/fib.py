@@ -243,18 +243,21 @@ def fib_range_step(
 
 
 class FibOutput(Enum):
-    """Cual de las dos salidas servibles del grid emite una fuente.
+    """Cual de las TRES salidas servibles del grid emite una fuente.
 
-    Las dos comparten el MISMO rango con histeresis y el mismo grid; lo unico que las
+    Las tres comparten el MISMO rango con histeresis y el mismo grid; lo unico que las
     distingue es que proyeccion publican. Por eso el enum vive aqui, junto a la funcion
     pura, y no en el cableado: es una propiedad del indicador.
 
-    fib.levels (la lista de 17) y fib.direction (categorico) quedan DIFERIDAS al gate D1
-    del LOTE 5 y por eso no estan aqui: el marco de fuentes de v5.0 sirve escalares.
+    DIRECTION entra en el LOTE 5 (P08b-D1-02 Q3) porque D1 ya cerro el carrier de serie
+    no-Decimal: es CATEGORICA (STRING), no escalar numerica, y antes de D1 no habia
+    forma de servirla por el mismo borde. fib.levels (la lista de 17) sigue DIFERIDA:
+    es un VECTOR por barra, y eso no lo representa ningun ScalarType.
     """
 
     NEAREST_LEVEL = "nearest_level"
     LEVEL_PCT = "level_pct"
+    DIRECTION = "direction"
 
 
 def fib_output(
@@ -281,16 +284,43 @@ def fib_output(
     return level_pct(range_high, range_low, price)
 
 
+def fib_direction_token(range_high: Decimal, range_low: Decimal, price: Decimal) -> str:
+    """La direccion del precio respecto del grid, como TOKEN de texto servible.
+
+    Es la proyeccion CATEGORICA del mismo rango que alimenta a nearest_level/level_pct.
+    El token NO se inventa aqui: es el .value del FibDirection que devuelve direction(),
+    la funcion pura que ya existia -- "above" / "below". Un vocabulario nuevo seria un
+    segundo sitio donde mantener los mismos dos nombres.
+
+    BORDE DEL RANGO DEGENERADO (range_high <= range_low): mismo criterio que fib_output.
+    Con el rango colapsado los 17 niveles coinciden en range_high, asi que el nivel mas
+    cercano ES range_high y la direccion sale de compararlo con el precio -- exactamente
+    lo que direction() calcularia si fib_levels admitiera un rango cero. No es una regla
+    aparte: es la MISMA regla aplicada al grid degenerado que ya sirve nearest_level.
+    """
+    if range_high <= range_low:
+        return (
+            FibDirection.ABOVE.value
+            if price >= range_high
+            else FibDirection.BELOW.value
+        )
+    return direction(range_high, range_low, price).value
+
+
 FIB_NEAREST_LEVEL_SOURCE_ID = "fib.nearest_level"
 FIB_LEVEL_PCT_SOURCE_ID = "fib.level_pct"
+FIB_DIRECTION_SOURCE_ID = "fib.direction"
 
 
-def _fib_declaration(source_id: str) -> DataSourceDeclaration:
-    """Declaracion comun de fib.nearest_level/fib.level_pct (dictamen P08b-FIB-01).
+def _fib_declaration(
+    source_id: str, value_type: ScalarType = ScalarType.DECIMAL
+) -> DataSourceDeclaration:
+    """Declaracion comun de fib.nearest_level/level_pct/direction (P08b-FIB-01, LOTE 5).
 
-    Las dos tienen la MISMA forma a proposito: salen del mismo rango con histeresis, con
-    el mismo param y la misma cache_key. Lo unico que cambia es el source_id -- y, en el
-    cableado, que proyeccion emite su materializador.
+    Las tres tienen la MISMA forma a proposito: salen del mismo rango con histeresis,
+    con el mismo param y la misma cache_key. Lo unico que cambia es el source_id, el
+    value_type -- DECIMAL las dos numericas, STRING la direccion -- y, en el cableado,
+    que proyeccion emite su materializador.
 
     RECURSIVE: el rango de la barra T depende del de T-1 (histeresis), y como una barra
     que no lo mueve lo CONSERVA, la dependencia se remonta sin cota. Es la razon de ser
@@ -310,7 +340,7 @@ def _fib_declaration(source_id: str) -> DataSourceDeclaration:
         source_type=SourceType.OBSERVABLE,
         servibility=Servibility.CONTINUOUS,
         memory_model=MemoryModel.RECURSIVE,
-        value_type=ScalarType.DECIMAL,
+        value_type=value_type,
         evaluation_contexts=tuple(tf.value for tf in Timeframe),
         history_units=(HistoryUnit.BARS,),
         params=(
@@ -345,11 +375,26 @@ def fib_level_pct_declaration() -> DataSourceDeclaration:
     return _fib_declaration(FIB_LEVEL_PCT_SOURCE_ID)
 
 
+def fib_direction_declaration() -> DataSourceDeclaration:
+    """fib.direction: si el cierre esta por encima o debajo del nivel mas cercano.
+
+    CATEGORICA (STRING, tokens "above"/"below"): la primera fuente no-Decimal del
+    catalogo vivo. RECURSIVE como sus dos hermanas -- se tiende sobre el MISMO rango con
+    histeresis y comparte su snapshot (0027), no anade estado propio.
+    """
+    return _fib_declaration(FIB_DIRECTION_SOURCE_ID, ScalarType.STRING)
+
+
 def declarations() -> tuple[DataSourceDeclaration, ...]:
     """Declaraciones que este modulo publica al catalogo vivo (discovery, MAT-02).
 
-    Solo las DOS escalares. fib.levels (lista de 17) y fib.direction (categorico) siguen
-    DIFERIDAS al gate D1 del LOTE 5: no exponerlas es lo que las mantiene fuera del
-    catalogo (aditividad), no un if en el validador.
+    Las dos escalares numericas mas fib.direction (categorica), que entra en el LOTE 5
+    porque D1 ya cerro el carrier de serie no-Decimal (P08b-D1-02 Q3). fib.levels (lista
+    de 17) sigue DIFERIDA: es un VECTOR por barra y ningun ScalarType lo representa; no
+    exponerla es lo que la mantiene fuera del catalogo (aditividad), no un if.
     """
-    return (fib_nearest_level_declaration(), fib_level_pct_declaration())
+    return (
+        fib_nearest_level_declaration(),
+        fib_level_pct_declaration(),
+        fib_direction_declaration(),
+    )

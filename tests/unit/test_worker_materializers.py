@@ -46,6 +46,7 @@ from ce_v5.platform.rules.indicators.ema import (
     EMA_SOURCE_ID,
 )
 from ce_v5.platform.rules.indicators.fib import (
+    FIB_DIRECTION_SOURCE_ID,
     FIB_LEVEL_PCT_SOURCE_ID,
     FIB_NEAREST_LEVEL_SOURCE_ID,
     FibOutput,
@@ -209,6 +210,7 @@ class TestRegistroPorSourceId:
             MACD_HISTOGRAM_SOURCE_ID,
             FIB_NEAREST_LEVEL_SOURCE_ID,
             FIB_LEVEL_PCT_SOURCE_ID,
+            FIB_DIRECTION_SOURCE_ID,
         }
 
     @pytest.mark.parametrize(

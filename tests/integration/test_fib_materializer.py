@@ -38,6 +38,7 @@ from ce_v5.entrypoints.worker_rules.materializers import (
 from ce_v5.infra.db.fib_range_snapshot import read_fib_range_snapshot_before
 from ce_v5.infra.db.psycopg_adapter import PsycopgDatabase
 from ce_v5.platform.rules.indicators.fib import (
+    FIB_DIRECTION_SOURCE_ID,
     FIB_LEVEL_PCT_SOURCE_ID,
     FIB_NEAREST_LEVEL_SOURCE_ID,
     FibOutput,
@@ -567,3 +568,119 @@ class TestStrengthPorParametroEfectivo:
         )
 
         assert con_ancla_ajena == limpio
+
+
+def _materializar_crudo(
+    rules_db: PsycopgDatabase,
+    source_id: str,
+    open_time: int,
+    history_bars: int,
+) -> tuple[ScalarValue, ...]:
+    """La serie SIN abrir el carrier: para las fuentes que NO son Decimal.
+
+    fib.direction sirve tokens STRING, asi que aqui no se puede desenvolver a Decimal
+    como hace _materializar. Es el mismo spec del registro; lo unico que cambia es que
+    se mira el ScalarValue tal cual llega.
+    """
+    spec = SOURCE_MATERIALIZERS[source_id]
+    with rules_db.transaction() as session:
+        return spec.materialize(
+            session, _EXCHANGE, _SYMBOL, _TF.value, open_time, history_bars
+        )
+
+
+class TestDireccionCategorica:
+    """fib.direction: la primera fuente CATEGORICA que el pipeline sirve de punta a
+    punta (LOTE 5, habilitada por el carrier de D1).
+
+    Lo critico aqui no es el token en si -- eso ya lo clava el test unitario de
+    fib_direction_token -- sino que la direccion salga del MISMO rango replayado que
+    nearest_level y quede alineada 1:1 con ella. Si el grid de una se tendiera sobre
+    otro rango, las dos series se contradirian sobre los mismos datos.
+    """
+
+    def test_sirve_tokens_string_en_el_carrier(
+        self,
+        rules_db: PsycopgDatabase,
+        persistir_vela: Persistir,
+        limpiar_fib: None,
+    ) -> None:
+        _sembrar(persistir_vela)
+
+        serie = _materializar_crudo(
+            rules_db, FIB_DIRECTION_SOURCE_ID, _open_time(_BARRAS - 1), 4
+        )
+
+        assert len(serie) == 4
+        for valor in serie:
+            # El tipo viaja EN el dato: STRING, no un Decimal disfrazado.
+            assert valor.scalar_type is ScalarType.STRING
+            assert valor.decimal_value is None
+            assert valor.string_value in {"above", "below"}
+
+    def test_alineada_1_a_1_con_nearest_level_y_coherente_con_el(
+        self,
+        rules_db: PsycopgDatabase,
+        persistir_vela: Persistir,
+        limpiar_fib: None,
+    ) -> None:
+        # GOLDEN de la proyeccion: la direccion de la barra i es "above" si y solo si el
+        # cierre de esa barra esta en o por encima del nivel que sirve fib.nearest_level
+        # en la MISMA barra. Se deriva de la serie HERMANA (no del codigo de direction),
+        # asi que si las dos se tendieran sobre rangos distintos esto revienta.
+        _sembrar(persistir_vela)
+        ultimo_indice = _BARRAS - 1
+        pedidas = 6
+
+        niveles = _materializar(
+            rules_db, FIB_NEAREST_LEVEL_SOURCE_ID, _open_time(ultimo_indice), pedidas
+        )
+        direcciones = _materializar_crudo(
+            rules_db, FIB_DIRECTION_SOURCE_ID, _open_time(ultimo_indice), pedidas
+        )
+
+        assert len(direcciones) == len(niveles) == pedidas  # 1:1, misma longitud
+        cierres = _CIERRES[ultimo_indice - pedidas + 1 : ultimo_indice + 1]
+        esperados = tuple(
+            "above" if cierre >= nivel else "below"
+            for cierre, nivel in zip(cierres, niveles, strict=True)
+        )
+        assert tuple(v.string_value for v in direcciones) == esperados
+
+    def test_mismo_warm_up_que_nearest_level(
+        self,
+        rules_db: PsycopgDatabase,
+        persistir_vela: Persistir,
+        limpiar_fib: None,
+    ) -> None:
+        # El warm-up es del rango (swing), no de la proyeccion: si una emitiera antes
+        # que la otra, dejarian de poder compararse barra a barra en una misma regla.
+        _sembrar(persistir_vela)
+
+        for barra, pedidas in ((50, 5), (_PRIMERA_CON_SWING, 5), (102, 10)):
+            niveles = _materializar(
+                rules_db, FIB_NEAREST_LEVEL_SOURCE_ID, _open_time(barra), pedidas
+            )
+            direcciones = _materializar_crudo(
+                rules_db, FIB_DIRECTION_SOURCE_ID, _open_time(barra), pedidas
+            )
+            assert len(direcciones) == len(niveles), (
+                f"barra {barra}: direction emitio {len(direcciones)} y nearest_level "
+                f"{len(niveles)}; el warm-up tiene que ser el MISMO"
+            )
+
+    def test_las_dos_direcciones_aparecen_en_el_fixture(
+        self,
+        rules_db: PsycopgDatabase,
+        persistir_vela: Persistir,
+        limpiar_fib: None,
+    ) -> None:
+        # Muerde: una implementacion que devolviera un token constante pasaria los
+        # tests de forma. Sobre las 61 barras maduras tienen que salir los DOS.
+        _sembrar(persistir_vela)
+
+        serie = _materializar_crudo(
+            rules_db, FIB_DIRECTION_SOURCE_ID, _open_time(_BARRAS - 1), _BARRAS
+        )
+
+        assert {v.string_value for v in serie} == {"above", "below"}

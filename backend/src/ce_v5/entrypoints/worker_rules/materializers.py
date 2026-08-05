@@ -87,6 +87,7 @@ from ce_v5.platform.rules.indicators.ema import (
     ema_from_anchor,
 )
 from ce_v5.platform.rules.indicators.fib import (
+    FIB_DIRECTION_SOURCE_ID,
     FIB_LEVEL_PCT_SOURCE_ID,
     FIB_NEAREST_LEVEL_SOURCE_ID,
     FibOutput,
@@ -1191,4 +1192,5 @@ SOURCE_MATERIALIZERS: dict[str, SourceMaterializer] = {
     MACD_HISTOGRAM_SOURCE_ID: MacdRecursiveSpec(output=MacdOutput.HISTOGRAM),
     FIB_NEAREST_LEVEL_SOURCE_ID: FibRecursiveSpec(output=FibOutput.NEAREST_LEVEL),
     FIB_LEVEL_PCT_SOURCE_ID: FibRecursiveSpec(output=FibOutput.LEVEL_PCT),
+    FIB_DIRECTION_SOURCE_ID: FibRecursiveSpec(output=FibOutput.DIRECTION),
 }

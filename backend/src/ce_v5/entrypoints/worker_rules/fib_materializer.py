@@ -42,6 +42,7 @@ from ce_v5.infra.db.fib_range_snapshot import (
 from ce_v5.infra.db.market_candles import read_close_range, read_ohlcv_window
 from ce_v5.platform.rules.indicators.fib import (
     FibOutput,
+    fib_direction_token,
     fib_output,
     fib_range_seed,
     fib_range_step,
@@ -119,6 +120,27 @@ def _swing_series(
     return (high, low)
 
 
+def _proyectar(
+    range_high: Decimal, range_low: Decimal, price: Decimal, output: FibOutput
+) -> ScalarValue:
+    """La proyeccion de UNA barra del grid, ya en el CARRIER de serie (D1).
+
+    Las tres salidas salen del MISMO rango replayado; lo unico que cambia es que
+    publican y en que campo tipado viajan: las dos numericas en decimal_value, la
+    direccion en string_value. Aqui es donde el carrier de D1 se gana el sueldo -- antes
+    de el, servir un token por el mismo borde que un Decimal era imposible.
+    """
+    if output is FibOutput.DIRECTION:
+        return ScalarValue(
+            scalar_type=ScalarType.STRING,
+            string_value=fib_direction_token(range_high, range_low, price),
+        )
+    return ScalarValue(
+        scalar_type=ScalarType.DECIMAL,
+        decimal_value=fib_output(range_high, range_low, price, output),
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class FibRecursiveSpec:
     """Materializador RECURSIVE de fib.nearest_level/fib.level_pct (0027).
@@ -185,10 +207,7 @@ class FibRecursiveSpec:
         open_time: int,
         history_bars: int,
     ) -> tuple[ScalarValue, ...]:
-        from ce_v5.entrypoints.worker_rules.materializers import (
-            UnwiredSourceError,
-            _decimals_to_scalars,
-        )
+        from ce_v5.entrypoints.worker_rules.materializers import UnwiredSourceError
 
         window = read_ohlcv_window(
             session, exchange, symbol, timeframe, open_time, history_bars
@@ -237,15 +256,15 @@ class FibRecursiveSpec:
             range_high, range_low = anchor[1], anchor[2]
         else:
             range_high, range_low = fib_range_seed(swing_high[0], swing_low[0])
-        valores: list[Decimal] = []
+        valores: list[ScalarValue] = []
         for indice in range(bars):
             range_high, range_low = fib_range_step(
                 range_high, range_low, swing_high[indice], swing_low[indice]
             )
             valores.append(
-                fib_output(range_high, range_low, closes[indice], self.output)
+                _proyectar(range_high, range_low, closes[indice], self.output)
             )
-        series = _decimals_to_scalars(tuple(valores[-len(window) :]))
+        series = tuple(valores[-len(window) :])
         write_fib_range_snapshot(
             session,
             exchange,

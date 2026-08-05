@@ -30,6 +30,7 @@ _EXPECTED = {
     "macd.histogram",
     "fib.nearest_level",
     "fib.level_pct",
+    "fib.direction",
     "volume.ratio_vs_avg",
     "vwap.value",
     "vwap.distance_pct",
@@ -54,14 +55,15 @@ def test_discovery_no_incluye_diferidas() -> None:
         assert not any(i.startswith(prefix) for i in ids)
 
 
-def test_discovery_no_incluye_las_fib_no_escalares() -> None:
-    # LOTE 5 gate D1: fib.levels es una LISTA de 17 niveles y fib.direction un
-    # CATEGORICO; el marco de fuentes de v5.0 sirve escalares. Se quedan fuera del
-    # catalogo hasta que ese gate las resuelva -- no por un if del validador, sino
-    # porque fib.declarations() no las publica (aditividad).
+def test_discovery_no_incluye_fib_levels() -> None:
+    # fib.levels es un VECTOR por barra (17 niveles) y ningun ScalarType lo representa,
+    # asi que sigue DIFERIDA aunque D1 ya cerrase el carrier no-Decimal: el carrier
+    # resolvio el tipo CATEGORICO (por eso fib.direction ya entra, LOTE 5), no el
+    # vectorial. Se queda fuera porque fib.declarations() no la publica (aditividad),
+    # no por un if del validador.
     ids = {d.source_id for d in discover_declarations()}
     assert "fib.levels" not in ids
-    assert "fib.direction" not in ids
+    assert "fib.direction" in ids  # categorica: SI entra desde el LOTE 5
 
 
 def test_sin_duplicados() -> None:
