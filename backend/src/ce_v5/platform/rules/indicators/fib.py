@@ -251,8 +251,11 @@ class FibOutput(Enum):
 
     DIRECTION entra en el LOTE 5 (P08b-D1-02 Q3) porque D1 ya cerro el carrier de serie
     no-Decimal: es CATEGORICA (STRING), no escalar numerica, y antes de D1 no habia
-    forma de servirla por el mismo borde. fib.levels (la lista de 17) sigue DIFERIDA:
-    es un VECTOR por barra, y eso no lo representa ningun ScalarType.
+    forma de servirla por el mismo borde. fib.levels (la lista de 17) NO tiene salida
+    aqui: sigue sin FibOutput propio porque un VECTOR por barra no lo representa ningun
+    ScalarType (ni siquiera el carrier de D1, que resolvio CATEGORICO, no vectorial). Su
+    declaracion NON_SERVIBLE (P08b-D1-04, LOTE 5) no cambia esto: se declara la
+    EXISTENCIA del conjunto, no se sirve.
     """
 
     NEAREST_LEVEL = "nearest_level"
@@ -310,21 +313,28 @@ def fib_direction_token(range_high: Decimal, range_low: Decimal, price: Decimal)
 FIB_NEAREST_LEVEL_SOURCE_ID = "fib.nearest_level"
 FIB_LEVEL_PCT_SOURCE_ID = "fib.level_pct"
 FIB_DIRECTION_SOURCE_ID = "fib.direction"
+FIB_LEVELS_SOURCE_ID = "fib.levels"
 
 
 def _fib_declaration(
-    source_id: str, value_type: ScalarType = ScalarType.DECIMAL
+    source_id: str,
+    value_type: ScalarType = ScalarType.DECIMAL,
+    servibility: Servibility = Servibility.CONTINUOUS,
 ) -> DataSourceDeclaration:
-    """Declaracion comun de fib.nearest_level/level_pct/direction (P08b-FIB-01, LOTE 5).
+    """Declaracion comun de fib.* (P08b-FIB-01, LOTE 5; NON_SERVIBLE en P08b-D1-04).
 
-    Las tres tienen la MISMA forma a proposito: salen del mismo rango con histeresis,
+    Las cuatro tienen la MISMA forma a proposito: salen del mismo rango con histeresis,
     con el mismo param y la misma cache_key. Lo unico que cambia es el source_id, el
-    value_type -- DECIMAL las dos numericas, STRING la direccion -- y, en el cableado,
-    que proyeccion emite su materializador.
+    value_type -- DECIMAL las tres numericas (incluida fib.levels, NOMINAL: no se sirve
+    ningun Decimal suyo, es metadata), STRING la direccion -- la servibility -- NON_
+    SERVIBLE solo para fib.levels, calcada de vp.hvn/vp.lvn -- y, en el cableado, que
+    proyeccion emite su materializador (fib.levels NO tiene: D1-04 OPCION A).
 
     RECURSIVE: el rango de la barra T depende del de T-1 (histeresis), y como una barra
     que no lo mueve lo CONSERVA, la dependencia se remonta sin cota. Es la razon de ser
-    del snapshot de la 0027.
+    del snapshot de la 0027. fib.levels HEREDA memory_model=RECURSIVE aunque no se
+    materialice: describe COMO dependeria de la historia si algun dia se sirviera, no
+    si se sirve hoy (memory_model es metadata del indicador, no del cableado).
 
     consumes las TRES series de las que se alimenta: swing.high y swing.low aportan los
     pivotes candidatos y market.close el precio que se situa en el grid. Es el primer
@@ -338,7 +348,7 @@ def _fib_declaration(
     return DataSourceDeclaration(
         source_id=source_id,
         source_type=SourceType.OBSERVABLE,
-        servibility=Servibility.CONTINUOUS,
+        servibility=servibility,
         memory_model=MemoryModel.RECURSIVE,
         value_type=value_type,
         evaluation_contexts=tuple(tf.value for tf in Timeframe),
@@ -385,16 +395,40 @@ def fib_direction_declaration() -> DataSourceDeclaration:
     return _fib_declaration(FIB_DIRECTION_SOURCE_ID, ScalarType.STRING)
 
 
+def fib_levels_declaration() -> DataSourceDeclaration:
+    """fib.levels: el grid completo de 17 niveles (NON_SERVIBLE; conjunto). LOTE 5,
+    P08b-D1-04 OPCION A.
+
+    Calcada de vp.hvn/vp.lvn (volume_profile.py): un VECTOR por barra no es un termino
+    de Rule (ADR-008 lo admite explicito -- "se calcula pero NO se combina en reglas"),
+    asi que se declara para que el catalogo CONOZCA la fuente -- resoluble, verificable,
+    lista para que I-02 la consuma como dependencia de una fuente DERIVADA escalar --
+    pero el Bloque 3 la rechaza fail-loud si una regla la referencia como termino
+    (CODE_SOURCE_NOT_SERVIBLE), sin necesitar un chequeo propio: es el mismo camino de
+    NON_SERVIBLE que ya recorren market.footprint y vp.hvn/vp.lvn.
+
+    value_type=DECIMAL es NOMINAL (como en vp.hvn/vp.lvn): describe el tipo del
+    ELEMENTO del conjunto, no un valor que se sirva -- fib.levels no tiene
+    materializador (D1-04 OPCION A) ni FibOutput propio; fib_levels() ya existe y ya
+    esta golden-testeada (LOTE 4), y esta declaracion no la duplica ni la envuelve.
+    """
+    return _fib_declaration(
+        FIB_LEVELS_SOURCE_ID, ScalarType.DECIMAL, Servibility.NON_SERVIBLE
+    )
+
+
 def declarations() -> tuple[DataSourceDeclaration, ...]:
     """Declaraciones que este modulo publica al catalogo vivo (discovery, MAT-02).
 
-    Las dos escalares numericas mas fib.direction (categorica), que entra en el LOTE 5
-    porque D1 ya cerro el carrier de serie no-Decimal (P08b-D1-02 Q3). fib.levels (lista
-    de 17) sigue DIFERIDA: es un VECTOR por barra y ningun ScalarType lo representa; no
-    exponerla es lo que la mantiene fuera del catalogo (aditividad), no un if.
+    Las dos escalares numericas, fib.direction (categorica, LOTE 5 porque D1 ya cerro
+    el carrier de serie no-Decimal, P08b-D1-02 Q3) y fib.levels (NON_SERVIBLE, LOTE 5,
+    P08b-D1-04): el catalogo la conoce como nodo declarado -- resoluble, con su grafo
+    completo -- pero sin materializador y sin FibOutput propio; el Bloque 3 la rechaza
+    como termino de cualquier Rule.
     """
     return (
         fib_nearest_level_declaration(),
         fib_level_pct_declaration(),
         fib_direction_declaration(),
+        fib_levels_declaration(),
     )

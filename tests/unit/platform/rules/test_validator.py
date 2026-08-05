@@ -12,8 +12,13 @@ from __future__ import annotations
 from uuid import uuid4
 
 from ce_v5.platform.rules.catalog import DataSourceCatalog
+from ce_v5.platform.rules.indicators.fib import (
+    FIB_LEVELS_SOURCE_ID,
+    fib_levels_declaration,
+)
 from ce_v5.platform.rules.validator import (
     CODE_OPERATOR_REQUIRES_NUMERIC,
+    CODE_SOURCE_NOT_SERVIBLE,
     CODE_TERM_TYPE_MISMATCH,
     validate_rule,
 )
@@ -206,3 +211,27 @@ class TestMezclaDeTiposEntreLosDosLados:
         )
         diagnostics = validate_rule(rule, _catalog())
         assert not any(d.code == CODE_TERM_TYPE_MISMATCH for d in diagnostics)
+
+
+class TestFibLevelsSeRechazaComoTermino:
+    """fib.levels (P08b-D1-04, LOTE 5): NON_SERVIBLE calcada de vp.hvn/vp.lvn.
+
+    No necesita un chequeo propio: el Bloque 3 ya rechaza CUALQUIER NON_SERVIBLE como
+    termino de Rule (CODE_SOURCE_NOT_SERVIBLE, el mismo camino que market.footprint y
+    vp.hvn/vp.lvn). Este test usa la declaracion REAL del modulo fib, no una sintetica,
+    para que una futura desalineacion entre fib.py y este candado se note aqui.
+    """
+
+    def _catalogo_con_fib_levels(self) -> DataSourceCatalog:
+        catalog = DataSourceCatalog()
+        catalog.register(fib_levels_declaration())
+        return catalog
+
+    def test_referenciar_fib_levels_como_termino_se_rechaza(self) -> None:
+        rule = _rule(
+            _source_term(FIB_LEVELS_SOURCE_ID),
+            ComparisonOperator.EQ,
+            _decimal_constant("100"),
+        )
+        diagnostics = validate_rule(rule, self._catalogo_con_fib_levels())
+        assert any(d.code == CODE_SOURCE_NOT_SERVIBLE for d in diagnostics)

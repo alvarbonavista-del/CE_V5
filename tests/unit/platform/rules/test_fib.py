@@ -11,6 +11,7 @@ from ce_v5.platform.rules.indicators.fib import (
     FIB_DIRECTION_SOURCE_ID,
     FIB_FORMULA_VERSION,
     FIB_LEVEL_PCT_SOURCE_ID,
+    FIB_LEVELS_SOURCE_ID,
     FIB_NEAREST_LEVEL_SOURCE_ID,
     FibDirection,
     FibOutput,
@@ -20,6 +21,7 @@ from ce_v5.platform.rules.indicators.fib import (
     fib_direction_token,
     fib_level_pct_declaration,
     fib_levels,
+    fib_levels_declaration,
     fib_nearest_level_declaration,
     fib_output,
     fib_range_seed,
@@ -407,23 +409,25 @@ class TestDeclaraciones:
         for prohibido in ("ratio", "ratios", "min_dist", "hysteresis", "touch_pct"):
             assert prohibido not in d.cache_key_schema
 
-    def test_declarations_publica_las_tres_servibles(self) -> None:
+    def test_declarations_publica_las_tres_servibles_mas_fib_levels(self) -> None:
         publicadas = declarations()
-        assert len(publicadas) == 3
+        assert len(publicadas) == 4
         ids = {d.source_id for d in publicadas}
         assert ids == {
             FIB_NEAREST_LEVEL_SOURCE_ID,
             FIB_LEVEL_PCT_SOURCE_ID,
             FIB_DIRECTION_SOURCE_ID,
+            FIB_LEVELS_SOURCE_ID,
         }
 
-    def test_levels_sigue_diferida(self) -> None:
-        # fib.levels es un VECTOR por barra (17 niveles) y ningun ScalarType lo
-        # representa: D1 cerro el carrier para tipos CATEGORICOS (de ahi que
-        # fib.direction ya entre), no para vectores. Que no este en declarations() es
-        # lo que la mantiene fuera del catalogo (aditividad), no un if del validador.
+    def test_levels_ya_no_esta_diferida_es_non_servible(self) -> None:
+        # P08b-D1-04 (LOTE 5): fib.levels (17 niveles) sigue sin materializador -- un
+        # VECTOR por barra no lo representa ningun ScalarType, ni el carrier de D1 (que
+        # resolvio CATEGORICO, no vectorial) -- pero YA entra al catalogo vivo como
+        # NODO DECLARADO NON_SERVIBLE, calcada de vp.hvn/vp.lvn: se conoce, no se sirve.
         ids = {d.source_id for d in declarations()}
-        assert "fib.levels" not in ids
+        assert FIB_LEVELS_SOURCE_ID in ids
+        assert fib_levels_declaration().servibility == Servibility.NON_SERVIBLE
 
 
 class TestDeclaracionDireccion:
@@ -457,6 +461,36 @@ class TestDeclaracionDireccion:
         # Y lo que SI cambia, cambia: numerica vs categorica.
         assert fib_nearest_level_declaration().value_type == ScalarType.DECIMAL
         assert fib_direction_declaration().value_type == ScalarType.STRING
+
+
+class TestDeclaracionFibLevels:
+    """fib.levels: NON_SERVIBLE, declaracion-only (P08b-D1-04, LOTE 5).
+
+    Calcada de vp.hvn/vp.lvn: comparte rango, snapshot (0027) y param con sus tres
+    hermanas servibles -- si divergiera, un consumidor futuro (I-02) que se apoyara en
+    su `consumes` para derivar una fuente escalar leeria un grafo distinto del que
+    alimenta a nearest_level/level_pct/direction.
+    """
+
+    def test_es_non_servible_decimal_nominal_recursive(self) -> None:
+        d = fib_levels_declaration()
+        assert d.source_id == FIB_LEVELS_SOURCE_ID == "fib.levels"
+        assert d.servibility == Servibility.NON_SERVIBLE
+        assert d.value_type == ScalarType.DECIMAL
+        assert d.memory_model == MemoryModel.RECURSIVE
+
+    def test_comparte_forma_con_nearest_level(self) -> None:
+        niveles = fib_levels_declaration()
+        nivel = fib_nearest_level_declaration()
+        assert niveles.cache_key_schema == nivel.cache_key_schema
+        assert niveles.consumes == nivel.consumes
+        assert niveles.overridable_params == nivel.overridable_params
+        assert [p.name for p in niveles.params] == [p.name for p in nivel.params]
+        assert niveles.sharing_scope == nivel.sharing_scope
+
+    def test_solo_cambia_la_servibility(self) -> None:
+        assert fib_nearest_level_declaration().servibility == Servibility.CONTINUOUS
+        assert fib_levels_declaration().servibility == Servibility.NON_SERVIBLE
 
 
 class TestTokenDeDireccion:
