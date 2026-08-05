@@ -72,6 +72,7 @@ from ce_v5.platform.rules.footprint_range import (
 from ce_v5.platform.rules.indicators.candle import (
     CANDLE_BODY_PCT_SOURCE_ID,
     CANDLE_LOWER_SHADOW_PCT_SOURCE_ID,
+    CANDLE_OPEN_SOURCE_ID,
     CANDLE_UPPER_SHADOW_PCT_SOURCE_ID,
     body_pct,
     lower_shadow_pct,
@@ -1031,6 +1032,10 @@ def _candle_lower_shadow_pct(candle: CandleOHLCV) -> Decimal:
     )[0]
 
 
+def _candle_open(candle: CandleOHLCV) -> Decimal:
+    return candle.open
+
+
 def _volume_ratio_vs_avg(window: Sequence[CandleOHLCV]) -> Decimal:
     series = ratio_vs_avg(tuple(c.volume for c in window), lookback=LOOKBACK_DEFAULT)
     value = series[-1]
@@ -1111,6 +1116,7 @@ SOURCE_MATERIALIZERS: dict[str, SourceMaterializer] = {
     CANDLE_LOWER_SHADOW_PCT_SOURCE_ID: CandlePointLocalSpec(
         extract=_candle_lower_shadow_pct
     ),
+    CANDLE_OPEN_SOURCE_ID: CandlePointLocalSpec(extract=_candle_open),
     VOLUME_RATIO_VS_AVG_SOURCE_ID: CandleWindowedSpec(
         transform=_volume_ratio_vs_avg, window_bars=LOOKBACK_DEFAULT + 1
     ),

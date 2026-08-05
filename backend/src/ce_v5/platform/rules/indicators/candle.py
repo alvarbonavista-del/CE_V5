@@ -288,6 +288,7 @@ def pullback_moment(
 CANDLE_BODY_PCT_SOURCE_ID = "candle.body_pct"
 CANDLE_UPPER_SHADOW_PCT_SOURCE_ID = "candle.upper_shadow_pct"
 CANDLE_LOWER_SHADOW_PCT_SOURCE_ID = "candle.lower_shadow_pct"
+CANDLE_OPEN_SOURCE_ID = "candle.open"
 
 
 def _anatomy_declaration(source_id: str) -> DataSourceDeclaration:
@@ -306,11 +307,28 @@ def _anatomy_declaration(source_id: str) -> DataSourceDeclaration:
     )
 
 
+def candle_open_declaration() -> DataSourceDeclaration:
+    """candle.open: el precio de apertura crudo de la barra (POINT_LOCAL).
+
+    Sin funcion pura de computo: es IDENTIDAD sobre el campo open de la vela, igual que
+    market.close es identidad sobre el cierre. Misma forma que la anatomia
+    (_anatomy_declaration): POINT_LOCAL, CONTINUOUS, sin params, consumes=() (fuente
+    BASE leida directamente del historico, no derivada de otra fuente del catalogo).
+
+    Desbloquea F1 (absorcion) y el resto de lo que en pivotphase.py, absorption.py y
+    climax.py estaba anotado como "DIFERIDA hasta candle.open (P08b)": ese hueco era
+    justamente que este campo no existia como fuente servible.
+    """
+    return _anatomy_declaration(CANDLE_OPEN_SOURCE_ID)
+
+
 def declarations() -> tuple[DataSourceDeclaration, ...]:
-    """Fuentes de anatomia SIEMPRE-Decimal (LOTE 1a). Las categoricas/booleanas de
-    candle.* quedan DIFERIDAS (D1) y NO se declaran aun."""
+    """Fuentes de anatomia SIEMPRE-Decimal (LOTE 1a) + candle.open (PASO 5
+    reactivacion). Las categoricas/booleanas de candle.* quedan DIFERIDAS (D1) y NO se
+    declaran aun."""
     return (
         _anatomy_declaration(CANDLE_BODY_PCT_SOURCE_ID),
         _anatomy_declaration(CANDLE_UPPER_SHADOW_PCT_SOURCE_ID),
         _anatomy_declaration(CANDLE_LOWER_SHADOW_PCT_SOURCE_ID),
+        candle_open_declaration(),
     )

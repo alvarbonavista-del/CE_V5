@@ -38,6 +38,7 @@ from ce_v5.platform.rules.cvd import CVD_SOURCE_ID, ResetPolicy
 from ce_v5.platform.rules.indicators.candle import (
     CANDLE_BODY_PCT_SOURCE_ID,
     CANDLE_LOWER_SHADOW_PCT_SOURCE_ID,
+    CANDLE_OPEN_SOURCE_ID,
     CANDLE_UPPER_SHADOW_PCT_SOURCE_ID,
 )
 from ce_v5.platform.rules.indicators.ema import (
@@ -195,6 +196,7 @@ class TestRegistroPorSourceId:
             CANDLE_BODY_PCT_SOURCE_ID,
             CANDLE_UPPER_SHADOW_PCT_SOURCE_ID,
             CANDLE_LOWER_SHADOW_PCT_SOURCE_ID,
+            CANDLE_OPEN_SOURCE_ID,
             VOLUME_RATIO_VS_AVG_SOURCE_ID,
             VWAP_VALUE_SOURCE_ID,
             VWAP_DISTANCE_PCT_SOURCE_ID,

@@ -22,6 +22,7 @@ _EXPECTED = {
     "candle.body_pct",
     "candle.upper_shadow_pct",
     "candle.lower_shadow_pct",
+    "candle.open",
     "ema.value",
     "rsi.value",
     "macd.line",

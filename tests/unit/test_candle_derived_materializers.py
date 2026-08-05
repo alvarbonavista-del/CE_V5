@@ -19,6 +19,7 @@ from ce_v5.platform.rules.discovery import discover_declarations
 from ce_v5.platform.rules.indicators.candle import (
     CANDLE_BODY_PCT_SOURCE_ID,
     CANDLE_LOWER_SHADOW_PCT_SOURCE_ID,
+    CANDLE_OPEN_SOURCE_ID,
     CANDLE_UPPER_SHADOW_PCT_SOURCE_ID,
     body_pct,
     lower_shadow_pct,
@@ -108,6 +109,27 @@ class TestCandleAnatomyPointLocal:
         assert len({b, u, low}) == 3
 
 
+class TestCandleOpenPointLocal:
+    """candle.open: IDENTIDAD sobre el campo open de la vela, sin funcion pura propia.
+
+    A diferencia de body_pct/upper/lower (que derivan un porcentaje del OHLC), aqui el
+    extract devuelve el open TAL CUAL: es la fuente base cruda, no un computo.
+    """
+
+    def test_extract_es_el_open_de_la_vela(self) -> None:
+        candle = _candle(0, "20", "100", "0", "45", "10")
+        assert _point_local(CANDLE_OPEN_SOURCE_ID).extract(candle) == Decimal("20")
+
+    def test_extract_no_es_una_constante(self) -> None:
+        # Dos velas con open DISTINTO dan valores distintos: si extract devolviera otro
+        # campo (o un cero fijo), esto lo caza.
+        una = _candle(0, "20", "100", "0", "45", "10")
+        otra = _candle(1, "77", "100", "0", "45", "10")
+        assert _point_local(CANDLE_OPEN_SOURCE_ID).extract(una) != _point_local(
+            CANDLE_OPEN_SOURCE_ID
+        ).extract(otra)
+
+
 class TestVolumeRatioWindowed:
     def test_la_ventana_es_lookback_mas_uno(self) -> None:
         assert (
@@ -133,12 +155,13 @@ class TestVolumeRatioWindowed:
 
 
 class TestDeclaracionesEnElCatalogo:
-    def test_las_cuatro_declaradas(self) -> None:
+    def test_las_cinco_declaradas(self) -> None:
         ids = {d.source_id for d in discover_declarations()}
         assert {
             CANDLE_BODY_PCT_SOURCE_ID,
             CANDLE_UPPER_SHADOW_PCT_SOURCE_ID,
             CANDLE_LOWER_SHADOW_PCT_SOURCE_ID,
+            CANDLE_OPEN_SOURCE_ID,
             VOLUME_RATIO_VS_AVG_SOURCE_ID,
         } <= ids
 
@@ -153,7 +176,20 @@ class TestDeclaracionesEnElCatalogo:
             by_id[CANDLE_LOWER_SHADOW_PCT_SOURCE_ID].memory_model
             is MemoryModel.POINT_LOCAL
         )
+        assert by_id[CANDLE_OPEN_SOURCE_ID].memory_model is MemoryModel.POINT_LOCAL
         assert by_id[VOLUME_RATIO_VS_AVG_SOURCE_ID].memory_model is MemoryModel.WINDOWED
+
+    def test_candle_open_continuous_sin_params_y_misma_cache_key_que_body_pct(
+        self,
+    ) -> None:
+        by_id = {d.source_id: d for d in discover_declarations()}
+        abierto = by_id[CANDLE_OPEN_SOURCE_ID]
+        body = by_id[CANDLE_BODY_PCT_SOURCE_ID]
+        assert abierto.servibility is body.servibility
+        assert abierto.params == ()
+        assert abierto.overridable_params == ()
+        assert abierto.cache_key_schema == body.cache_key_schema
+        assert abierto.consumes == body.consumes == ()
 
     def test_volume_ratio_declara_lookback_en_cache_key(self) -> None:
         by_id = {d.source_id: d for d in discover_declarations()}
