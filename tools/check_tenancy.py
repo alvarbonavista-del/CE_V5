@@ -120,6 +120,12 @@ TABLAS_SIN_TENANT_PERMITIDAS: dict[str, str] = {
     # tablas de snapshot); append-only. Guarda las TRES EMAs internas (ema_fast,
     # ema_slow, ema_signal), que son el estado, no las salidas derivadas de el.
     "macd_snapshot": "system",
+    # fib_range_snapshot: estado del RANGO vigente del grid Fibonacci con histeresis
+    # (RECURSIVE fib.nearest_level/fib.level_pct); scope=system SIN tenant_id
+    # (shared_evaluation public_cross_tenant, como las demas tablas de snapshot);
+    # append-only. Guarda el rango (range_high, range_low), que es el estado; los
+    # niveles son derivados de el.
+    "fib_range_snapshot": "system",
 }
 
 # Roles de RUNTIME: los que se conectan con una credencial en un proceso vivo.

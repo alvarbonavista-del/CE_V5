@@ -27,6 +27,8 @@ _EXPECTED = {
     "macd.line",
     "macd.signal",
     "macd.histogram",
+    "fib.nearest_level",
+    "fib.level_pct",
     "volume.ratio_vs_avg",
     "vwap.value",
     "vwap.distance_pct",
@@ -49,6 +51,16 @@ def test_discovery_no_incluye_diferidas() -> None:
     ids = {d.source_id for d in discover_declarations()}
     for prefix in ("absorption.", "climax.", "void.", "notrade."):
         assert not any(i.startswith(prefix) for i in ids)
+
+
+def test_discovery_no_incluye_las_fib_no_escalares() -> None:
+    # LOTE 5 gate D1: fib.levels es una LISTA de 17 niveles y fib.direction un
+    # CATEGORICO; el marco de fuentes de v5.0 sirve escalares. Se quedan fuera del
+    # catalogo hasta que ese gate las resuelva -- no por un if del validador, sino
+    # porque fib.declarations() no las publica (aditividad).
+    ids = {d.source_id for d in discover_declarations()}
+    assert "fib.levels" not in ids
+    assert "fib.direction" not in ids
 
 
 def test_sin_duplicados() -> None:

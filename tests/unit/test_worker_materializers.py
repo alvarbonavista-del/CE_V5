@@ -15,6 +15,7 @@ from uuid import uuid4
 import pytest
 
 from ce_v5.entrypoints.worker_rules.composition import _materialize
+from ce_v5.entrypoints.worker_rules.fib_materializer import FibRecursiveSpec
 from ce_v5.entrypoints.worker_rules.materializers import (
     CVD_RESET_POLICY_V5,
     PROFILE_WINDOW_BARS,
@@ -42,6 +43,11 @@ from ce_v5.platform.rules.indicators.candle import (
 from ce_v5.platform.rules.indicators.ema import (
     EMA_PERIOD_DEFAULT,
     EMA_SOURCE_ID,
+)
+from ce_v5.platform.rules.indicators.fib import (
+    FIB_LEVEL_PCT_SOURCE_ID,
+    FIB_NEAREST_LEVEL_SOURCE_ID,
+    FibOutput,
 )
 from ce_v5.platform.rules.indicators.macd import (
     MACD_FAST_DEFAULT,
@@ -199,6 +205,8 @@ class TestRegistroPorSourceId:
             MACD_LINE_SOURCE_ID,
             MACD_SIGNAL_SOURCE_ID,
             MACD_HISTOGRAM_SOURCE_ID,
+            FIB_NEAREST_LEVEL_SOURCE_ID,
+            FIB_LEVEL_PCT_SOURCE_ID,
         }
 
     @pytest.mark.parametrize(
@@ -786,3 +794,66 @@ class TestMacdRecursivaRegistrada:
             tuple(series[_macd_spec(MACD_HISTOGRAM_SOURCE_ID).output])
             == esperado.histogram
         )
+
+
+def _fib_spec(source_id: str) -> FibRecursiveSpec:
+    spec = SOURCE_MATERIALIZERS[source_id]
+    assert isinstance(spec, FibRecursiveSpec)
+    return spec
+
+
+class TestFibRecursivaRegistrada:
+    """9: fib.nearest_level/fib.level_pct cableadas como RECURSIVE (P08b-FIB-01).
+
+    Comparten el rango con histeresis, el snapshot y el calculo; lo unico que las
+    distingue es que proyeccion publican. El replay real (bootstrap, ancla, alineacion
+    con swing y el GATE bit-exacto de ADR-007) exige BD y vive en el test de integracion
+    del grid fib.
+    """
+
+    def test_las_dos_estan_cableadas_con_su_propia_salida(self) -> None:
+        # Si las dos entradas compartieran output, el catalogo ofreceria dos fuentes y
+        # el motor solo sabria servir una.
+        assert _fib_spec(FIB_NEAREST_LEVEL_SOURCE_ID).output is FibOutput.NEAREST_LEVEL
+        assert _fib_spec(FIB_LEVEL_PCT_SOURCE_ID).output is FibOutput.LEVEL_PCT
+
+    @pytest.mark.parametrize(
+        "source_id", [FIB_NEAREST_LEVEL_SOURCE_ID, FIB_LEVEL_PCT_SOURCE_ID]
+    )
+    def test_el_strength_por_defecto_es_el_de_swing(self, source_id: str) -> None:
+        # No es un default propio: se HEREDA de swing.*, de donde salen los pivotes.
+        assert _fib_spec(source_id).strength == SWING_STRENGTH_DEFAULT == 2
+
+    def test_with_params_liga_el_strength_sin_mutar_el_registro(self) -> None:
+        # El strength no solo parametriza el grid: viaja a las series de swing que lo
+        # alimentan. Ligar mal serviria un rango decantado de OTROS pivotes.
+        spec = _fib_spec(FIB_NEAREST_LEVEL_SOURCE_ID)
+        ligada = spec.with_params(_entero("strength", 3))
+        assert isinstance(ligada, FibRecursiveSpec)
+        assert ligada.strength == 3
+        assert ligada.output is spec.output
+        assert spec.strength == SWING_STRENGTH_DEFAULT
+
+    @pytest.mark.parametrize(
+        "source_id", [FIB_NEAREST_LEVEL_SOURCE_ID, FIB_LEVEL_PCT_SOURCE_ID]
+    )
+    def test_with_params_sin_el_param_devuelve_el_mismo_spec(
+        self, source_id: str
+    ) -> None:
+        # ADITIVIDAD D7: sin override, nada cambia.
+        assert _fib_spec(source_id).with_params({}) is _fib_spec(source_id)
+
+    def test_with_params_rechaza_un_strength_fuera_de_dominio(self) -> None:
+        # Mismo dominio que el CHECK de la 0027 y que swing (>= 1). Falla RUIDOSO.
+        spec = _fib_spec(FIB_LEVEL_PCT_SOURCE_ID)
+        with pytest.raises(UnwiredSourceError, match="fuerza simetrica"):
+            spec.with_params(_entero("strength", 0))
+        with pytest.raises(UnwiredSourceError, match="fuerza simetrica"):
+            spec.with_params(_entero("strength", -2))
+
+    def test_las_fuentes_que_consume_estan_cableadas(self) -> None:
+        # CONDICION MAT-08 para el consumidor mas compuesto del catalogo: fib se apoya
+        # en swing.high y swing.low POR SOURCE_ID contra este registro. Si alguna
+        # desapareciera, el grid no podria materializarse y hay que verlo en frio.
+        for base in (SWING_HIGH_SOURCE_ID, SWING_LOW_SOURCE_ID):
+            assert base in SOURCE_MATERIALIZERS

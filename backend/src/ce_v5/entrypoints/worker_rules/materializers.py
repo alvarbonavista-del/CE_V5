@@ -23,6 +23,10 @@ cableadas (MAT-07, DAG bottom-up footprint -> delta -> cvd):
   desde el snapshot de la 0026). Las TRES comparten UN estado -- las tres EMAs internas
   -- y un solo paso de calculo; cada entrada del registro publica su proyeccion
   (`output`). Sin warm-up: valor desde la barra 0 (P08b-LOTE3-01).
+- fib.nearest_level/level_pct: RECURSIVE sobre el RANGO con histeresis
+  (FibRecursiveSpec, glue en fib_materializer; replay desde el snapshot de la 0027).
+  Es el unico que consume DOS fuentes derivadas a la vez (swing.high/swing.low) ademas
+  del cierre: las pide al REGISTRO ligadas al strength efectivo (P08b-FIB-01).
 - rsi.value: RECURSIVE Wilder sobre los cierres (RsiRecursiveSpec, replay desde el
   snapshot de la 0025, cuyo estado son TRES valores -- avg_gain, avg_loss, last_close --
   porque el gain es un diferencial; el warm-up sale como serie MAS CORTA, nunca None a
@@ -42,6 +46,7 @@ from dataclasses import dataclass, replace
 from decimal import ROUND_HALF_EVEN, Decimal, localcontext
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
+from ce_v5.entrypoints.worker_rules.fib_materializer import FibRecursiveSpec
 from ce_v5.entrypoints.worker_rules.pivotphase_materializer import (
     PivotphaseConfidenceSpec,
     PivotphasePhaseSpec,
@@ -76,6 +81,11 @@ from ce_v5.platform.rules.indicators.ema import (
     EMA_PERIOD_DEFAULT,
     EMA_SOURCE_ID,
     ema_from_anchor,
+)
+from ce_v5.platform.rules.indicators.fib import (
+    FIB_LEVEL_PCT_SOURCE_ID,
+    FIB_NEAREST_LEVEL_SOURCE_ID,
+    FibOutput,
 )
 from ce_v5.platform.rules.indicators.macd import (
     MACD_FAST_DEFAULT,
@@ -1117,4 +1127,6 @@ SOURCE_MATERIALIZERS: dict[str, SourceMaterializer] = {
     MACD_LINE_SOURCE_ID: MacdRecursiveSpec(output=MacdOutput.LINE),
     MACD_SIGNAL_SOURCE_ID: MacdRecursiveSpec(output=MacdOutput.SIGNAL),
     MACD_HISTOGRAM_SOURCE_ID: MacdRecursiveSpec(output=MacdOutput.HISTOGRAM),
+    FIB_NEAREST_LEVEL_SOURCE_ID: FibRecursiveSpec(output=FibOutput.NEAREST_LEVEL),
+    FIB_LEVEL_PCT_SOURCE_ID: FibRecursiveSpec(output=FibOutput.LEVEL_PCT),
 }

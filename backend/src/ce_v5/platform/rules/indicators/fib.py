@@ -26,6 +26,24 @@ from dataclasses import dataclass
 from decimal import ROUND_HALF_EVEN, Decimal, localcontext
 from enum import Enum
 
+from ce_v5.platform.rules.indicators.swing import (
+    SWING_HIGH_SOURCE_ID,
+    SWING_LOW_SOURCE_ID,
+    SWING_STRENGTH_DEFAULT,
+)
+from ce_v5.platform.rules.rawclose import MARKET_CLOSE_SOURCE_ID
+from source.datasource import (
+    DataSourceDeclaration,
+    HistoryUnit,
+    MemoryModel,
+    ParamSpec,
+    Servibility,
+    SharingScope,
+    SourceType,
+)
+from source.families.market import Timeframe
+from source.rules.scalar import ScalarType, ScalarValue
+
 FIB_FORMULA_VERSION = 1
 
 _PREC = 34
@@ -156,3 +174,182 @@ def direction(pivot_high: Decimal, pivot_low: Decimal, price: Decimal) -> FibDir
     levels = fib_levels(pivot_high, pivot_low)
     near = _nearest(levels, price)[0]
     return FibDirection.ABOVE if price >= near else FibDirection.BELOW
+
+
+# --- Rango con HISTERESIS (resuelve DEC-FIB-RANGO-DIFERIDO por la via recursive) ---
+#
+# El grid no se tiende sobre el swing de CADA barra: se tiende sobre un rango PEGAJOSO
+# que solo se mueve cuando el swing lo supera con holgura. Sin esa histeresis, un pivote
+# que oscila un tick redibujaria el grid entero barra a barra y "nivel Fibonacci mas
+# cercano" dejaria de significar nada. Es la paridad de _maybe_retrace de v4.
+#
+# EL UMBRAL ES UN RATIO FIBONACCI, NO UN PARAMETRO. min_dist = 0.414 * rango, y 0.414 es
+# _EXT_RATIOS[1] -- la MISMA constante que ya define la extension L2 del grid,
+# reutilizada aqui en vez de reescrita. Es DEFINITORIO (D6): no viaja en la cache_key ni
+# se puede override; si dejara de ser 0.414 seria otro indicador, no otra
+# parametrizacion.
+
+
+def fib_range_seed(swing_high: Decimal, swing_low: Decimal) -> tuple[Decimal, Decimal]:
+    """El rango inicial: el primer par de pivotes tal cual, sin histeresis que aplicar.
+
+    Devuelve (range_high, range_low). No valida que el rango sea positivo: un mercado
+    plano da un rango degenerado (high == low) que el siguiente paso RESETEA y que la
+    capa de salida trata con su fallback. Rechazarlo aqui obligaria al materializador a
+    inventarse un rango, que es peor.
+    """
+    return (swing_high, swing_low)
+
+
+def fib_range_step(
+    range_high: Decimal,
+    range_low: Decimal,
+    swing_high: Decimal,
+    swing_low: Decimal,
+) -> tuple[Decimal, Decimal]:
+    """Un paso de la histeresis: del rango en T-1 y los swing de T, al rango en T.
+
+    Cada extremo se mueve SOLO si el swing lo supera en su direccion Y la supera por al
+    menos min_dist = 0.414 * (tamano del rango vigente). Los dos extremos se deciden por
+    separado y contra el MISMO min_dist, el del rango de entrada: usar un min_dist
+    recalculado tras mover el primero haria que el resultado dependiera del orden en que
+    se evaluan, y el fold dejaria de ser determinista.
+
+    RESET si el rango de entrada es degenerado (rng <= 0): se adopta el swing de la
+    barra tal cual. Sin esto, min_dist seria 0 o negativo y la histeresis dejaria de
+    frenar nada -- o peor, un rango invertido se perpetuaria.
+
+    Determinista y bajo el contexto pinneado del modulo, como fib_levels: replayar desde
+    cualquier rango valido reproduce la cola identica bit a bit (ADR-007).
+    """
+    with localcontext() as ctx:
+        ctx.prec = _PREC
+        ctx.rounding = ROUND_HALF_EVEN
+        rng = range_high - range_low
+        if rng <= 0:
+            return (swing_high, swing_low)
+        min_dist = _EXT_RATIOS[1] * rng
+        nuevo_high = (
+            swing_high
+            if swing_high > range_high and swing_high - range_high >= min_dist
+            else range_high
+        )
+        nuevo_low = (
+            swing_low
+            if swing_low < range_low and range_low - swing_low >= min_dist
+            else range_low
+        )
+    return (nuevo_high, nuevo_low)
+
+
+class FibOutput(Enum):
+    """Cual de las dos salidas servibles del grid emite una fuente.
+
+    Las dos comparten el MISMO rango con histeresis y el mismo grid; lo unico que las
+    distingue es que proyeccion publican. Por eso el enum vive aqui, junto a la funcion
+    pura, y no en el cableado: es una propiedad del indicador.
+
+    fib.levels (la lista de 17) y fib.direction (categorico) quedan DIFERIDAS al gate D1
+    del LOTE 5 y por eso no estan aqui: el marco de fuentes de v5.0 sirve escalares.
+    """
+
+    NEAREST_LEVEL = "nearest_level"
+    LEVEL_PCT = "level_pct"
+
+
+def fib_output(
+    range_high: Decimal,
+    range_low: Decimal,
+    price: Decimal,
+    output: FibOutput,
+) -> Decimal:
+    """La salida `output` del grid tendido sobre [range_low, range_high] para `price`.
+
+    BORDE DEL RANGO DEGENERADO (range_high <= range_low, mercado plano o rango aun sin
+    decantar): fib_levels lo rechazaria con ValueError, pero un materializador no puede
+    dejar un hueco a media serie. Se emite un fallback DEFINIDO -- nearest_level = el
+    propio rango colapsado, level_pct = 0 -- que es la lectura honesta de la situacion:
+    con un rango de tamano cero todos los niveles coinciden con el, y el precio esta al
+    0% de un rango que no existe. Misma politica de degenerado que el fallback HLC3 del
+    VWAP (P08b-INT-04): la funcion pura del grid se queda fiel (lanza), y la POLITICA
+    vive en el borde que tiene que servir una serie.
+    """
+    if range_high <= range_low:
+        return range_high if output is FibOutput.NEAREST_LEVEL else Decimal(0)
+    if output is FibOutput.NEAREST_LEVEL:
+        return nearest_level(range_high, range_low, price)
+    return level_pct(range_high, range_low, price)
+
+
+FIB_NEAREST_LEVEL_SOURCE_ID = "fib.nearest_level"
+FIB_LEVEL_PCT_SOURCE_ID = "fib.level_pct"
+
+
+def _fib_declaration(source_id: str) -> DataSourceDeclaration:
+    """Declaracion comun de fib.nearest_level/fib.level_pct (dictamen P08b-FIB-01).
+
+    Las dos tienen la MISMA forma a proposito: salen del mismo rango con histeresis, con
+    el mismo param y la misma cache_key. Lo unico que cambia es el source_id -- y, en el
+    cableado, que proyeccion emite su materializador.
+
+    RECURSIVE: el rango de la barra T depende del de T-1 (histeresis), y como una barra
+    que no lo mueve lo CONSERVA, la dependencia se remonta sin cota. Es la razon de ser
+    del snapshot de la 0027.
+
+    consumes las TRES series de las que se alimenta: swing.high y swing.low aportan los
+    pivotes candidatos y market.close el precio que se situa en el grid. Es el primer
+    DataSource del catalogo que consume dos fuentes DERIVADAS a la vez.
+
+    strength es el UNICO parametro y no es propio: se HEREDA de swing.* y se propaga tal
+    cual, porque el rango que decanta la histeresis depende de que pivotes le lleguen.
+    Los ratios Fibonacci (el 0.414 de la histeresis incluido) NO son parametros: son
+    definitorios (D6) y por eso no estan ni en params ni en la cache_key.
+    """
+    return DataSourceDeclaration(
+        source_id=source_id,
+        source_type=SourceType.OBSERVABLE,
+        servibility=Servibility.CONTINUOUS,
+        memory_model=MemoryModel.RECURSIVE,
+        value_type=ScalarType.DECIMAL,
+        evaluation_contexts=tuple(tf.value for tf in Timeframe),
+        history_units=(HistoryUnit.BARS,),
+        params=(
+            ParamSpec(
+                name="strength",
+                value_type=ScalarType.INTEGER,
+                default=ScalarValue(
+                    scalar_type=ScalarType.INTEGER,
+                    integer_value=SWING_STRENGTH_DEFAULT,
+                ),
+            ),
+        ),
+        overridable_params=("strength",),
+        shared_evaluation=True,
+        sharing_scope=SharingScope.PUBLIC_CROSS_TENANT,
+        cache_key_schema=("exchange", "symbol", "timeframe", "strength"),
+        consumes=(
+            SWING_HIGH_SOURCE_ID,
+            SWING_LOW_SOURCE_ID,
+            MARKET_CLOSE_SOURCE_ID,
+        ),
+    )
+
+
+def fib_nearest_level_declaration() -> DataSourceDeclaration:
+    """fib.nearest_level: el nivel del grid mas cercano al cierre."""
+    return _fib_declaration(FIB_NEAREST_LEVEL_SOURCE_ID)
+
+
+def fib_level_pct_declaration() -> DataSourceDeclaration:
+    """fib.level_pct: el porcentaje del nivel mas cercano (0=low, 100=high)."""
+    return _fib_declaration(FIB_LEVEL_PCT_SOURCE_ID)
+
+
+def declarations() -> tuple[DataSourceDeclaration, ...]:
+    """Declaraciones que este modulo publica al catalogo vivo (discovery, MAT-02).
+
+    Solo las DOS escalares. fib.levels (lista de 17) y fib.direction (categorico) siguen
+    DIFERIDAS al gate D1 del LOTE 5: no exponerlas es lo que las mantiene fuera del
+    catalogo (aditividad), no un if en el validador.
+    """
+    return (fib_nearest_level_declaration(), fib_level_pct_declaration())

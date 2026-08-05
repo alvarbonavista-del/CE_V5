@@ -9,12 +9,24 @@ import pytest
 
 from ce_v5.platform.rules.indicators.fib import (
     FIB_FORMULA_VERSION,
+    FIB_LEVEL_PCT_SOURCE_ID,
+    FIB_NEAREST_LEVEL_SOURCE_ID,
     FibDirection,
+    FibOutput,
+    declarations,
     direction,
+    fib_level_pct_declaration,
     fib_levels,
+    fib_nearest_level_declaration,
+    fib_output,
+    fib_range_seed,
+    fib_range_step,
     level_pct,
     nearest_level,
 )
+from ce_v5.platform.rules.indicators.swing import SWING_STRENGTH_DEFAULT
+from source.datasource import DataSourceDeclaration, MemoryModel, Servibility
+from source.rules.scalar import ScalarType
 
 _INSIDE = [
     Fraction(0),
@@ -179,3 +191,229 @@ def test_invalid_range_raises() -> None:
         fib_levels(_d(10), _d(10))
     with pytest.raises(ValueError):
         fib_levels(_d(5), _d(10))
+
+
+# --- 4. Rango con HISTERESIS (P08b-FIB-01): paridad v4 _maybe_retrace ---
+
+
+def _fold(
+    inicial: tuple[Decimal, Decimal], pivotes: list[tuple[Decimal, Decimal]]
+) -> tuple[Decimal, Decimal]:
+    """Aplica la histeresis sobre una secuencia de pares (swing_high, swing_low)."""
+    estado = inicial
+    for swing_high, swing_low in pivotes:
+        estado = fib_range_step(estado[0], estado[1], swing_high, swing_low)
+    return estado
+
+
+class TestRangoConHisteresis:
+    """El rango PEGAJOSO: solo se mueve si el swing lo supera por >= 0.414 del rango.
+
+    Es lo que impide que un pivote que oscila un tick redibuje el grid barra a barra. El
+    umbral es un ratio Fibonacci DEFINITORIO (_EXT_RATIOS[1]), no un parametro.
+    """
+
+    def test_la_semilla_es_el_primer_par_de_pivotes(self) -> None:
+        assert fib_range_seed(_d(110), _d(100)) == (_d(110), _d(100))
+
+    def test_una_superacion_corta_no_mueve_el_rango(self) -> None:
+        # rango 10 -> min_dist = 4.14. Un high de 114 lo supera (114 > 110) pero solo
+        # por 4 < 4.14: el rango NO se mueve. Este es el corazon de la histeresis.
+        assert fib_range_step(_d(110), _d(100), _d(114), _d(100)) == (_d(110), _d(100))
+        assert fib_range_step(_d(110), _d(100), _d(110), _d("96.5")) == (
+            _d(110),
+            _d(100),
+        )
+
+    def test_una_superacion_suficiente_si_mueve_el_rango(self) -> None:
+        # 115 - 110 = 5 >= 4.14 -> el high se mueve. 100 - 95 = 5 >= 4.14 -> el low
+        # tambien. Cada extremo se decide por separado.
+        assert fib_range_step(_d(110), _d(100), _d(115), _d(100)) == (_d(115), _d(100))
+        assert fib_range_step(_d(110), _d(100), _d(110), _d(95)) == (_d(110), _d(95))
+
+    def test_el_umbral_exacto_mueve_el_rango(self) -> None:
+        # Frontera: exactamente min_dist (>= , no >). rango 10 -> min_dist = 4.14.
+        assert fib_range_step(_d(110), _d(100), _d("114.14"), _d(100)) == (
+            _d("114.14"),
+            _d(100),
+        )
+        # Un tick por debajo del umbral NO mueve.
+        assert fib_range_step(_d(110), _d(100), _d("114.13"), _d(100)) == (
+            _d(110),
+            _d(100),
+        )
+
+    def test_un_swing_dentro_del_rango_nunca_lo_encoge(self) -> None:
+        # El rango solo se ENSANCHA (o se queda). Un swing interior no lo estrecha: si
+        # lo hiciera, el grid perseguiria al precio y la histeresis no serviria de nada.
+        assert fib_range_step(_d(200), _d(100), _d(150), _d(120)) == (_d(200), _d(100))
+
+    def test_los_dos_extremos_pueden_moverse_en_el_mismo_paso(self) -> None:
+        assert fib_range_step(_d(110), _d(100), _d(130), _d(80)) == (_d(130), _d(80))
+
+    def test_el_min_dist_es_el_del_rango_de_entrada_para_los_dos_extremos(self) -> None:
+        # Los dos extremos se miden contra el MISMO min_dist (el del rango que entra).
+        # Si se recalculara tras mover el primero, el resultado dependeria del orden de
+        # evaluacion y el fold dejaria de ser determinista. rango 10 -> min_dist 4.14
+        # para ambos: el high sube (5 >= 4.14) y el low baja (4.5 >= 4.14).
+        assert fib_range_step(_d(110), _d(100), _d(115), _d("95.5")) == (
+            _d(115),
+            _d("95.5"),
+        )
+
+    def test_un_rango_degenerado_se_resetea_al_swing_de_la_barra(self) -> None:
+        # rng <= 0: min_dist seria 0 (o negativo) y la histeresis dejaria de frenar
+        # nada. Se adopta el swing tal cual.
+        assert fib_range_step(_d(100), _d(100), _d(120), _d(90)) == (_d(120), _d(90))
+        assert fib_range_step(_d(90), _d(100), _d(120), _d(80)) == (_d(120), _d(80))
+
+    def test_la_pegajosidad_es_memoria_ilimitada(self) -> None:
+        # LA razon de que fib.* sea RECURSIVE y necesite snapshot: cien barras de ruido
+        # que no alcanzan el umbral dejan el rango EXACTAMENTE donde estaba, asi que el
+        # rango vigente puede venir de un pivote de hace cientos de barras.
+        inicial = (_d(110), _d(100))
+        ruido = [(_d(113), _d("97")) for _ in range(100)]
+        assert _fold(inicial, ruido) == inicial
+
+    def test_el_fold_es_determinista(self) -> None:
+        inicial = (_d(110), _d(100))
+        pivotes = [
+            (_d(114), _d(100)),
+            (_d(115), _d(99)),
+            (_d(118), _d(94)),
+            (_d(118), _d(80)),
+        ]
+        assert _fold(inicial, pivotes) == _fold(inicial, pivotes)
+
+    def test_replay_desde_un_estado_intermedio_da_la_misma_cola(self) -> None:
+        # EL GATE en frio: cortar la secuencia por cualquier punto y seguir desde el
+        # estado de ese corte reproduce el MISMO rango final. Es lo que legitima el
+        # snapshot; el test de integracion lo repite contra PostgreSQL.
+        inicial = (_d(110), _d(100))
+        pivotes = [
+            (_d(114), _d(100)),
+            (_d(120), _d(100)),
+            (_d(120), _d(88)),
+            (_d(121), _d(88)),
+            (_d(150), _d(60)),
+        ]
+        completo = _fold(inicial, pivotes)
+        for corte in range(len(pivotes) + 1):
+            intermedio = _fold(inicial, pivotes[:corte])
+            assert _fold(intermedio, pivotes[corte:]) == completo
+
+
+class TestSalidasDelGrid:
+    """fib_output: las dos proyecciones servibles, y el borde del rango degenerado."""
+
+    def test_las_salidas_son_las_funciones_puras(self) -> None:
+        for price in (_d(40), _d(0), _d(100), _d(-200), _d(500)):
+            assert fib_output(
+                _d(100), _d(0), price, FibOutput.NEAREST_LEVEL
+            ) == nearest_level(_d(100), _d(0), price)
+            assert fib_output(_d(100), _d(0), price, FibOutput.LEVEL_PCT) == level_pct(
+                _d(100), _d(0), price
+            )
+
+    def test_las_dos_salidas_no_son_la_misma(self) -> None:
+        # Si fib_output cruzara las proyecciones, el test de arriba seguiria pasando
+        # solo si nivel y porcentaje coincidieran. Con este rango no coinciden.
+        rango_alto, rango_bajo, price = _d(20000), _d(19000), _d("19400")
+        assert fib_output(
+            rango_alto, rango_bajo, price, FibOutput.NEAREST_LEVEL
+        ) != fib_output(rango_alto, rango_bajo, price, FibOutput.LEVEL_PCT)
+
+    def test_rango_degenerado_emite_el_fallback_definido(self) -> None:
+        # fib_levels RECHAZA un rango <= 0 (y debe seguir haciendolo: la funcion pura se
+        # queda fiel). Pero un materializador no puede dejar un hueco a media serie, asi
+        # que el borde emite un valor DEFINIDO: el propio rango colapsado y 0%.
+        with pytest.raises(ValueError):
+            nearest_level(_d(100), _d(100), _d(42))
+        assert fib_output(_d(100), _d(100), _d(42), FibOutput.NEAREST_LEVEL) == _d(100)
+        assert fib_output(_d(100), _d(100), _d(42), FibOutput.LEVEL_PCT) == _d(0)
+        # Tambien con el rango INVERTIDO (que solo puede venir de datos rotos).
+        assert fib_output(_d(90), _d(100), _d(42), FibOutput.NEAREST_LEVEL) == _d(90)
+        assert fib_output(_d(90), _d(100), _d(42), FibOutput.LEVEL_PCT) == _d(0)
+
+
+class TestDeclaraciones:
+    """Cara declarativa: las dos fuentes fib.* escalares (P08b-FIB-01)."""
+
+    def test_los_dos_source_id(self) -> None:
+        assert (
+            fib_nearest_level_declaration().source_id
+            == FIB_NEAREST_LEVEL_SOURCE_ID
+            == "fib.nearest_level"
+        )
+        assert (
+            fib_level_pct_declaration().source_id
+            == FIB_LEVEL_PCT_SOURCE_ID
+            == "fib.level_pct"
+        )
+
+    @pytest.mark.parametrize(
+        "d",
+        [fib_nearest_level_declaration(), fib_level_pct_declaration()],
+    )
+    def test_forma_comun_de_las_dos(self, d: DataSourceDeclaration) -> None:
+        assert d.servibility == Servibility.CONTINUOUS
+        # RECURSIVE: el rango pegajoso es memoria sin cota (de ahi la 0027).
+        assert d.memory_model == MemoryModel.RECURSIVE
+        assert d.value_type == ScalarType.DECIMAL
+        assert d.shared_evaluation is True
+        assert d.sharing_scope.value == "public_cross_tenant"
+
+    @pytest.mark.parametrize(
+        "d",
+        [fib_nearest_level_declaration(), fib_level_pct_declaration()],
+    )
+    def test_consume_las_tres_series_de_las_que_se_alimenta(
+        self, d: DataSourceDeclaration
+    ) -> None:
+        # Primer DataSource del catalogo que consume DOS fuentes derivadas a la vez.
+        assert d.consumes == ("swing.high", "swing.low", "market.close")
+
+    @pytest.mark.parametrize(
+        "d",
+        [fib_nearest_level_declaration(), fib_level_pct_declaration()],
+    )
+    def test_strength_en_cache_key_y_overridable_default_dos(
+        self, d: DataSourceDeclaration
+    ) -> None:
+        assert d.overridable_params == ("strength",)
+        assert "strength" in d.cache_key_schema
+        assert {p.name for p in d.params} <= set(d.cache_key_schema)
+        (strength,) = d.params
+        assert strength.value_type == ScalarType.INTEGER
+        assert strength.default is not None
+        assert strength.default.integer_value == SWING_STRENGTH_DEFAULT == 2
+
+    @pytest.mark.parametrize(
+        "d",
+        [fib_nearest_level_declaration(), fib_level_pct_declaration()],
+    )
+    def test_los_ratios_fibonacci_no_son_parametros(
+        self, d: DataSourceDeclaration
+    ) -> None:
+        # D6: los ratios (el 0.414 de la histeresis incluido) son DEFINITORIOS. Si
+        # aparecieran como param o en la cache_key, el indicador dejaria de tener una
+        # identidad estable y dos reglas podrian pedir "fib" y hablar de cosas
+        # distintas.
+        nombres = {p.name for p in d.params}
+        assert nombres == {"strength"}
+        for prohibido in ("ratio", "ratios", "min_dist", "hysteresis", "touch_pct"):
+            assert prohibido not in d.cache_key_schema
+
+    def test_declarations_publica_las_dos_escalares(self) -> None:
+        publicadas = declarations()
+        assert len(publicadas) == 2
+        ids = {d.source_id for d in publicadas}
+        assert ids == {FIB_NEAREST_LEVEL_SOURCE_ID, FIB_LEVEL_PCT_SOURCE_ID}
+
+    def test_levels_y_direction_siguen_diferidas(self) -> None:
+        # LOTE 5 gate D1: no se declaran porque el marco de v5.0 sirve ESCALARES, y
+        # fib.levels es una lista y fib.direction un categorico. Que no esten en
+        # declarations() es lo que las mantiene fuera del catalogo (aditividad).
+        ids = {d.source_id for d in declarations()}
+        assert "fib.levels" not in ids
+        assert "fib.direction" not in ids

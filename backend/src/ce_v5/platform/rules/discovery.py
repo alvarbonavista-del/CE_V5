@@ -22,6 +22,7 @@ from ce_v5.platform.rules import (
 from ce_v5.platform.rules.indicators import (
     candle,
     ema,
+    fib,
     macd,
     rsi,
     swing,
@@ -43,6 +44,7 @@ def discover_declarations() -> tuple[DataSourceDeclaration, ...]:
         *pivotphase.declarations(),
         *candle.declarations(),
         *ema.declarations(),
+        *fib.declarations(),
         *macd.declarations(),
         *rsi.declarations(),
         *swing.declarations(),
