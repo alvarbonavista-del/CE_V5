@@ -42,6 +42,7 @@ from ce_v5.platform.rules.volume_profile import (
 if TYPE_CHECKING:
     # ALINEAR: mismo tipo Session que usa materializers.py (el del Protocol).
     from ce_v5.infra.db.ports import Session
+    from source.rules.scalar import ScalarValue
 
 # Ventana de normalizacion / lookback [PARIDAD v4, A CALIBRAR] (PIVOT-06 Q4).
 NORM_WINDOW = 100
@@ -99,10 +100,16 @@ def replay_pivotphase(
         # se invoca (call-time), no en import-time.
         from ce_v5.entrypoints.worker_rules.materializers import (
             SOURCE_MATERIALIZERS,
+            _scalars_to_decimals,
         )
 
-        return SOURCE_MATERIALIZERS[source_id].materialize(
-            session, exchange, symbol, timeframe, open_time, total
+        # El registro sirve el CARRIER (tuple[ScalarValue, ...], D1). El FSM habla
+        # Decimal, asi que aqui se ABRE el carrier y nada mas: ni la semantica de la
+        # FSM ni el modelo de confianza cambian (P08b-D1-02 Q1, edicion mecanica).
+        return _scalars_to_decimals(
+            SOURCE_MATERIALIZERS[source_id].materialize(
+                session, exchange, symbol, timeframe, open_time, total
+            )
         )
 
     series = ReplaySeries(
@@ -149,11 +156,17 @@ class PivotphasePhaseSpec:
         timeframe: str,
         open_time: int,
         history_bars: int,
-    ) -> tuple[Decimal, ...]:
+    ) -> tuple[ScalarValue, ...]:
+        from ce_v5.entrypoints.worker_rules.materializers import (
+            _decimals_to_scalars,
+        )
+
         result = replay_pivotphase(
             session, exchange, symbol, timeframe, open_time, history_bars
         )
-        return tuple(Decimal(outcome.phase) for outcome in result.outcomes)
+        return _decimals_to_scalars(
+            tuple(Decimal(outcome.phase) for outcome in result.outcomes)
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -168,8 +181,14 @@ class PivotphaseConfidenceSpec:
         timeframe: str,
         open_time: int,
         history_bars: int,
-    ) -> tuple[Decimal, ...]:
+    ) -> tuple[ScalarValue, ...]:
+        from ce_v5.entrypoints.worker_rules.materializers import (
+            _decimals_to_scalars,
+        )
+
         result = replay_pivotphase(
             session, exchange, symbol, timeframe, open_time, history_bars
         )
-        return tuple(outcome.confidence for outcome in result.outcomes)
+        return _decimals_to_scalars(
+            tuple(outcome.confidence for outcome in result.outcomes)
+        )

@@ -75,8 +75,16 @@ _OUTBOX_BY_STREAM = (
     "SELECT event_type, event_id::text, envelope FROM outbox "
     "WHERE stream_key = %s ORDER BY event_type"
 )
-FIRE = {MARKET_CLOSE_SOURCE_ID: (Decimal("40000"),)}  # close 40000 > 30000 -> TRUE
-FALL = {MARKET_CLOSE_SOURCE_ID: (Decimal("20000"),)}  # close 20000 < 30000 -> FALSE
+
+
+def _decimal_series(value: str) -> tuple[ScalarValue, ...]:
+    """Una serie de un solo valor en el CARRIER (D1): Series dejo de ser
+    tuple[Decimal, ...]. En produccion la construye composition._series_for."""
+    return (ScalarValue(scalar_type=ScalarType.DECIMAL, decimal_value=Decimal(value)),)
+
+
+FIRE = {MARKET_CLOSE_SOURCE_ID: _decimal_series("40000")}  # 40000 > 30000 -> TRUE
+FALL = {MARKET_CLOSE_SOURCE_ID: _decimal_series("20000")}  # 20000 < 30000 -> FALSE
 
 
 def _dsn(var: str) -> DbConfig:

@@ -195,15 +195,21 @@ def test_market_close_dispatch_via_series_for(
     with rules_db.transaction() as session:
         series = _series_for(session, plan, _TF.value, ultimo_open_time)
 
-    # 4. El Series lleva la fuente del PLAN y su serie es la ventana de cierres exacta.
+    # 4. El Series lleva la fuente del PLAN y su serie es la ventana de cierres exacta,
+    #    en el CARRIER (tuple[ScalarValue, ...], D1): market.close se envuelve en
+    #    composition._materialize igual que cualquier otra fuente DECIMAL del registro.
     for fuente in plan.resolved_sources:
         assert fuente.source_id in series, fuente.source_id
     serie = series[MARKET_CLOSE_SOURCE_ID]
-    assert serie == tuple(cierres)  # oldest->newest, byte a byte.
     assert serie != ()
     assert len(serie) == _M
-    for valor in serie:
-        # Decimal REAL, no float ni None: el cierre es dinero y un binario perderia
-        # digitos en silencio antes de llegar al evaluador.
-        assert isinstance(valor, Decimal)
-        assert not isinstance(valor, bool)
+    for valor, cierre in zip(serie, cierres, strict=True):
+        # ScalarValue DECIMAL con el Decimal REAL, no float ni None: el cierre es
+        # dinero y un binario perderia digitos en silencio antes de llegar al
+        # evaluador. Bit a bit, no solo == (dos Decimal iguales pueden diferir en
+        # exponente).
+        assert isinstance(valor, ScalarValue)
+        assert valor.scalar_type is ScalarType.DECIMAL
+        assert valor.decimal_value == cierre
+        assert not isinstance(valor.decimal_value, bool)
+        assert str(valor.decimal_value) == str(cierre)

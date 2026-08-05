@@ -33,6 +33,7 @@ import pytest
 from ce_v5.entrypoints.worker_rules.materializers import (
     SOURCE_MATERIALIZERS,
     ParameterizedMaterializer,
+    _scalars_to_decimals,
 )
 from ce_v5.infra.db.psycopg_adapter import PsycopgDatabase
 from ce_v5.infra.db.rsi_snapshot import read_rsi_snapshot_before
@@ -191,8 +192,13 @@ def _materializar(
             }
         )
     with rules_db.transaction() as session:
-        return spec.materialize(
-            session, _EXCHANGE, _SYMBOL, _TF.value, open_time, history_bars
+        # El registro sirve el CARRIER (tuple[ScalarValue, ...], D1): se abre aqui para
+        # que el resto del test siga comparando contra Decimal puro, sin cambiar
+        # NINGUN valor -- es la misma envoltura que ya usa produccion (composition.py).
+        return _scalars_to_decimals(
+            spec.materialize(
+                session, _EXCHANGE, _SYMBOL, _TF.value, open_time, history_bars
+            )
         )
 
 

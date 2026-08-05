@@ -84,6 +84,7 @@ def _swing_series(
         SOURCE_MATERIALIZERS,
         ParameterizedMaterializer,
         UnwiredSourceError,
+        _scalars_to_decimals,
     )
 
     params: Mapping[str, ScalarValue] = {
@@ -100,8 +101,12 @@ def _swing_series(
             raise UnwiredSourceError(msg)
         if isinstance(spec, ParameterizedMaterializer):
             spec = spec.with_params(params)
+        # El registro sirve el CARRIER (D1): se abre aqui porque el grid fib opera
+        # sobre Decimal (la histeresis compara y resta precios).
         series.append(
-            spec.materialize(session, exchange, symbol, timeframe, open_time, bars)
+            _scalars_to_decimals(
+                spec.materialize(session, exchange, symbol, timeframe, open_time, bars)
+            )
         )
     high, low = series
     if len(high) != len(low):
@@ -179,8 +184,11 @@ class FibRecursiveSpec:
         timeframe: str,
         open_time: int,
         history_bars: int,
-    ) -> tuple[Decimal, ...]:
-        from ce_v5.entrypoints.worker_rules.materializers import UnwiredSourceError
+    ) -> tuple[ScalarValue, ...]:
+        from ce_v5.entrypoints.worker_rules.materializers import (
+            UnwiredSourceError,
+            _decimals_to_scalars,
+        )
 
         window = read_ohlcv_window(
             session, exchange, symbol, timeframe, open_time, history_bars
@@ -237,7 +245,7 @@ class FibRecursiveSpec:
             valores.append(
                 fib_output(range_high, range_low, closes[indice], self.output)
             )
-        series = tuple(valores[-len(window) :])
+        series = _decimals_to_scalars(tuple(valores[-len(window) :]))
         write_fib_range_snapshot(
             session,
             exchange,

@@ -7,7 +7,10 @@ METADATA de la declaracion, NO la clave de dispatch (MAT-06): el dispatch es por
 SOURCE_ID contra este registro.
 
 Cada materializador implementa el Protocol SourceMaterializer (structural): sabe leer
-su base y producir su serie tuple[Decimal, ...] oldest->newest. En v5.0 estan
+su base y producir su serie oldest->newest en el CARRIER tuple[ScalarValue, ...] (D1,
+dictamen P08b-D1-01 D3=A: firma UNICA para toda fuente, sea cual sea su value_type).
+Las fuentes DECIMAL de v5.0 -- todas las de abajo -- calculan en Decimal como siempre y
+solo ENVUELVEN el resultado con _decimals_to_scalars: ni un digito cambia. En v5.0 estan
 cableadas (MAT-07, DAG bottom-up footprint -> delta -> cvd):
 - vp.poc/vah/val/hvn/lvn: WINDOWED sobre footprint (FootprintWindowedSpec, ventana 100).
 - orderflow.delta: POINT_LOCAL sobre footprint (FootprintPointLocalSpec, bar_delta).
@@ -150,6 +153,7 @@ from ce_v5.platform.rules.volume_profile import (
     select_hvn_price,
     select_lvn_price,
 )
+from source.rules.scalar import ScalarType, ScalarValue
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping, Sequence
@@ -157,7 +161,6 @@ if TYPE_CHECKING:
     from ce_v5.infra.db.market_candles import CandleOHLCV
     from ce_v5.infra.db.ports import Session
     from source.families.footprint import FootprintPayload
-    from source.rules.scalar import ScalarValue
 
 # Ventana rodante del perfil de volumen [PARIDAD v4 _WINDOW]. NO es dimension de
 # cache_key (VP_CACHE_KEY_SCHEMA no la lleva): es constante FIJA de materializacion
@@ -179,8 +182,51 @@ class UnwiredSourceError(RuntimeError):
     """Una regla referencia una fuente servible sin materializador cableado (v5.0)."""
 
 
+def _decimals_to_scalars(series: tuple[Decimal, ...]) -> tuple[ScalarValue, ...]:
+    """Envuelve una serie Decimal en el CARRIER de serie (ScalarValue), sin tocar el
+    valor (D1, dictamen P08b-D1-01 D3=A).
+
+    El numero que sale del calculo entra INTACTO en decimal_value: esto es un cambio de
+    ENVOLTURA, no de valor. La reproducibilidad bit a bit de ADR-007 la siguen dando las
+    funciones puras y sus contextos Decimal pinneados; aqui no hay aritmetica.
+    """
+    return tuple(
+        ScalarValue(scalar_type=ScalarType.DECIMAL, decimal_value=value)
+        for value in series
+    )
+
+
+def _scalars_to_decimals(series: tuple[ScalarValue, ...]) -> tuple[Decimal, ...]:
+    """Desenvuelve una serie del carrier a Decimal para alimentar funciones NUMERICAS.
+
+    Lo usan los materializadores que consumen OTRA fuente del registro (el DAG de 2o
+    nivel) y cuyo transform es aritmetico: la funcion pura sigue hablando Decimal, asi
+    que el carrier se abre justo antes de entrar en ella. FAIL-LOUD si un valor no es
+    DECIMAL: alimentar aritmetica con un categorico daria un numero inventado, y un
+    numero inventado con aspecto de indicador es exactamente lo que mato a v4.
+    """
+    salida: list[Decimal] = []
+    for value in series:
+        if value.scalar_type is not ScalarType.DECIMAL or value.decimal_value is None:
+            msg = (
+                f"se esperaba una serie DECIMAL y llego {value.scalar_type.value!r}: "
+                "no se alimenta aritmetica con un valor no numerico (fail-loud)."
+            )
+            raise UnwiredSourceError(msg)
+        salida.append(value.decimal_value)
+    return tuple(salida)
+
+
 class SourceMaterializer(Protocol):
-    """Materializa la serie de una fuente: lee su base y produce tuple[Decimal, ...]."""
+    """Materializa la serie de una fuente: lee su base y produce el CARRIER de serie.
+
+    El carrier es tuple[ScalarValue, ...] (D1, dictamen P08b-D1-01 D3=A): FIRMA UNICA
+    para toda fuente, sea cual sea su value_type. Las fuentes DECIMAL de v5.0 envuelven
+    su Decimal con _decimals_to_scalars y no cambian ni un digito; el carrier existe
+    para que una fuente CATEGORICA (STRING/BOOLEAN) pueda servirse por el MISMO borde
+    en vez de por uno paralelo. El tipo viaja EN el dato (ScalarValue.scalar_type), asi
+    que el evaluador ramifica sin consultar el catalogo.
+    """
 
     def materialize(
         self,
@@ -190,7 +236,7 @@ class SourceMaterializer(Protocol):
         timeframe: str,
         open_time: int,
         history_bars: int,
-    ) -> tuple[Decimal, ...]: ...
+    ) -> tuple[ScalarValue, ...]: ...
 
 
 @runtime_checkable
@@ -226,7 +272,7 @@ class FootprintWindowedSpec:
         timeframe: str,
         open_time: int,
         history_bars: int,
-    ) -> tuple[Decimal, ...]:
+    ) -> tuple[ScalarValue, ...]:
         # Lee history_bars + window_bars - 1 footprints para emitir history_bars
         # valores, cada uno sobre su ventana rodante de window_bars. La escasez la
         # resuelve materialize_windowed (menos valores o ()): NOT_EVALUABLE.
@@ -238,11 +284,13 @@ class FootprintWindowedSpec:
             open_time,
             history_bars + self.window_bars - 1,
         )
-        return materialize_windowed(
-            base,
-            self.transform,
-            window_bars=self.window_bars,
-            history_bars=history_bars,
+        return _decimals_to_scalars(
+            materialize_windowed(
+                base,
+                self.transform,
+                window_bars=self.window_bars,
+                history_bars=history_bars,
+            )
         )
 
 
@@ -265,11 +313,13 @@ class FootprintPointLocalSpec:
         timeframe: str,
         open_time: int,
         history_bars: int,
-    ) -> tuple[Decimal, ...]:
+    ) -> tuple[ScalarValue, ...]:
         footprints = read_footprint_window(
             session, exchange, symbol, timeframe, open_time, history_bars
         )
-        return tuple(self.extract(footprint) for footprint in footprints)
+        return _decimals_to_scalars(
+            tuple(self.extract(footprint) for footprint in footprints)
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -290,11 +340,11 @@ class CandlePointLocalSpec:
         timeframe: str,
         open_time: int,
         history_bars: int,
-    ) -> tuple[Decimal, ...]:
+    ) -> tuple[ScalarValue, ...]:
         candles = read_ohlcv_window(
             session, exchange, symbol, timeframe, open_time, history_bars
         )
-        return tuple(self.extract(candle) for candle in candles)
+        return _decimals_to_scalars(tuple(self.extract(candle) for candle in candles))
 
 
 @dataclass(frozen=True, slots=True)
@@ -316,7 +366,7 @@ class CandleWindowedSpec:
         timeframe: str,
         open_time: int,
         history_bars: int,
-    ) -> tuple[Decimal, ...]:
+    ) -> tuple[ScalarValue, ...]:
         base = read_ohlcv_window(
             session,
             exchange,
@@ -325,11 +375,13 @@ class CandleWindowedSpec:
             open_time,
             history_bars + self.window_bars - 1,
         )
-        return materialize_windowed(
-            base,
-            self.transform,
-            window_bars=self.window_bars,
-            history_bars=history_bars,
+        return _decimals_to_scalars(
+            materialize_windowed(
+                base,
+                self.transform,
+                window_bars=self.window_bars,
+                history_bars=history_bars,
+            )
         )
 
 
@@ -365,7 +417,7 @@ class SwingWindowedSpec:
         timeframe: str,
         open_time: int,
         history_bars: int,
-    ) -> tuple[Decimal, ...]:
+    ) -> tuple[ScalarValue, ...]:
         base = read_close_window(
             session,
             exchange,
@@ -374,11 +426,13 @@ class SwingWindowedSpec:
             open_time,
             history_bars + self.window_bars - 1,
         )
-        return materialize_windowed(
-            base,
-            self._transform,
-            window_bars=self.window_bars,
-            history_bars=history_bars,
+        return _decimals_to_scalars(
+            materialize_windowed(
+                base,
+                self._transform,
+                window_bars=self.window_bars,
+                history_bars=history_bars,
+            )
         )
 
     def with_params(self, params: Mapping[str, ScalarValue]) -> SourceMaterializer:
@@ -498,7 +552,7 @@ class CvdIntegratorSpec:
         timeframe: str,
         open_time: int,
         history_bars: int,
-    ) -> tuple[Decimal, ...]:
+    ) -> tuple[ScalarValue, ...]:
         window = read_footprint_window(
             session, exchange, symbol, timeframe, open_time, history_bars
         )
@@ -534,7 +588,7 @@ class CvdIntegratorSpec:
             open_time,
             series[-1],
         )
-        return series
+        return _decimals_to_scalars(series)
 
 
 @dataclass(frozen=True, slots=True)
@@ -595,7 +649,7 @@ class EmaRecursiveSpec:
         timeframe: str,
         open_time: int,
         history_bars: int,
-    ) -> tuple[Decimal, ...]:
+    ) -> tuple[ScalarValue, ...]:
         window = read_ohlcv_window(
             session, exchange, symbol, timeframe, open_time, history_bars
         )
@@ -634,7 +688,7 @@ class EmaRecursiveSpec:
             open_time,
             series[-1],
         )
-        return series
+        return _decimals_to_scalars(series)
 
 
 @dataclass(frozen=True, slots=True)
@@ -706,7 +760,7 @@ class RsiRecursiveSpec:
         timeframe: str,
         open_time: int,
         history_bars: int,
-    ) -> tuple[Decimal, ...]:
+    ) -> tuple[ScalarValue, ...]:
         window = read_ohlcv_window(
             session, exchange, symbol, timeframe, open_time, history_bars
         )
@@ -769,7 +823,7 @@ class RsiRecursiveSpec:
             avg_loss,
             last_close,
         )
-        return series
+        return _decimals_to_scalars(series)
 
 
 @dataclass(frozen=True, slots=True)
@@ -861,7 +915,7 @@ class MacdRecursiveSpec:
         timeframe: str,
         open_time: int,
         history_bars: int,
-    ) -> tuple[Decimal, ...]:
+    ) -> tuple[ScalarValue, ...]:
         window = read_ohlcv_window(
             session, exchange, symbol, timeframe, open_time, history_bars
         )
@@ -942,7 +996,7 @@ class MacdRecursiveSpec:
             ema_slow,
             ema_signal,
         )
-        return series
+        return _decimals_to_scalars(series)
 
 
 @dataclass(frozen=True, slots=True)
@@ -970,7 +1024,7 @@ class DerivedSeriesSpec:
         timeframe: str,
         open_time: int,
         history_bars: int,
-    ) -> tuple[Decimal, ...]:
+    ) -> tuple[ScalarValue, ...]:
         base_materializer = SOURCE_MATERIALIZERS.get(self.base_source_id)
         if base_materializer is None:
             msg = (
@@ -986,10 +1040,12 @@ class DerivedSeriesSpec:
             open_time,
             history_bars + self.lookback,
         )
-        series = self.transform(base)
+        # La base llega en el CARRIER y el transform es una funcion pura NUMERICA: se
+        # abre el carrier justo antes de entrar en ella y se vuelve a cerrar al salir.
+        series = self.transform(_scalars_to_decimals(base))
         if history_bars <= 0:
             return ()
-        return series[-history_bars:]
+        return _decimals_to_scalars(series[-history_bars:])
 
 
 def _poc(window: Sequence[FootprintPayload]) -> Decimal:

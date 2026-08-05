@@ -70,15 +70,26 @@ RULE_OUTCOME_PREFIX = "rule_outcome:"
 DIAG_WINDOW_DEFERRED = "all_within_window:temporal_deferred_to_runtime"
 DIAG_VETO_FAILSAFE = "veto_active:fail_safe_not_evaluable"
 
-Series = Mapping[str, tuple[Decimal, ...]]
+# CARRIER de serie (D1, dictamen P08b-D1-01 D3=A): FIRMA UNICA para toda fuente. El
+# tipo viaja EN el dato (ScalarValue.scalar_type), asi que el evaluador ramifica sin
+# consultar el catalogo. Las fuentes DECIMAL de v5.0 llegan envueltas y su camino de
+# comparacion es el de siempre, digito a digito.
+Series = Mapping[str, tuple[ScalarValue, ...]]
+
+# Tipos que se comparan como NUMERO (orden total: >, >=, <, <=, ==, !=).
+_NUMERIC_TYPES = frozenset({ScalarType.DECIMAL, ScalarType.INTEGER})
+# Tipos CATEGORICOS: solo igualdad/desigualdad tienen sentido (P08b-D1-02 Q2). Un
+# "mayor que" sobre 'above'/'below' o sobre true/false no significa nada; el Bloque 3
+# lo rechaza en admision y aqui queda la ultima linea de defensa.
+_CATEGORICAL_OPERATORS = frozenset({ComparisonOperator.EQ, ComparisonOperator.NE})
 
 
 @dataclass(frozen=True, slots=True)
 class _TermValue:
-    """Valor de un termino: un Decimal, o NO EVALUABLE con su motivo."""
+    """Valor de un termino: un ScalarValue con su tipo, o NO EVALUABLE con su motivo."""
 
     evaluable: bool
-    value: Decimal | None = None
+    value: ScalarValue | None = None
     reason: str | None = None
 
 
@@ -189,11 +200,17 @@ def _eval_condition(condition: Condition, data: Series) -> NodeResult:
     # value no es None cuando evaluable (invariante de _TermValue); mypy lo estrecha.
     assert left.value is not None
     assert right.value is not None
-    holds = _compare(left.value, condition.operator, right.value)
-    observed = f"{left.value} {condition.operator.value} {right.value}"
+    # La coherencia de tipos (orden solo sobre numerico; EQ/NE solo entre el MISMO tipo)
+    # ya la rechazo el Bloque 3 en admision (validator.py, P08b-D1-03): una regla que
+    # llega aqui YA la garantiza, asi que _holds no vuelve a decidir "no evaluable" por
+    # tipos -- eso seria repetir en cada tick lo que la admision decidio una vez.
+    decision = _holds(left.value, condition.operator, right.value)
+    observed = (
+        f"{_render(left.value)} {condition.operator.value} {_render(right.value)}"
+    )
     return NodeResult(
         node_id=condition.node_id,
-        outcome=NodeOutcome.TRUE if holds else NodeOutcome.FALSE,
+        outcome=NodeOutcome.TRUE if decision else NodeOutcome.FALSE,
         observed=observed,
     )
 
@@ -202,7 +219,9 @@ def _eval_term(term: Term, data: Series) -> _TermValue:
     """Un termino: constante (siempre evaluable) o acceso a fuente (puede faltar)."""
     if term.term_kind is TermKind.CONSTANT:
         assert term.constant is not None  # coherencia garantizada por el contrato Term
-        return _TermValue(evaluable=True, value=_scalar_to_decimal(term.constant))
+        # La constante YA es un ScalarValue con su tipo declarado: viaja tal cual y la
+        # conversion (si toca) la hace la comparacion, que conoce los DOS lados.
+        return _TermValue(evaluable=True, value=term.constant)
     assert term.source is not None
     return _eval_source(term.source, data)
 
@@ -215,7 +234,13 @@ def _eval_source(source: SourceTerm, data: Series) -> _TermValue:
             evaluable=False,
             reason=f"dato ausente: no hay serie para {source.ref.source_id!r}",
         )
-    result = _apply_function(source.function, source.offset, series)
+    if series and series[0].scalar_type not in _NUMERIC_TYPES:
+        return _eval_categorical_source(source, series)
+    # NUMERICO: se abre el carrier y se entra en las funciones canonicas EXACTAMENTE
+    # como antes de D1 -- misma aritmetica Decimal, mismos bordes de historia.
+    result = _apply_function(
+        source.function, source.offset, _series_to_decimals(series)
+    )
     if not result.evaluable:
         needed = history_bars_needed(source.function, source.offset)
         return _TermValue(
@@ -225,7 +250,66 @@ def _eval_source(source: SourceTerm, data: Series) -> _TermValue:
                 f"{_function_label(source)} requiere {needed} barras, hay {len(series)}"
             ),
         )
-    return _TermValue(evaluable=True, value=result.value)
+    assert result.value is not None
+    return _TermValue(
+        evaluable=True,
+        value=ScalarValue(scalar_type=ScalarType.DECIMAL, decimal_value=result.value),
+    )
+
+
+def _series_to_decimals(series: tuple[ScalarValue, ...]) -> tuple[Decimal, ...]:
+    """Abre el carrier de una serie NUMERICA para las funciones canonicas.
+
+    INTEGER se promueve a Decimal, igual que hace _scalar_to_decimal con una constante
+    entera: el algebra del evaluador es Decimal y siempre lo fue.
+    """
+    salida: list[Decimal] = []
+    for value in series:
+        if value.scalar_type is ScalarType.DECIMAL and value.decimal_value is not None:
+            salida.append(value.decimal_value)
+        elif (
+            value.scalar_type is ScalarType.INTEGER and value.integer_value is not None
+        ):
+            salida.append(Decimal(value.integer_value))
+        else:
+            msg = f"serie numerica con valor {value.scalar_type.value!r} incoherente."
+            raise ValueError(msg)
+    return tuple(salida)
+
+
+def _eval_categorical_source(
+    source: SourceTerm, series: tuple[ScalarValue, ...]
+) -> _TermValue:
+    """Termino de fuente CATEGORICA (STRING/BOOLEAN): solo ACCESO, sin aritmetica.
+
+    value_at/previous_value son accesores puros y valen para cualquier tipo; average y
+    change son aritmetica y NO tienen sentido sobre un categorico ('above' + 'below' no
+    es nada). El Bloque 3 ya rechaza esa combinacion en admision; aqui se queda como
+    NOT_EVALUABLE con motivo, nunca como un valor inventado.
+    """
+    function = source.function
+    if function is not None and function not in {
+        CanonicalFunction.VALUE_AT,
+        CanonicalFunction.PREVIOUS_VALUE,
+    }:
+        return _TermValue(
+            evaluable=False,
+            reason=(
+                f"{function.value} no aplica a la fuente categorica "
+                f"{source.ref.source_id!r} (solo acceso/value_at/previous_value)"
+            ),
+        )
+    offset = 0 if function is None else (source.offset or 0)
+    if offset < 0 or offset >= len(series):
+        needed = history_bars_needed(function, source.offset)
+        return _TermValue(
+            evaluable=False,
+            reason=(
+                f"historia insuficiente en {source.ref.source_id!r}: "
+                f"{_function_label(source)} requiere {needed} barras, hay {len(series)}"
+            ),
+        )
+    return _TermValue(evaluable=True, value=series[-1 - offset])
 
 
 def _apply_function(
@@ -281,6 +365,58 @@ _COMPARATORS: dict[ComparisonOperator, Callable[[Decimal, Decimal], bool]] = {
 def _compare(left: Decimal, operator: ComparisonOperator, right: Decimal) -> bool:
     """Aplica el operador de comparacion sobre dos Decimales (comparacion exacta)."""
     return _COMPARATORS[operator](left, right)
+
+
+def _holds(left: ScalarValue, operator: ComparisonOperator, right: ScalarValue) -> bool:
+    """Decide la comparacion segun los TIPOS de los dos lados (D1, P08b-D1-02/03).
+
+    - NUMERICO vs NUMERICO (decimal/integer): camino de SIEMPRE, intacto -- se
+      promueven a Decimal con _scalar_to_decimal y se aplican los seis operadores.
+    - CATEGORICO (string/boolean) del MISMO tipo: SOLO EQ/NE, sobre el campo tipado.
+      No se inventa operador: ComparisonOperator ya tiene EQ y NE.
+
+    PRECONDICION (garantizada por el Bloque 3, admit_rule/validator.py): los dos lados
+    tienen el MISMO scalar_type, y si es categorico el operador es EQ o NE. Esta funcion
+    NO revalida esas dos condiciones -- la admision ya las decidio una vez, repetirlo en
+    cada tick de cada barra seria trabajo muerto -- pero SI falla RUIDOSO si se violan:
+    llegar aqui con tipos incoherentes es una regla que nunca debio admitirse (un bug de
+    compilacion), no un dato ausente. NOT_EVALUABLE queda para historia insuficiente
+    (_eval_source/_eval_categorical_source), nunca para esto.
+    """
+    if left.scalar_type in _NUMERIC_TYPES and right.scalar_type in _NUMERIC_TYPES:
+        return _compare(_scalar_to_decimal(left), operator, _scalar_to_decimal(right))
+    if (
+        left.scalar_type is not right.scalar_type
+        or operator not in _CATEGORICAL_OPERATORS
+    ):
+        msg = (
+            f"comparacion {left.scalar_type.value} {operator.value} "
+            f"{right.scalar_type.value}: el Bloque 3 deberia haberla rechazado en "
+            "admision (regla no admitida llego al evaluador, fail-loud)."
+        )
+        raise ValueError(msg)
+    if left.scalar_type is ScalarType.STRING:
+        igual = left.string_value == right.string_value
+    else:  # ScalarType.BOOLEAN (unico categorico restante tras el chequeo de arriba)
+        igual = left.boolean_value == right.boolean_value
+    return igual if operator is ComparisonOperator.EQ else not igual
+
+
+def _render(value: ScalarValue) -> str:
+    """El dato de un ScalarValue en texto, para el `observed` del NodeResult.
+
+    Se imprime el VALOR, no el modelo: `40000` y no `scalar_type=... decimal_value=...`.
+    El observed es explicabilidad de usuario (ADR-016), no un volcado interno.
+    """
+    for candidate in (
+        value.decimal_value,
+        value.integer_value,
+        value.boolean_value,
+        value.string_value,
+    ):
+        if candidate is not None:
+            return str(candidate)
+    return ""
 
 
 def _combine(mode: CombineMode, outcomes: Sequence[NodeOutcome]) -> NodeOutcome:

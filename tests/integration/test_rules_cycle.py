@@ -45,6 +45,7 @@ from ce_v5.platform.rules.rawclose import (
 from ce_v5.platform.rules.runtime import RuntimeState
 from source.families.rule import EvaluationLifecycleState
 from source.rules.market_rules import AnyRule, RuleProduct
+from source.rules.scalar import ScalarType, ScalarValue
 
 _DSN = os.environ.get("CE_V5_DATABASE_URL")
 pytestmark = pytest.mark.skipif(
@@ -53,9 +54,18 @@ pytestmark = pytest.mark.skipif(
 
 _OPEN_TIME = 1_784_073_600_000
 
+
+def _decimal_series(value: str) -> tuple[ScalarValue, ...]:
+    """Una serie de un solo valor en el CARRIER (D1): la forma que Series exige desde
+    que dejo de ser tuple[Decimal, ...]. process_rule_cycle recibe esto tal cual --
+    en produccion lo construye composition._series_for -- asi que inyectarlo ya en el
+    carrier es fiel al camino real, no un doble simplificado."""
+    return (ScalarValue(scalar_type=ScalarType.DECIMAL, decimal_value=Decimal(value)),)
+
+
 # close 40000 > 30000 -> TRUE (dispara). close 20000 -> FALSE (resuelve).
-_DISPARA = {MARKET_CLOSE_SOURCE_ID: (Decimal("40000"),)}
-_NO_DISPARA = {MARKET_CLOSE_SOURCE_ID: (Decimal("20000"),)}
+_DISPARA = {MARKET_CLOSE_SOURCE_ID: _decimal_series("40000")}
+_NO_DISPARA = {MARKET_CLOSE_SOURCE_ID: _decimal_series("20000")}
 
 _EVENTOS_DE = (
     "SELECT event_type, event_id::text, envelope FROM outbox "

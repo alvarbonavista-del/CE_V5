@@ -33,7 +33,6 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass
-from decimal import Decimal
 from uuid import UUID
 
 from ce_v5.core.bus import BusMessage, EventBus
@@ -43,6 +42,7 @@ from ce_v5.entrypoints.worker_rules.materializers import (
     SOURCE_MATERIALIZERS,
     ParameterizedMaterializer,
     UnwiredSourceError,
+    _decimals_to_scalars,
 )
 from ce_v5.infra.bus_redis import RedisBusConfig, RedisEventBus, create_client
 from ce_v5.infra.db.config import DbConfig, RulesDbConfig
@@ -85,6 +85,7 @@ from source.families.market import (
 )
 from source.families.rule import EvaluationLifecycleState, QuarantineReason
 from source.rules.market_rules import RULE_ADAPTER, AnyRule
+from source.rules.scalar import ScalarValue
 
 # El topic del bus se deriva de la FAMILIA del evento (ADR-004, topic_for): el motor se
 # suscribe a "market" y filtra por event_type dentro del handler.
@@ -202,7 +203,7 @@ def _materialize(
     timeframe: str,
     open_time: int,
     source: ResolvedSource,
-) -> tuple[Decimal, ...]:
+) -> tuple[ScalarValue, ...]:
     """La serie de UNA fuente resuelta, elegida por SOURCE_ID (MAT-06/07).
 
     market.close (unica POINT_LOCAL sobre velas de v5.0) se lee con read_close_window.
@@ -217,13 +218,18 @@ def _materialize(
     """
     source_id = source.source_id
     if source_id == MARKET_CLOSE_SOURCE_ID:
-        return read_close_window(
-            session,
-            plan.exchange,
-            plan.symbol,
-            timeframe,
-            open_time,
-            source.history_bars,
+        # Lectura directa: el lector habla Decimal, asi que se envuelve en el CARRIER
+        # aqui para que market.close entre en la Series con la MISMA forma que las
+        # fuentes del registro (D1, firma unica).
+        return _decimals_to_scalars(
+            read_close_window(
+                session,
+                plan.exchange,
+                plan.symbol,
+                timeframe,
+                open_time,
+                source.history_bars,
+            )
         )
     materializer = SOURCE_MATERIALIZERS.get(source_id)
     if materializer is not None:
