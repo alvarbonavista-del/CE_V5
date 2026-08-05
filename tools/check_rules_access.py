@@ -192,6 +192,7 @@ RULES_STATE_TABLES: tuple[str, ...] = (
     "ema_snapshot",
     "pivotphase_snapshot",
     "rsi_snapshot",
+    "macd_snapshot",
 )
 
 # Privilegios que el motor SI necesita sobre su estado propio (positivos de la 0022).

@@ -25,6 +25,7 @@ from ce_v5.entrypoints.worker_rules.materializers import (
     EmaRecursiveSpec,
     FootprintPointLocalSpec,
     FootprintWindowedSpec,
+    MacdRecursiveSpec,
     RsiRecursiveSpec,
     SwingWindowedSpec,
     UnwiredSourceError,
@@ -41,6 +42,19 @@ from ce_v5.platform.rules.indicators.candle import (
 from ce_v5.platform.rules.indicators.ema import (
     EMA_PERIOD_DEFAULT,
     EMA_SOURCE_ID,
+)
+from ce_v5.platform.rules.indicators.macd import (
+    MACD_FAST_DEFAULT,
+    MACD_HISTOGRAM_SOURCE_ID,
+    MACD_LINE_SOURCE_ID,
+    MACD_SIGNAL_DEFAULT,
+    MACD_SIGNAL_SOURCE_ID,
+    MACD_SLOW_DEFAULT,
+    MacdOutput,
+    macd,
+    macd_seed,
+    macd_step,
+    select_output,
 )
 from ce_v5.platform.rules.indicators.rsi import (
     RSI_PERIOD_DEFAULT,
@@ -182,6 +196,9 @@ class TestRegistroPorSourceId:
             SWING_LOW_SOURCE_ID,
             EMA_SOURCE_ID,
             RSI_SOURCE_ID,
+            MACD_LINE_SOURCE_ID,
+            MACD_SIGNAL_SOURCE_ID,
+            MACD_HISTOGRAM_SOURCE_ID,
         }
 
     @pytest.mark.parametrize(
@@ -656,3 +673,116 @@ class TestRsiRecursivaRegistrada:
             spec.with_params(_period(0))
         with pytest.raises(UnwiredSourceError, match="periodo de RSI valido"):
             spec.with_params(_period(-3))
+
+
+def _entero(nombre: str, valor: int) -> dict[str, ScalarValue]:
+    return {nombre: ScalarValue(scalar_type=ScalarType.INTEGER, integer_value=valor)}
+
+
+def _macd_spec(source_id: str) -> MacdRecursiveSpec:
+    spec = SOURCE_MATERIALIZERS[source_id]
+    assert isinstance(spec, MacdRecursiveSpec)
+    return spec
+
+
+class TestMacdRecursivaRegistrada:
+    """8: las TRES fuentes macd.* cableadas como RECURSIVE con replay desde snapshot
+    (P08b-LOTE3-01).
+
+    Comparten estado, snapshot y paso de calculo; lo unico que las distingue es que
+    proyeccion publica cada una (`output`). El replay real (bootstrap, ancla y el GATE
+    bit-exacto de ADR-007) exige BD y vive en el test de integracion del MACD.
+    """
+
+    def test_las_tres_estan_cableadas_con_su_propia_salida(self) -> None:
+        # Si dos entradas del registro compartieran output, dos fuentes distintas
+        # servirian la MISMA serie y nadie se enteraria: el catalogo diria tres cosas y
+        # el motor solo sabria dos.
+        assert _macd_spec(MACD_LINE_SOURCE_ID).output is MacdOutput.LINE
+        assert _macd_spec(MACD_SIGNAL_SOURCE_ID).output is MacdOutput.SIGNAL
+        assert _macd_spec(MACD_HISTOGRAM_SOURCE_ID).output is MacdOutput.HISTOGRAM
+        salidas = {
+            _macd_spec(sid).output
+            for sid in (
+                MACD_LINE_SOURCE_ID,
+                MACD_SIGNAL_SOURCE_ID,
+                MACD_HISTOGRAM_SOURCE_ID,
+            )
+        }
+        assert len(salidas) == 3
+
+    @pytest.mark.parametrize(
+        "source_id",
+        [MACD_LINE_SOURCE_ID, MACD_SIGNAL_SOURCE_ID, MACD_HISTOGRAM_SOURCE_ID],
+    )
+    def test_los_defaults_son_doce_veintiseis_nueve(self, source_id: str) -> None:
+        spec = _macd_spec(source_id)
+        assert (spec.fast, spec.slow, spec.signal) == (
+            MACD_FAST_DEFAULT,
+            MACD_SLOW_DEFAULT,
+            MACD_SIGNAL_DEFAULT,
+        )
+        assert (spec.fast, spec.slow, spec.signal) == (12, 26, 9)
+
+    def test_with_params_liga_solo_lo_que_llega_sin_mutar_el_registro(self) -> None:
+        # ADITIVIDAD: un override de fast NO toca slow ni signal. Y la instancia del
+        # registro sigue intacta (si se mutara, una regla contaminaria a las demas).
+        spec = _macd_spec(MACD_LINE_SOURCE_ID)
+        ligada = spec.with_params(_entero("fast", 5))
+        assert isinstance(ligada, MacdRecursiveSpec)
+        assert (ligada.fast, ligada.slow, ligada.signal) == (5, MACD_SLOW_DEFAULT, 9)
+        assert ligada.output is spec.output
+        assert (spec.fast, spec.slow, spec.signal) == (12, 26, 9)
+
+    def test_with_params_liga_los_tres_a_la_vez(self) -> None:
+        ligada = _macd_spec(MACD_SIGNAL_SOURCE_ID).with_params(
+            {
+                **_entero("fast", 5),
+                **_entero("slow", 35),
+                **_entero("signal", 5),
+            }
+        )
+        assert isinstance(ligada, MacdRecursiveSpec)
+        assert (ligada.fast, ligada.slow, ligada.signal) == (5, 35, 5)
+
+    @pytest.mark.parametrize(
+        "source_id",
+        [MACD_LINE_SOURCE_ID, MACD_SIGNAL_SOURCE_ID, MACD_HISTOGRAM_SOURCE_ID],
+    )
+    def test_with_params_sin_params_no_cambia_nada(self, source_id: str) -> None:
+        # ADITIVIDAD D7: sin override, la copia es equivalente a la del registro.
+        spec = _macd_spec(source_id)
+        assert spec.with_params({}) == spec
+
+    @pytest.mark.parametrize("nombre", ["fast", "slow", "signal"])
+    def test_with_params_rechaza_un_periodo_fuera_de_dominio(self, nombre: str) -> None:
+        # Mismo dominio que los CHECK de la 0026 (>= 1), en los TRES params: ninguno
+        # puede colarse. Falla RUIDOSO, no cae al default en silencio.
+        spec = _macd_spec(MACD_LINE_SOURCE_ID)
+        with pytest.raises(UnwiredSourceError, match="periodo de MACD valido"):
+            spec.with_params(_entero(nombre, 0))
+        with pytest.raises(UnwiredSourceError, match=nombre):
+            spec.with_params(_entero(nombre, -2))
+
+    def test_las_tres_salidas_reconstruyen_las_tres_series_de_macd(self) -> None:
+        # El binding COMPLETO en frio: recorrer el mismo estado con macd_seed y
+        # macd_step y proyectar por el output de cada spec da EXACTAMENTE las tres
+        # series de macd(). Si un spec publicara la proyeccion equivocada, aqui se ve.
+        closes = [Decimal(100) + Decimal(i % 7) - Decimal(i % 3) for i in range(60)]
+        esperado = macd(closes)
+        state = macd_seed(closes[0])
+        series: dict[MacdOutput, list[Decimal]] = {salida: [] for salida in MacdOutput}
+        for salida in MacdOutput:
+            series[salida].append(select_output(state, salida))
+        for close in closes[1:]:
+            state = macd_step(state[0], state[1], state[2], close)
+            for salida in MacdOutput:
+                series[salida].append(select_output(state, salida))
+        assert tuple(series[_macd_spec(MACD_LINE_SOURCE_ID).output]) == esperado.macd
+        assert (
+            tuple(series[_macd_spec(MACD_SIGNAL_SOURCE_ID).output]) == esperado.signal
+        )
+        assert (
+            tuple(series[_macd_spec(MACD_HISTOGRAM_SOURCE_ID).output])
+            == esperado.histogram
+        )

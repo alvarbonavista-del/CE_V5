@@ -11,7 +11,26 @@ from fractions import Fraction
 
 import pytest
 
-from ce_v5.platform.rules.indicators.macd import MACD_FORMULA_VERSION, macd
+from ce_v5.platform.rules.indicators.macd import (
+    MACD_FAST_DEFAULT,
+    MACD_FORMULA_VERSION,
+    MACD_HISTOGRAM_SOURCE_ID,
+    MACD_LINE_SOURCE_ID,
+    MACD_SIGNAL_DEFAULT,
+    MACD_SIGNAL_SOURCE_ID,
+    MACD_SLOW_DEFAULT,
+    MacdOutput,
+    declarations,
+    macd,
+    macd_histogram_declaration,
+    macd_line_declaration,
+    macd_seed,
+    macd_signal_declaration,
+    macd_step,
+    select_output,
+)
+from source.datasource import DataSourceDeclaration, MemoryModel, Servibility
+from source.rules.scalar import ScalarType
 
 _CLOSES = [
     Decimal(v)
@@ -213,3 +232,201 @@ def test_golden_lock_histogram() -> None:
             f"i={i}: {got.histogram[i]} != {expected}"
         )
     assert str(got.macd[0]) == "0.00"  # invariante de semilla, clavado
+
+
+def _replay(
+    closes: list[Decimal], fast: int, slow: int, signal: int
+) -> tuple[list[Decimal], list[Decimal], list[Decimal]]:
+    """Las tres series reconstruidas con macd_seed + macd_step: el replay en frio."""
+    state = macd_seed(closes[0])
+    line = [state[3]]
+    signal_out = [state[4]]
+    histogram = [state[5]]
+    for close in closes[1:]:
+        state = macd_step(state[0], state[1], state[2], close, fast, slow, signal)
+        line.append(state[3])
+        signal_out.append(state[4])
+        histogram.append(state[5])
+    return (line, signal_out, histogram)
+
+
+class TestSeedYStepReplay:
+    """macd_seed + macd_step: el replay desde snapshot, bit a bit igual que macd().
+
+    Es la pieza que hace ACOTADO el replay del RECURSIVE. macd_step NO reescribe la
+    recurrencia: llama a ema_from_anchor, que ES la de ema(). Si alguien las separase,
+    la equivalencia de abajo dejaria de cumplirse en el ultimo digito y el GATE de
+    integracion petaria.
+    """
+
+    @pytest.mark.parametrize(
+        ("fast", "slow", "signal"), [(12, 26, 9), (5, 35, 5), (1, 2, 3), (3, 3, 3)]
+    )
+    def test_equivalencia_bit_exacta_con_macd_puro(
+        self, fast: int, slow: int, signal: int
+    ) -> None:
+        # LA condicion del dictamen, para las TRES salidas a la vez: sembrar en el
+        # primer cierre y avanzar paso a paso reconstruye las tres series ENTERAS.
+        # Igualdad de Decimal Y de representacion textual: el exponente tambien tiene
+        # que coincidir
+        # (en Decimal, 0 y 0.00 son iguales pero se propagan distinto).
+        esperado = macd(_CLOSES, fast, slow, signal)
+        line, signal_out, histogram = _replay(_CLOSES, fast, slow, signal)
+        assert tuple(line) == esperado.macd
+        assert tuple(signal_out) == esperado.signal
+        assert tuple(histogram) == esperado.histogram
+        assert [str(v) for v in line] == [str(v) for v in esperado.macd]
+        assert [str(v) for v in signal_out] == [str(v) for v in esperado.signal]
+        assert [str(v) for v in histogram] == [str(v) for v in esperado.histogram]
+
+    def test_equivalencia_en_serie_larga(self) -> None:
+        serie = [Decimal(100) + Decimal(i % 7) - Decimal(i % 3) for i in range(200)]
+        esperado = macd(serie)
+        line, signal_out, histogram = _replay(
+            serie, MACD_FAST_DEFAULT, MACD_SLOW_DEFAULT, MACD_SIGNAL_DEFAULT
+        )
+        assert tuple(line) == esperado.macd
+        assert tuple(signal_out) == esperado.signal
+        assert tuple(histogram) == esperado.histogram
+
+    def test_la_semilla_respeta_el_invariante_y_su_exponente(self) -> None:
+        # macd[0] == signal[0] == histogram[0] == 0, con el MISMO exponente que produce
+        # macd(): los ceros se CALCULAN (close - close), no se escriben como Decimal(0).
+        # Si se hardcodearan, 5.5 + 0 daria 5.5 donde macd() da 5.50 y la serie se
+        # apartaria del golden a partir de ahi.
+        state = macd_seed(_CLOSES[0])
+        esperado = macd(_CLOSES)
+        assert str(state[3]) == str(esperado.macd[0]) == "0.00"
+        assert str(state[4]) == str(esperado.signal[0])
+        assert str(state[5]) == str(esperado.histogram[0])
+        # El estado interno arranca con las dos EMAs del precio en el propio cierre.
+        assert state[0] == state[1] == _CLOSES[0]
+
+    def test_el_step_encadena_la_signal_sobre_la_line_recien_calculada(self) -> None:
+        # La EMA de la senal se alimenta de la line de ESTA barra, no de la anterior. Si
+        # se desplazara, las tres series seguirian pareciendo razonables pero ninguna
+        # cuadraria con macd(). Se comprueba en la barra 1, la primera con movimiento.
+        state = macd_step(*macd_seed(_CLOSES[0])[:3], _CLOSES[1])
+        esperado = macd(_CLOSES)
+        assert state[3] == esperado.macd[1]
+        assert state[4] == esperado.signal[1]
+        assert state[5] == esperado.histogram[1]
+
+    def test_select_output_proyecta_cada_salida(self) -> None:
+        # Las tres fuentes comparten estado y paso; lo unico que las distingue es esto.
+        state = macd_step(*macd_seed(_CLOSES[0])[:3], _CLOSES[1])
+        assert select_output(state, MacdOutput.LINE) == state[3]
+        assert select_output(state, MacdOutput.SIGNAL) == state[4]
+        assert select_output(state, MacdOutput.HISTOGRAM) == state[5]
+        # Y no son el mismo numero en esta barra: si select_output cruzara las
+        # proyecciones, los tests de arriba no lo verian.
+        assert len({state[3], state[4], state[5]}) > 1
+
+    @pytest.mark.parametrize(
+        ("fast", "slow", "signal"), [(0, 26, 9), (12, 0, 9), (12, 26, 0), (-1, 26, 9)]
+    )
+    def test_periodos_deben_ser_positivos(
+        self, fast: int, slow: int, signal: int
+    ) -> None:
+        # Mismo dominio y mismo mensaje que macd(): el paso no admite lo que la funcion
+        # pura rechaza.
+        with pytest.raises(ValueError, match=">= 1"):
+            macd_step(
+                Decimal(1), Decimal(1), Decimal(0), Decimal(100), fast, slow, signal
+            )
+
+
+class TestDeclaraciones:
+    """Cara declarativa: las tres fuentes macd.* en el catalogo vivo (P08b-LOTE3-01)."""
+
+    def _todas(self) -> tuple[DataSourceDeclaration, ...]:
+        return (
+            macd_line_declaration(),
+            macd_signal_declaration(),
+            macd_histogram_declaration(),
+        )
+
+    def test_los_tres_source_id(self) -> None:
+        assert macd_line_declaration().source_id == MACD_LINE_SOURCE_ID == "macd.line"
+        assert (
+            macd_signal_declaration().source_id
+            == MACD_SIGNAL_SOURCE_ID
+            == "macd.signal"
+        )
+        assert (
+            macd_histogram_declaration().source_id
+            == MACD_HISTOGRAM_SOURCE_ID
+            == "macd.histogram"
+        )
+
+    @pytest.mark.parametrize(
+        "d",
+        [
+            macd_line_declaration(),
+            macd_signal_declaration(),
+            macd_histogram_declaration(),
+        ],
+    )
+    def test_forma_comun_de_las_tres(self, d: DataSourceDeclaration) -> None:
+        # CONTINUOUS: hay materializador y defaults reales, y ademas el MACD da valor
+        # desde la barra 0 (sin el warm-up que si tiene el RSI).
+        assert d.servibility == Servibility.CONTINUOUS
+        assert d.memory_model == MemoryModel.RECURSIVE
+        assert d.value_type == ScalarType.DECIMAL
+        assert d.consumes == ("market.close",)
+        assert d.shared_evaluation is True
+        assert d.sharing_scope.value == "public_cross_tenant"
+
+    @pytest.mark.parametrize(
+        "d",
+        [
+            macd_line_declaration(),
+            macd_signal_declaration(),
+            macd_histogram_declaration(),
+        ],
+    )
+    def test_los_tres_params_en_cache_key_y_overridables(
+        self, d: DataSourceDeclaration
+    ) -> None:
+        assert d.overridable_params == ("fast", "slow", "signal")
+        for nombre in ("fast", "slow", "signal"):
+            assert nombre in d.cache_key_schema
+        assert {p.name for p in d.params} <= set(d.cache_key_schema)
+
+    @pytest.mark.parametrize(
+        "d",
+        [
+            macd_line_declaration(),
+            macd_signal_declaration(),
+            macd_histogram_declaration(),
+        ],
+    )
+    def test_defaults_doce_veintiseis_nueve(self, d: DataSourceDeclaration) -> None:
+        defaults = {p.name: p.default for p in d.params}
+        esperados = {
+            "fast": MACD_FAST_DEFAULT,
+            "slow": MACD_SLOW_DEFAULT,
+            "signal": MACD_SIGNAL_DEFAULT,
+        }
+        assert esperados == {"fast": 12, "slow": 26, "signal": 9}
+        for nombre, valor in esperados.items():
+            default = defaults[nombre]
+            assert default is not None
+            assert default.integer_value == valor
+            assert default.scalar_type == ScalarType.INTEGER
+
+    def test_los_defaults_declarados_son_los_de_la_funcion_pura(self) -> None:
+        # Si divergieran, una regla sin overrides recibiria una serie distinta de la que
+        # da macd(closes) por defecto. Comparten constante, y esto lo vigila.
+        assert (
+            macd(_CLOSES).macd
+            == macd(
+                _CLOSES, MACD_FAST_DEFAULT, MACD_SLOW_DEFAULT, MACD_SIGNAL_DEFAULT
+            ).macd
+        )
+
+    def test_declarations_publica_las_tres(self) -> None:
+        publicadas = declarations()
+        assert len(publicadas) == 3
+        for declaracion in self._todas():
+            assert declaracion in publicadas

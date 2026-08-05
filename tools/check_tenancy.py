@@ -115,6 +115,11 @@ TABLAS_SIN_TENANT_PERMITIDAS: dict[str, str] = {
     # porque el estado de Wilder no es un solo numero y el diff de cierres exige el
     # cierre previo; eso no cambia su regimen de tenencia.
     "rsi_snapshot": "system",
+    # macd_snapshot: estado de replay del RECURSIVE macd.line/signal/histogram;
+    # scope=system SIN tenant_id (shared_evaluation public_cross_tenant, como las demas
+    # tablas de snapshot); append-only. Guarda las TRES EMAs internas (ema_fast,
+    # ema_slow, ema_signal), que son el estado, no las salidas derivadas de el.
+    "macd_snapshot": "system",
 }
 
 # Roles de RUNTIME: los que se conectan con una credencial en un proceso vivo.

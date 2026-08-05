@@ -19,6 +19,10 @@ cableadas (MAT-07, DAG bottom-up footprint -> delta -> cvd):
 - ema.value: RECURSIVE sobre los cierres (EmaRecursiveSpec, replay desde el snapshot de
   la 0023; sin ancla, bootstrap DESDE EL ORIGEN porque la semilla del EMA es el primer
   cierre de la serie, P08b-LOTE3-01).
+- macd.line/signal/histogram: RECURSIVE sobre los cierres (MacdRecursiveSpec, replay
+  desde el snapshot de la 0026). Las TRES comparten UN estado -- las tres EMAs internas
+  -- y un solo paso de calculo; cada entrada del registro publica su proyeccion
+  (`output`). Sin warm-up: valor desde la barra 0 (P08b-LOTE3-01).
 - rsi.value: RECURSIVE Wilder sobre los cierres (RsiRecursiveSpec, replay desde el
   snapshot de la 0025, cuyo estado son TRES valores -- avg_gain, avg_loss, last_close --
   porque el gain es un diferencial; el warm-up sale como serie MAS CORTA, nunca None a
@@ -44,6 +48,7 @@ from ce_v5.entrypoints.worker_rules.pivotphase_materializer import (
 )
 from ce_v5.infra.db.cvd_snapshot import read_cvd_snapshot_before, write_cvd_snapshot
 from ce_v5.infra.db.ema_snapshot import read_ema_snapshot_before, write_ema_snapshot
+from ce_v5.infra.db.macd_snapshot import read_macd_snapshot_before, write_macd_snapshot
 from ce_v5.infra.db.market_candles import (
     read_close_range,
     read_close_window,
@@ -71,6 +76,18 @@ from ce_v5.platform.rules.indicators.ema import (
     EMA_PERIOD_DEFAULT,
     EMA_SOURCE_ID,
     ema_from_anchor,
+)
+from ce_v5.platform.rules.indicators.macd import (
+    MACD_FAST_DEFAULT,
+    MACD_HISTOGRAM_SOURCE_ID,
+    MACD_LINE_SOURCE_ID,
+    MACD_SIGNAL_DEFAULT,
+    MACD_SIGNAL_SOURCE_ID,
+    MACD_SLOW_DEFAULT,
+    MacdOutput,
+    macd_seed,
+    macd_step,
+    select_output,
 )
 from ce_v5.platform.rules.indicators.rsi import (
     RSI_PERIOD_DEFAULT,
@@ -745,6 +762,179 @@ class RsiRecursiveSpec:
 
 
 @dataclass(frozen=True, slots=True)
+class MacdRecursiveSpec:
+    """Materializador RECURSIVE de macd.*: replay ACOTADO desde snapshot (0026).
+
+    Por dentro el MACD son TRES EMAs encadenadas: ema_fast y ema_slow sobre el cierre,
+    ema_signal sobre la diferencia de las dos. Ese trio ES el estado. Materializa la
+    ventana SEMBRANDO el estado con el snapshot vigente ANTERIOR a ella
+    (read_macd_snapshot_before) y dando un macd_step por cada cierre posterior
+    (read_close_range). Tras calcular, PERSISTE el estado de la barra vigente: es un
+    materializador CON ESTADO, como los de cvd, ema y rsi, e idempotente (ON CONFLICT
+    DO NOTHING).
+
+    UN ESTADO, TRES FUENTES. Un solo macd_step produce las tres salidas; `output` dice
+    cual publica ESTA instancia. Las tres entradas del registro comparten el mismo
+    estado, el mismo snapshot y el mismo calculo, y por eso pueden materializar la misma
+    barra sin estorbarse: escriben la MISMA fila, que el ON CONFLICT DO NOTHING absorbe.
+    Recalcular tres veces es el precio del dispatch por SOURCE_ID (MAT-06), que en v5.0
+    no tiene cache de evaluacion compartida; lo que NO puede pasar -- y no pasa -- es
+    que las tres escriban estados distintos.
+
+    SIN WARM-UP, a diferencia del RSI: el MACD da valor desde la barra 0 (macd[0] == 0,
+    invariante de semilla P08b-08), asi que la serie devuelta tiene SIEMPRE tantos
+    valores como barras tenga la ventana.
+
+    SIN ancla, el bootstrap arranca DESDE EL ORIGEN, sembrando con macd_seed en el
+    primer cierre. Como en ema y rsi y por el mismo motivo: el MACD no es
+    anchor-independiente, asi que recortar el bootstrap a la ventana daria OTRA serie.
+
+    El GATE de ADR-007: el replay desde CUALQUIER snapshot valido reproduce las tres
+    colas identicas BIT A BIT a las del macd() puro desde el origen, porque macd_seed y
+    macd_step no reescriben la recurrencia -- llaman a ema_from_anchor, que ES la de
+    ema() -- y hacen las restas bajo el mismo contexto pinneado.
+
+    fast/slow/signal son PARAMETROS DECLARADOS (overridables) y los propaga el dispatch
+    (with_params). Los snapshots NO se cruzan -- los tres entran en la identidad de
+    macd_snapshot (PK, 0026) --, asi que el ancla de un macd(5,35,5) nunca siembra un
+    macd(12,26,9).
+    """
+
+    output: MacdOutput
+    fast: int = MACD_FAST_DEFAULT
+    slow: int = MACD_SLOW_DEFAULT
+    signal: int = MACD_SIGNAL_DEFAULT
+
+    def _periodo(
+        self, params: Mapping[str, ScalarValue], nombre: str, actual: int
+    ) -> int:
+        """El valor EFECTIVO de un periodo, validando su dominio (fail-loud).
+
+        Ausente o sin entero -> se conserva el actual (aditividad D7: lo que la regla no
+        pide, no cambia). Presente y fuera de dominio -> LANZA: el compilador ya valido
+        nombre y tipo para todo override que pase por compile(), asi que esto es la
+        ultima linea de defensa de quien llame with_params directamente. Mismo dominio
+        que los CHECK de la 0026 (>= 1).
+        """
+        value = params.get(nombre)
+        if value is None or value.integer_value is None:
+            return actual
+        periodo = value.integer_value
+        if periodo < 1:
+            msg = (
+                f"{nombre} {periodo!r} no es un periodo de MACD valido (exige >= 1): "
+                "no se materializa (fail-loud)."
+            )
+            raise UnwiredSourceError(msg)
+        return periodo
+
+    def with_params(self, params: Mapping[str, ScalarValue]) -> SourceMaterializer:
+        """Copia ligada a los tres periodos EFECTIVOS de la regla (MAT-05 Q2).
+
+        Solo sustituye los que lleguen; el registro conserva su instancia con los
+        defaults (si se mutara, una regla contaminaria a las demas). output NO es
+        parametro: es la identidad de la fuente, no algo que una regla pueda pedir.
+        """
+        return replace(
+            self,
+            fast=self._periodo(params, "fast", self.fast),
+            slow=self._periodo(params, "slow", self.slow),
+            signal=self._periodo(params, "signal", self.signal),
+        )
+
+    def materialize(
+        self,
+        session: Session,
+        exchange: str,
+        symbol: str,
+        timeframe: str,
+        open_time: int,
+        history_bars: int,
+    ) -> tuple[Decimal, ...]:
+        window = read_ohlcv_window(
+            session, exchange, symbol, timeframe, open_time, history_bars
+        )
+        if not window:
+            return ()
+        first_open_time = window[0].open_time
+        anchor = read_macd_snapshot_before(
+            session,
+            exchange,
+            symbol,
+            timeframe,
+            self.fast,
+            self.slow,
+            self.signal,
+            first_open_time,
+        )
+        values: list[Decimal] = []
+        if anchor is not None:
+            anchor_open_time, ema_fast, ema_slow, ema_signal = anchor
+            tail = read_close_range(
+                session, exchange, symbol, timeframe, anchor_open_time, open_time
+            )
+            for _, close in tail:
+                state = macd_step(
+                    ema_fast,
+                    ema_slow,
+                    ema_signal,
+                    close,
+                    self.fast,
+                    self.slow,
+                    self.signal,
+                )
+                ema_fast, ema_slow, ema_signal = state[0], state[1], state[2]
+                values.append(select_output(state, self.output))
+            if not values:
+                # El ancla es anterior al inicio de la ventana y la ventana no esta
+                # vacia, asi que el rango siempre trae barras; si no las trajera, el
+                # estado no habria avanzado y persistirlo en open_time plantaria un
+                # ancla desfasada.
+                return ()
+        else:
+            # BOOTSTRAP: todos los cierres hasta la barra pedida (after=None => desde el
+            # origen). La semilla cae en la barra 0, no en el inicio de la ventana. La
+            # ventana sale de la MISMA tabla con el MISMO filtro de madurez, asi que el
+            # origen la contiene entera.
+            origin = read_close_range(
+                session, exchange, symbol, timeframe, None, open_time
+            )
+            closes = [close for _, close in origin]
+            if not closes:
+                return ()
+            state = macd_seed(closes[0])
+            ema_fast, ema_slow, ema_signal = state[0], state[1], state[2]
+            values.append(select_output(state, self.output))
+            for close in closes[1:]:
+                state = macd_step(
+                    ema_fast,
+                    ema_slow,
+                    ema_signal,
+                    close,
+                    self.fast,
+                    self.slow,
+                    self.signal,
+                )
+                ema_fast, ema_slow, ema_signal = state[0], state[1], state[2]
+                values.append(select_output(state, self.output))
+        series = tuple(values[-len(window) :])
+        write_macd_snapshot(
+            session,
+            exchange,
+            symbol,
+            timeframe,
+            self.fast,
+            self.slow,
+            self.signal,
+            open_time,
+            ema_fast,
+            ema_slow,
+            ema_signal,
+        )
+        return series
+
+
+@dataclass(frozen=True, slots=True)
 class DerivedSeriesSpec:
     """Materializador de una fuente que consume OTRA fuente DERIVADA (DAG 2o nivel).
 
@@ -924,4 +1114,7 @@ SOURCE_MATERIALIZERS: dict[str, SourceMaterializer] = {
     SWING_LOW_SOURCE_ID: SwingWindowedSpec(kind=PivotKind.LOW),
     EMA_SOURCE_ID: EmaRecursiveSpec(),
     RSI_SOURCE_ID: RsiRecursiveSpec(),
+    MACD_LINE_SOURCE_ID: MacdRecursiveSpec(output=MacdOutput.LINE),
+    MACD_SIGNAL_SOURCE_ID: MacdRecursiveSpec(output=MacdOutput.SIGNAL),
+    MACD_HISTOGRAM_SOURCE_ID: MacdRecursiveSpec(output=MacdOutput.HISTOGRAM),
 }
