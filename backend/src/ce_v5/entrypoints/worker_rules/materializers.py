@@ -16,6 +16,9 @@ cableadas (MAT-07, DAG bottom-up footprint -> delta -> cvd):
   2o nivel: consume otra fuente DERIVADA, no el footprint crudo; MAT-08).
 - pivotphase.phase/confidence: RECURSIVE, replay propio desde snapshot
   (PivotphasePhaseSpec/PivotphaseConfidenceSpec, glue en pivotphase_materializer; T5).
+- ema.value: RECURSIVE sobre los cierres (EmaRecursiveSpec, replay desde el snapshot de
+  la 0023; sin ancla, bootstrap DESDE EL ORIGEN porque la semilla del EMA es el primer
+  cierre de la serie, P08b-LOTE3-01).
 market.close conserva su lectura directa (read_close_window) en _series_for.
 
 Con delta_momentum cableada NO queda ninguna fuente servible del catalogo vivo sin
@@ -36,7 +39,12 @@ from ce_v5.entrypoints.worker_rules.pivotphase_materializer import (
     PivotphasePhaseSpec,
 )
 from ce_v5.infra.db.cvd_snapshot import read_cvd_snapshot_before, write_cvd_snapshot
-from ce_v5.infra.db.market_candles import read_close_window, read_ohlcv_window
+from ce_v5.infra.db.ema_snapshot import read_ema_snapshot_before, write_ema_snapshot
+from ce_v5.infra.db.market_candles import (
+    read_close_range,
+    read_close_window,
+    read_ohlcv_window,
+)
 from ce_v5.infra.db.market_footprint import (
     read_footprint_delta_range,
     read_footprint_window,
@@ -53,6 +61,11 @@ from ce_v5.platform.rules.indicators.candle import (
     body_pct,
     lower_shadow_pct,
     upper_shadow_pct,
+)
+from ce_v5.platform.rules.indicators.ema import (
+    EMA_PERIOD_DEFAULT,
+    EMA_SOURCE_ID,
+    ema_from_anchor,
 )
 from ce_v5.platform.rules.indicators.swing import (
     SWING_HIGH_SOURCE_ID,
@@ -486,6 +499,106 @@ class CvdIntegratorSpec:
 
 
 @dataclass(frozen=True, slots=True)
+class EmaRecursiveSpec:
+    """Materializador RECURSIVE de ema.value: replay ACOTADO desde snapshot (0023).
+
+    EMA[T] = alpha*close[T] + (1-alpha)*EMA[T-1]. Materializa la ventana SEMBRANDO la
+    recurrencia con el snapshot vigente ANTERIOR a ella (read_ema_snapshot_before) y
+    plegando los cierres posteriores (read_close_range). Tras calcular, PERSISTE el
+    snapshot de la barra vigente: es un materializador CON ESTADO, como el de cvd -- el
+    snapshot ES su memoria de replay -- e idempotente (ON CONFLICT DO NOTHING).
+
+    SIN ancla, el bootstrap arranca DESDE EL ORIGEN del historico, no desde el inicio de
+    la ventana. Es la diferencia de fondo con cvd: el valor absoluto del cvd rolling es
+    anchor-dependiente y su forma no, asi que a el le basta la ventana; el EMA NO tiene
+    esa propiedad -- su semilla es el PRIMER cierre de la serie (EMA[0] == close[0],
+    invariante P08b-08) y cualquier otra semilla da OTRA serie. Sembrar en el inicio de
+    ventana no seria un replay acotado, seria un EMA distinto.
+
+    El GATE de ADR-007: el replay desde CUALQUIER snapshot valido reproduce la cola
+    identica BIT A BIT a la del ema() puro desde el origen, porque ema_from_anchor
+    reutiliza literalmente la recurrencia y el contexto Decimal pinneado de ema().
+
+    period es PARAMETRO DECLARADO (overridable, default 20) y lo propaga el dispatch
+    (with_params). Los snapshots NO se cruzan -- period entra en la identidad de
+    ema_snapshot (PK, 0023) --, asi que el ancla de un ema(9) nunca siembra un ema(21).
+    """
+
+    period: int = EMA_PERIOD_DEFAULT
+
+    def with_params(self, params: Mapping[str, ScalarValue]) -> SourceMaterializer:
+        """Copia ligada al period EFECTIVO de la regla (MAT-05 Q2).
+
+        El compilador ya valido nombre y tipo (ParamSpec.value_type=INTEGER) para todo
+        override que pase por compile(). Este chequeo queda como ULTIMA linea de defensa
+        para quien llame with_params directamente (fuera de un ExecutionPlan compilado):
+        un period fuera de dominio (< 1) falla RUIDOSO, no materializa con el default en
+        silencio. El mismo dominio que clava la 0023 en su CHECK (period >= 1): un
+        period < 1 seria una identidad fantasma de snapshot.
+        """
+        value = params.get("period")
+        if value is None or value.integer_value is None:
+            return self
+        period = value.integer_value
+        if period < 1:
+            msg = (
+                f"period {period!r} no es un periodo de EMA valido (exige >= 1): no se "
+                "materializa (fail-loud)."
+            )
+            raise UnwiredSourceError(msg)
+        return replace(self, period=period)
+
+    def materialize(
+        self,
+        session: Session,
+        exchange: str,
+        symbol: str,
+        timeframe: str,
+        open_time: int,
+        history_bars: int,
+    ) -> tuple[Decimal, ...]:
+        window = read_ohlcv_window(
+            session, exchange, symbol, timeframe, open_time, history_bars
+        )
+        if not window:
+            return ()
+        first_open_time = window[0].open_time
+        anchor = read_ema_snapshot_before(
+            session, exchange, symbol, timeframe, self.period, first_open_time
+        )
+        if anchor is not None:
+            anchor_open_time, anchor_value = anchor
+            tail = read_close_range(
+                session, exchange, symbol, timeframe, anchor_open_time, open_time
+            )
+            full = ema_from_anchor(
+                anchor_value, [close for _, close in tail], self.period
+            )
+        else:
+            # BOOTSTRAP: todos los cierres hasta la barra pedida (after=None => desde el
+            # origen). La semilla es closes[0], el PRIMER cierre de la serie, no el
+            # primero de la ventana. La ventana sale de la MISMA tabla con el MISMO
+            # filtro de madurez, asi que si hay ventana hay cierres: el origen la
+            # contiene entera y full nunca es mas corto que ella.
+            origin = read_close_range(
+                session, exchange, symbol, timeframe, None, open_time
+            )
+            closes = [close for _, close in origin]
+            full = (closes[0], *ema_from_anchor(closes[0], closes[1:], self.period))
+        series = full[-len(window) :]
+        write_ema_snapshot(
+            session,
+            exchange,
+            symbol,
+            timeframe,
+            self.period,
+            open_time,
+            series[-1],
+        )
+        return series
+
+
+@dataclass(frozen=True, slots=True)
 class DerivedSeriesSpec:
     """Materializador de una fuente que consume OTRA fuente DERIVADA (DAG 2o nivel).
 
@@ -663,4 +776,5 @@ SOURCE_MATERIALIZERS: dict[str, SourceMaterializer] = {
     ),
     SWING_HIGH_SOURCE_ID: SwingWindowedSpec(kind=PivotKind.HIGH),
     SWING_LOW_SOURCE_ID: SwingWindowedSpec(kind=PivotKind.LOW),
+    EMA_SOURCE_ID: EmaRecursiveSpec(),
 }

@@ -13,10 +13,12 @@ import pytest
 
 from ce_v5.platform.rules.indicators.ema import (
     EMA_FORMULA_VERSION,
+    EMA_PERIOD_DEFAULT,
     EMA_SOURCE_ID,
     declarations,
     ema,
     ema_declaration,
+    ema_from_anchor,
 )
 from source.datasource import MemoryModel, Servibility
 from source.rules.scalar import ScalarType
@@ -201,8 +203,69 @@ def test_golden_lock_ema12() -> None:
     assert str(got[0]) == "100.00"  # invariante de semilla, clavado bit-exacto
 
 
+class TestContinuacionDesdeAncla:
+    """ema_from_anchor: el replay desde snapshot, bit a bit igual que ema() (ADR-007).
+
+    Es la pieza que hace ACOTADO el replay del RECURSIVE: sembrada con el EMA de la
+    barra previa, produce EXACTAMENTE la cola que daria recomputar desde el origen. Si
+    la formula o el contexto Decimal se separasen de los de ema(), la equivalencia de
+    abajo dejaria de cumplirse en el ultimo digito y el GATE de integracion petaria.
+    """
+
+    @pytest.mark.parametrize("period", [1, 2, 9, 12, 20, 26, 200])
+    def test_equivalencia_bit_exacta_con_ema_puro(self, period: int) -> None:
+        # LA condicion del dictamen: sembrar en el primer cierre y seguir con el resto
+        # reconstruye la serie ENTERA. Igualdad de Decimal, no tolerancia.
+        esperado = ema(_CLOSES, period)
+        obtenido = (_CLOSES[0], *ema_from_anchor(_CLOSES[0], _CLOSES[1:], period))
+        assert obtenido == esperado
+        assert [str(v) for v in obtenido] == [str(v) for v in esperado]
+
+    @pytest.mark.parametrize("period", [9, 20, 26])
+    def test_equivalencia_en_serie_larga(self, period: int) -> None:
+        serie = _deterministic_series(300)
+        esperado = ema(serie, period)
+        obtenido = (serie[0], *ema_from_anchor(serie[0], serie[1:], period))
+        assert obtenido == esperado
+
+    @pytest.mark.parametrize("corte", [1, 5, 17, 39])
+    def test_replay_desde_cualquier_ancla_da_la_misma_cola(self, corte: int) -> None:
+        # GATE en frio (sin BD): anclar en la barra `corte` con SU valor de la serie
+        # completa y plegar los cierres posteriores reproduce la cola exacta. Es lo que
+        # hara el materializador con el snapshot, y no depende de DONDE se corto.
+        completa = ema(_CLOSES, EMA_PERIOD_DEFAULT)
+        cola = ema_from_anchor(
+            completa[corte], _CLOSES[corte + 1 :], EMA_PERIOD_DEFAULT
+        )
+        assert cola == completa[corte + 1 :]
+
+    def test_longitud_uno_a_uno_con_los_cierres(self) -> None:
+        # anchor NO ocupa posicion: la salida son las barras NUEVAS, ni una mas.
+        assert len(ema_from_anchor(Decimal(100), _CLOSES, 12)) == len(_CLOSES)
+        assert ema_from_anchor(Decimal(100), [], 12) == ()
+
+    def test_period_uno_sigue_la_fuente_e_ignora_el_ancla(self) -> None:
+        # alpha = 1: el ancla no pesa nada y el EMA es la propia fuente. Que el ancla
+        # ABSURDO no contamine demuestra que el peso viene de la formula, no de un
+        # apano.
+        assert list(ema_from_anchor(Decimal("-999"), _CLOSES, 1)) == _CLOSES
+
+    def test_period_must_be_positive(self) -> None:
+        with pytest.raises(ValueError, match="period >= 1"):
+            ema_from_anchor(Decimal(100), _CLOSES, 0)
+
+    def test_result_independent_of_ambient_decimal_context(self) -> None:
+        # Mismo blindaje que ema(): el contexto pinneado manda sobre el ambiente. Un
+        # replay ejecutado bajo otra precision daria otro valor y romperia ADR-007.
+        base = ema_from_anchor(_CLOSES[0], _CLOSES[1:], 12)
+        with localcontext() as ctx:
+            ctx.prec = 6
+            hostile = ema_from_anchor(_CLOSES[0], _CLOSES[1:], 12)
+        assert [str(v) for v in base] == [str(v) for v in hostile]
+
+
 class TestDeclaracion:
-    """Cara declarativa: ema.value en el catalogo (P08b LOTE 2, OPCION D)."""
+    """Cara declarativa: ema.value en el catalogo (flip a CONTINUOUS, P08b-LOTE3-01)."""
 
     def test_id_y_value_type(self) -> None:
         d = ema_declaration()
@@ -212,10 +275,12 @@ class TestDeclaracion:
     def test_memory_model_recursive(self) -> None:
         assert ema_declaration().memory_model == MemoryModel.RECURSIVE
 
-    def test_non_servible(self) -> None:
-        # OPCION D: descubrible pero rechazada como termino hasta que haya
-        # materializador.
-        assert ema_declaration().servibility == Servibility.NON_SERVIBLE
+    def test_continuous(self) -> None:
+        # FLIP P08b-LOTE3-01: ya hay materializador (EmaRecursiveSpec) y period default
+        # real, que eran las DOS condiciones que INT-06 puso al flip. Deja de estar
+        # vetada como termino de regla; su identidad y su cache_key no cambian.
+        assert ema_declaration().servibility == Servibility.CONTINUOUS
+        assert ema_declaration().servibility != Servibility.NON_SERVIBLE
 
     def test_consume_market_close(self) -> None:
         # EMA deriva de la serie de cierres (dictamen INT-06-A1).
@@ -226,11 +291,21 @@ class TestDeclaracion:
         assert "period" in d.cache_key_schema
         assert {p.name for p in d.params} <= set(d.cache_key_schema)
 
-    def test_period_es_integer_sin_default(self) -> None:
+    def test_period_es_integer_con_default_veinte(self) -> None:
+        # Q1: una fuente CONTINUOUS tiene que poder servir SIN que la regla pida period,
+        # asi que el default deja de ser None y pasa a ser el 20 del dictamen.
         (period,) = ema_declaration().params
         assert period.name == "period"
         assert period.value_type == ScalarType.INTEGER
-        assert period.default is None
+        assert period.default is not None
+        assert period.default.integer_value == EMA_PERIOD_DEFAULT == 20
+
+    def test_period_es_overridable(self) -> None:
+        # Sin esto el compilador RECHAZA cualquier override de period (compiler.py:153)
+        # y ema(9) seria inalcanzable pese a estar en la cache_key.
+        d = ema_declaration()
+        assert d.overridable_params == ("period",)
+        assert set(d.overridable_params) <= {p.name for p in d.params}
 
     def test_sharing_publico_coherente_con_0023(self) -> None:
         # La 0023 (ema_snapshot) justifica el SIN tenant_id con esto; deben cuadrar.

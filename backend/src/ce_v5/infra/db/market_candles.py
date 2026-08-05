@@ -10,6 +10,11 @@ LECTURA (P08 D1): read_close_window sirve la ventana de cierres que consume el
 evaluador de reglas. Es SOLO LECTURA y la ejecuta ce_v5_rules con el GRANT SELECT de la
 0016; la escritura sigue siendo exclusiva del rol de ingesta.
 
+LECTURA (P08b-LOTE3-01): read_close_range sirve los cierres de un RANGO (after, up_to],
+con after NULLABLE ("desde el origen"). Es la entrada del replay acotado del RECURSIVE
+ema.value, que no pide "las ultimas N barras" sino "lo que hay despues del ancla". Mismo
+rol y mismo GRANT que read_close_window.
+
 LECTURA (T-05): read_ohlcv_window sirve la MISMA ventana con el cuerpo entero de la vela
 para el camino de lectura del historico. La ejecuta ce_v5_app con el GRANT SELECT de la
 0012, que es solo eso: SELECT. Que la API pueda LEER velas no le da ningun poder para
@@ -119,6 +124,33 @@ _OHLCV_WINDOW_SQL = _WINDOW_SQL.format(
     externas="w.open_time, w.open, w.high, w.low, w.close, w.volume",
     internas="open_time, open, high, low, close, volume",
 )
+
+# RANGO de cierres (after, up_to], oldest->newest, una fila por barra (la revision
+# vigente). Es la entrada del replay del RECURSIVE ema.value: los cierres POSTERIORES al
+# ancla de snapshot. Gemelo de read_footprint_delta_range (market_footprint.py) -- mismo
+# dedup por DISTINCT ON + correction_revision DESC NULLS LAST -- con UNA diferencia: el
+# limite inferior es NULLABLE. after IS NULL significa "desde el ORIGEN del historico",
+# que es exactamente lo que pide el BOOTSTRAP del EMA: su semilla es el PRIMER cierre de
+# la SERIE (EMA[0] == close[0], invariante P08b-08), no el primero de la ventana pedida;
+# sembrar en el inicio de ventana produciria OTRA serie, no una version acotada de la
+# misma. NO lleva LIMIT a proposito: un rango es su rango entero, y recortarlo por el
+# extremo antiguo (lo que hace _WINDOW_SQL) le quitaria justo el ancla o la semilla.
+_CLOSE_RANGE_SQL = """
+SELECT w.open_time, w.close
+FROM (
+    SELECT DISTINCT ON (open_time) open_time, close
+    FROM market_candle
+    WHERE exchange = %s
+      AND market_type = %s
+      AND symbol = %s
+      AND timeframe = %s
+      AND maturity_state IN ('closed', 'correction')
+      AND (%s::bigint IS NULL OR open_time > %s)
+      AND open_time <= %s
+    ORDER BY open_time DESC, correction_revision DESC NULLS LAST
+) AS w
+ORDER BY w.open_time
+"""
 
 # La ULTIMA vela madura del flujo (L). Es la vela sobre la que la regla tiene su estado
 # VIGENTE: una correccion solo puede cambiar el estado actual si L cae dentro de la
@@ -335,6 +367,52 @@ def read_ohlcv_window(
         )
         for row in rows
     )
+
+
+def read_close_range(
+    session: Session,
+    exchange: str,
+    symbol: str,
+    timeframe: str,
+    after_open_time: int | None,
+    up_to_open_time: int,
+) -> tuple[tuple[int, Decimal], ...]:
+    """Los (open_time, close) de las velas maduras del rango, oldest->newest.
+
+    El rango es (after_open_time, up_to_open_time] y sale con una fila por barra (la
+    revision VIGENTE si hubo correcciones, por el DISTINCT ON + correction_revision DESC
+    NULLS LAST). Es la secuencia de cierres que el materializador de ema.value
+    (RECURSIVE) pliega sobre el valor del snapshot ancla. El limite inferior es ABIERTO
+    (after excluido: el ancla ya lleva incorporado el cierre de su propia barra) y el
+    superior CERRADO (up_to incluido: la barra pedida). Rango vacio -> ().
+
+    after_open_time=None es DESDE EL ORIGEN del historico: el caso del BOOTSTRAP del
+    EMA, que no tiene ancla y cuya semilla es el PRIMER cierre de la serie
+    (EMA[0] == close[0], invariante P08b-08). Por eso el limite inferior es nullable y
+    no se simula con un 0: "sin ancla" no es "ancla en el instante 0", y confundirlos
+    dejaria la puerta abierta a sembrar el EMA en el sitio equivocado.
+
+    HERMANA de read_close_window: mismo filtro de madurez y mismo dedup por revision.
+    Lo que cambia es el recorte -- el rango en vez de las ultimas N barras -- porque el
+    replay acotado se define por DONDE esta el ancla, no por cuantas barras pide la
+    regla.
+
+    market_type esta FIJADO a spot porque v5.0 solo tiene spot (MarketType), como en
+    read_close_window. Lo ejecuta ce_v5_rules con el GRANT SELECT de la 0016.
+    """
+    rows = session.fetchall(
+        _CLOSE_RANGE_SQL,
+        (
+            exchange,
+            MarketType.SPOT.value,
+            symbol,
+            timeframe,
+            after_open_time,
+            after_open_time,
+            up_to_open_time,
+        ),
+    )
+    return tuple((_entero(row[0]), _decimal(row[1])) for row in rows)
 
 
 def read_last_closed_open_time(
