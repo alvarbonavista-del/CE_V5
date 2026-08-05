@@ -247,6 +247,8 @@ def _mordida_del_check() -> list[tuple[str, bool]]:
     #   0021 -> market_footprint (SELECT): la ventana que materializa vp.*/orderflow.
     #   0022 -> cvd_snapshot (SELECT, INSERT): su estado de replay del INTEGRATOR.
     #   0023 -> ema_snapshot (SELECT, INSERT): su estado de replay del RECURSIVE EMA.
+    #   0025 -> rsi_snapshot (SELECT, INSERT): su estado de replay del RECURSIVE RSI
+    #           (Wilder: avg_gain, avg_loss y last_close).
     # Las tablas de estado se toman de RULES_STATE_TABLES para que sigan al check y no
     # se queden atras cuando entre la siguiente.
     grants_reales: dict[str, tuple[str, ...]] = {

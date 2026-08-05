@@ -19,6 +19,10 @@ cableadas (MAT-07, DAG bottom-up footprint -> delta -> cvd):
 - ema.value: RECURSIVE sobre los cierres (EmaRecursiveSpec, replay desde el snapshot de
   la 0023; sin ancla, bootstrap DESDE EL ORIGEN porque la semilla del EMA es el primer
   cierre de la serie, P08b-LOTE3-01).
+- rsi.value: RECURSIVE Wilder sobre los cierres (RsiRecursiveSpec, replay desde el
+  snapshot de la 0025, cuyo estado son TRES valores -- avg_gain, avg_loss, last_close --
+  porque el gain es un diferencial; el warm-up sale como serie MAS CORTA, nunca None a
+  media serie; P08b-LOTE3-01).
 market.close conserva su lectura directa (read_close_window) en _series_for.
 
 Con delta_momentum cableada NO queda ninguna fuente servible del catalogo vivo sin
@@ -49,6 +53,7 @@ from ce_v5.infra.db.market_footprint import (
     read_footprint_delta_range,
     read_footprint_window,
 )
+from ce_v5.infra.db.rsi_snapshot import read_rsi_snapshot_before, write_rsi_snapshot
 from ce_v5.platform.rules.cvd import CVD_SOURCE_ID, ResetPolicy, session_starts
 from ce_v5.platform.rules.footprint_range import (
     FOOTPRINT_PRICE_RANGE_SOURCE_ID,
@@ -66,6 +71,12 @@ from ce_v5.platform.rules.indicators.ema import (
     EMA_PERIOD_DEFAULT,
     EMA_SOURCE_ID,
     ema_from_anchor,
+)
+from ce_v5.platform.rules.indicators.rsi import (
+    RSI_PERIOD_DEFAULT,
+    RSI_SOURCE_ID,
+    rsi_seed,
+    rsi_step,
 )
 from ce_v5.platform.rules.indicators.swing import (
     SWING_HIGH_SOURCE_ID,
@@ -599,6 +610,141 @@ class EmaRecursiveSpec:
 
 
 @dataclass(frozen=True, slots=True)
+class RsiRecursiveSpec:
+    """Materializador RECURSIVE de rsi.value: replay ACOTADO desde snapshot (0025).
+
+    RSI de Wilder: el estado de la barra T -- (avg_gain, avg_loss, last_close) -- sale
+    del de T-1 suavizando con (avg_prev*(period-1) + nuevo)/period. Materializa la
+    ventana SEMBRANDO el estado con el snapshot vigente ANTERIOR a ella
+    (read_rsi_snapshot_before) y dando un rsi_step por cada cierre posterior
+    (read_close_range). Tras calcular,
+    PERSISTE el estado de la barra vigente: es un materializador CON ESTADO, como el de
+    cvd y el de ema, e idempotente (ON CONFLICT DO NOTHING).
+
+    EL ESTADO SON TRES VALORES, no uno. last_close esta ahi porque gain[T] = close[T] -
+    close[T-1] es un DIFERENCIAL: sin el cierre de la barra ancla, el primer paso del
+    replay no se puede dar. Es matematica del indicador, no una comodidad del esquema.
+
+    SIN ancla, el bootstrap arranca DESDE EL ORIGEN, sembrando con rsi_seed en la barra
+    `period` (media simple de los primeros `period` cambios, convencion P08b-02). Como
+    en ema y por el mismo motivo: el RSI no es anchor-independiente, asi que recortar el
+    bootstrap a la ventana daria OTRA serie.
+
+    WARM-UP. Las barras anteriores a la semilla NO tienen RSI. Un materializador
+    devuelve tuple[Decimal, ...] y no puede emitir None a media serie, asi que la serie
+    sale MAS CORTA que la ventana pedida -- exactamente lo que hacen read_close_window y
+    materialize_windowed cuando falta historia --, y el evaluador la trata como
+    NOT_EVALUABLE (K3). Si la ventana cae ENTERA en warm-up la serie es (): correcto, no
+    es un error. Lo que NUNCA se hace es rellenar: una barra inventada seria un hecho
+    falso con aspecto de indicador.
+
+    El GATE de ADR-007: el replay desde CUALQUIER snapshot valido reproduce la cola
+    identica BIT A BIT a la del wilder_rsi puro desde el origen, porque rsi_seed y
+    rsi_step reutilizan literalmente su aritmetica y su contexto Decimal pinneado.
+
+    period es PARAMETRO DECLARADO (overridable, default 14) y lo propaga el dispatch
+    (with_params). Los snapshots NO se cruzan -- period entra en la identidad de
+    rsi_snapshot (PK, 0025) --, asi que el ancla de un rsi(7) nunca siembra un rsi(14).
+    """
+
+    period: int = RSI_PERIOD_DEFAULT
+
+    def with_params(self, params: Mapping[str, ScalarValue]) -> SourceMaterializer:
+        """Copia ligada al period EFECTIVO de la regla (MAT-05 Q2).
+
+        El compilador ya valido nombre y tipo (ParamSpec.value_type=INTEGER) para todo
+        override que pase por compile(). Este chequeo queda como ULTIMA linea de defensa
+        para quien llame with_params directamente (fuera de un ExecutionPlan compilado):
+        un period fuera de dominio (< 1) falla RUIDOSO, no materializa con el default en
+        silencio. El mismo dominio que clava la 0025 en su CHECK (period >= 1).
+        """
+        value = params.get("period")
+        if value is None or value.integer_value is None:
+            return self
+        period = value.integer_value
+        if period < 1:
+            msg = (
+                f"period {period!r} no es un periodo de RSI valido (exige >= 1): no se "
+                "materializa (fail-loud)."
+            )
+            raise UnwiredSourceError(msg)
+        return replace(self, period=period)
+
+    def materialize(
+        self,
+        session: Session,
+        exchange: str,
+        symbol: str,
+        timeframe: str,
+        open_time: int,
+        history_bars: int,
+    ) -> tuple[Decimal, ...]:
+        window = read_ohlcv_window(
+            session, exchange, symbol, timeframe, open_time, history_bars
+        )
+        if not window:
+            return ()
+        first_open_time = window[0].open_time
+        anchor = read_rsi_snapshot_before(
+            session, exchange, symbol, timeframe, self.period, first_open_time
+        )
+        values: list[Decimal] = []
+        if anchor is not None:
+            anchor_open_time, avg_gain, avg_loss, last_close = anchor
+            tail = read_close_range(
+                session, exchange, symbol, timeframe, anchor_open_time, open_time
+            )
+            for _, close in tail:
+                avg_gain, avg_loss, last_close, value = rsi_step(
+                    avg_gain, avg_loss, last_close, close, self.period
+                )
+                values.append(value)
+            if not values:
+                # El ancla es anterior al inicio de la ventana y la ventana no esta
+                # vacia, asi que el rango siempre trae barras; si no las trajera, el
+                # estado no habria avanzado y persistirlo en open_time plantaria un
+                # ancla desfasada.
+                return ()
+        else:
+            # BOOTSTRAP: todos los cierres hasta la barra pedida (after=None => desde el
+            # origen). La semilla de Wilder cae en la barra `period`, no en el inicio de
+            # la ventana. La ventana sale de la MISMA tabla con el MISMO filtro de
+            # madurez, asi que el origen la contiene entera.
+            origin = read_close_range(
+                session, exchange, symbol, timeframe, None, open_time
+            )
+            closes = [close for _, close in origin]
+            seed = rsi_seed(closes, self.period)
+            if seed is None:
+                # WARM-UP COMPLETO: ni siquiera hay semilla. Serie vacia
+                # (NOT_EVALUABLE, K3) y NINGUN snapshot: un ancla sin estado real
+                # envenenaria todos los replays posteriores.
+                return ()
+            avg_gain, avg_loss, last_close, first_value = seed
+            values.append(first_value)
+            for close in closes[self.period + 1 :]:
+                avg_gain, avg_loss, last_close, value = rsi_step(
+                    avg_gain, avg_loss, last_close, close, self.period
+                )
+                values.append(value)
+        # Cola de hasta len(window) valores: MENOS si el warm-up se come el principio de
+        # la ventana. No se rellena (ver el docstring).
+        series = tuple(values[-len(window) :])
+        write_rsi_snapshot(
+            session,
+            exchange,
+            symbol,
+            timeframe,
+            self.period,
+            open_time,
+            avg_gain,
+            avg_loss,
+            last_close,
+        )
+        return series
+
+
+@dataclass(frozen=True, slots=True)
 class DerivedSeriesSpec:
     """Materializador de una fuente que consume OTRA fuente DERIVADA (DAG 2o nivel).
 
@@ -777,4 +923,5 @@ SOURCE_MATERIALIZERS: dict[str, SourceMaterializer] = {
     SWING_HIGH_SOURCE_ID: SwingWindowedSpec(kind=PivotKind.HIGH),
     SWING_LOW_SOURCE_ID: SwingWindowedSpec(kind=PivotKind.LOW),
     EMA_SOURCE_ID: EmaRecursiveSpec(),
+    RSI_SOURCE_ID: RsiRecursiveSpec(),
 }

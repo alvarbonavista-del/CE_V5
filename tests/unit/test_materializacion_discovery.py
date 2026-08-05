@@ -23,6 +23,7 @@ _EXPECTED = {
     "candle.upper_shadow_pct",
     "candle.lower_shadow_pct",
     "ema.value",
+    "rsi.value",
     "volume.ratio_vs_avg",
     "vwap.value",
     "vwap.distance_pct",

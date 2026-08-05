@@ -25,6 +25,7 @@ from ce_v5.entrypoints.worker_rules.materializers import (
     EmaRecursiveSpec,
     FootprintPointLocalSpec,
     FootprintWindowedSpec,
+    RsiRecursiveSpec,
     SwingWindowedSpec,
     UnwiredSourceError,
     _cvd_session_step,
@@ -40,6 +41,10 @@ from ce_v5.platform.rules.indicators.candle import (
 from ce_v5.platform.rules.indicators.ema import (
     EMA_PERIOD_DEFAULT,
     EMA_SOURCE_ID,
+)
+from ce_v5.platform.rules.indicators.rsi import (
+    RSI_PERIOD_DEFAULT,
+    RSI_SOURCE_ID,
 )
 from ce_v5.platform.rules.indicators.swing import (
     SWING_HIGH_SOURCE_ID,
@@ -176,6 +181,7 @@ class TestRegistroPorSourceId:
             SWING_HIGH_SOURCE_ID,
             SWING_LOW_SOURCE_ID,
             EMA_SOURCE_ID,
+            RSI_SOURCE_ID,
         }
 
     @pytest.mark.parametrize(
@@ -599,4 +605,54 @@ class TestEmaRecursivaRegistrada:
         with pytest.raises(UnwiredSourceError, match="periodo de EMA valido"):
             spec.with_params(_period(0))
         with pytest.raises(UnwiredSourceError, match="periodo de EMA valido"):
+            spec.with_params(_period(-3))
+
+
+class TestRsiRecursivaRegistrada:
+    """7: rsi.value cableada como RECURSIVE Wilder con replay desde snapshot
+    (P08b-LOTE3-01).
+
+    Aqui solo el BINDING y la propagacion de period: el replay real (bootstrap con
+    rsi_seed, warm-up, ancla y el GATE bit-exacto de ADR-007) exige BD y vive en
+    tests/integration/test_rsi_materializer.py, porque el estado que lo siembra es una
+    fila de rsi_snapshot (0025).
+    """
+
+    def test_esta_cableada_con_un_spec_recursivo(self) -> None:
+        spec = SOURCE_MATERIALIZERS[RSI_SOURCE_ID]
+        assert isinstance(spec, RsiRecursiveSpec)
+
+    def test_el_period_por_defecto_es_catorce(self) -> None:
+        # El REGISTRO guarda la instancia con el default DECLARADO (ParamSpec de
+        # rsi_value_declaration): el 14 de Wilder. Es compartida por todas las reglas y
+        # no se muta; una regla que pida otro period recibe una COPIA ligada.
+        spec = SOURCE_MATERIALIZERS[RSI_SOURCE_ID]
+        assert isinstance(spec, RsiRecursiveSpec)
+        assert spec.period == RSI_PERIOD_DEFAULT == 14
+
+    def test_with_params_liga_el_period_efectivo_sin_mutar_el_registro(self) -> None:
+        # MAT-05 Q2: el param efectivo produce una copia con otro period, y la del
+        # registro sigue en 14. Y no es cosmetico: period entra en la PK de
+        # rsi_snapshot, asi que ligarlo mal cruzaria el ancla de rsi(7) con rsi(14).
+        spec = SOURCE_MATERIALIZERS[RSI_SOURCE_ID]
+        assert isinstance(spec, RsiRecursiveSpec)
+        ligada = spec.with_params(_period(7))
+        assert isinstance(ligada, RsiRecursiveSpec)
+        assert ligada.period == 7
+        assert spec.period == RSI_PERIOD_DEFAULT
+
+    def test_with_params_sin_el_param_devuelve_el_mismo_spec(self) -> None:
+        # ADITIVIDAD D7: sin override, nada cambia.
+        spec = SOURCE_MATERIALIZERS[RSI_SOURCE_ID]
+        assert isinstance(spec, RsiRecursiveSpec)
+        assert spec.with_params({}) is spec
+
+    def test_with_params_rechaza_un_period_fuera_de_dominio(self) -> None:
+        # Mismo dominio que el CHECK de la 0025 (period >= 1). Falla RUIDOSO, no cae al
+        # default en silencio.
+        spec = SOURCE_MATERIALIZERS[RSI_SOURCE_ID]
+        assert isinstance(spec, RsiRecursiveSpec)
+        with pytest.raises(UnwiredSourceError, match="periodo de RSI valido"):
+            spec.with_params(_period(0))
+        with pytest.raises(UnwiredSourceError, match="periodo de RSI valido"):
             spec.with_params(_period(-3))

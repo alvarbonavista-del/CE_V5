@@ -109,6 +109,12 @@ TABLAS_SIN_TENANT_PERMITIDAS: dict[str, str] = {
     # son shared_evaluation/public_cross_tenant; darle tenant_id duplicaria el mismo
     # estado por tenant, la explosion que ADR-014 evita). Escritura acotada a INSERT.
     "pivotphase_snapshot": "system",
+    # rsi_snapshot: estado de replay del RECURSIVE rsi.value (Wilder); scope=system SIN
+    # tenant_id (shared_evaluation public_cross_tenant, como cvd_snapshot y
+    # ema_snapshot); append-only. Guarda TRES columnas (avg_gain, avg_loss, last_close)
+    # porque el estado de Wilder no es un solo numero y el diff de cierres exige el
+    # cierre previo; eso no cambia su regimen de tenencia.
+    "rsi_snapshot": "system",
 }
 
 # Roles de RUNTIME: los que se conectan con una credencial en un proceso vivo.
