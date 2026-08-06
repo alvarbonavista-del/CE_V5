@@ -26,11 +26,36 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal
-from enum import StrEnum
+from enum import Enum, StrEnum
 from typing import TYPE_CHECKING
+
+from ce_v5.platform.rules.indicators.candle import CANDLE_OPEN_SOURCE_ID
+from ce_v5.platform.rules.rawclose import MARKET_CLOSE_SOURCE_ID
+from ce_v5.platform.rules.rawfootprint import MARKET_FOOTPRINT_SOURCE_ID
+from source.datasource import (
+    DataSourceDeclaration,
+    HistoryUnit,
+    MemoryModel,
+    ParamSpec,
+    Servibility,
+    SharingScope,
+    SourceType,
+)
+from source.families.market import Timeframe
+from source.rules.scalar import ScalarType, ScalarValue
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
+
+
+def _decimal_param(name: str, default: Decimal) -> ParamSpec:
+    """ParamSpec decimal con su default (semilla [PARIDAD v4] del detector)."""
+    return ParamSpec(
+        name=name,
+        value_type=ScalarType.DECIMAL,
+        default=ScalarValue(scalar_type=ScalarType.DECIMAL, decimal_value=default),
+    )
+
 
 # Semillas [PARIDAD v4] (engines/l1/absorption_zone_engine.py). NO son verdades: son el
 # punto de partida parametrizado; su valor final lo fija la calibracion (AHP), diferida.
@@ -154,3 +179,127 @@ def detect_absorption(
     if strength < params.strength_min:
         return AbsorptionSignal(detected=False, side=side, strength=strength)
     return AbsorptionSignal(detected=True, side=side, strength=strength)
+
+
+# --- Cara SERVIBLE: dos fuentes por LADO (P08c-DET-01) --------------------------------
+#
+# El veredicto de absorcion es un TRIPLETE (detected, side, strength) y ningun
+# ScalarType lo representa entero. Se sirve como DOS fuentes DECIMAL, una por lado:
+# cada una publica la FUERZA cuando la absorcion es de SU lado, y 0 cuando no la hay
+# o es del contrario.
+# Asi una Rule pregunta "absorption.bid_strength > 0.5" sin necesitar un tipo compuesto,
+# y el 0 es un hecho legitimo ("no hubo absorcion de este lado"), no un hueco.
+
+ABSORPTION_BID_STRENGTH_SOURCE_ID = "absorption.bid_strength"
+ABSORPTION_ASK_STRENGTH_SOURCE_ID = "absorption.ask_strength"
+
+
+class AbsorptionOutput(Enum):
+    """Cual de las DOS salidas servibles publica una fuente.
+
+    Las dos salen del MISMO veredicto; lo unico que cambia es el lado que miran. Mismo
+    patron que FibOutput/MacdOutput: el enum vive junto a la funcion pura porque es una
+    propiedad del indicador, no del cableado.
+    """
+
+    BID_STRENGTH = "bid_strength"
+    ASK_STRENGTH = "ask_strength"
+
+
+_SIDE_BY_OUTPUT: dict[AbsorptionOutput, AbsorptionSide] = {
+    AbsorptionOutput.BID_STRENGTH: AbsorptionSide.BID,
+    AbsorptionOutput.ASK_STRENGTH: AbsorptionSide.ASK,
+}
+
+
+def absorption_output(signal: AbsorptionSignal, output: AbsorptionOutput) -> Decimal:
+    """La fuerza de la absorcion si es del lado de `output`; 0 en cualquier otro caso.
+
+    TRES situaciones colapsan al mismo 0, y es correcto que asi sea: no hubo absorcion,
+    la hubo del lado contrario, o hubo candidatura estructural sin fuerza suficiente
+    (detected=False con strength>0). En las tres, la respuesta a "cuanta absorcion de
+    ESTE lado hay en esta barra" es ninguna. La fuerza sub-umbral NO se publica:
+    emitirla convertiria el umbral del detector en decorativo.
+    """
+    if signal.detected and signal.side is _SIDE_BY_OUTPUT[output]:
+        return signal.strength
+    return Decimal(0)
+
+
+def _absorption_declaration(source_id: str) -> DataSourceDeclaration:
+    """Declaracion comun de las dos absorption.* (P08c-DET-01).
+
+    WINDOWED: el veredicto de la barra T necesita el umbral ADAPTATIVO, que sale del
+    percentil de los ratios de las barras previas -- una ventana ACOTADA (NORM_WINDOW),
+    no la historia entera. Por eso no hay snapshot ni migracion: se recomputa por
+    ventana, como vp.*.
+
+    consumes DAG HONESTO (enmienda P08c-DET-01): market.footprint aporta el volumen
+    agresor, el delta y el span; candle.open y market.close forman el displacement
+    (close - open), que es la condicion de CONTENCION. Nada mas: no se declara lo que
+    el nucleo no lee.
+
+    PARAMS DEFAULT-ONLY: los UMBRALES calibrables (AHP diferido) viajan con su semilla
+    [PARIDAD v4] y entran en la cache_key -- dos umbrales distintos son series distintas
+    --, pero NO son overridables: el materializador llama al nucleo con sus defaults
+    y un override compilaria sin que nadie lo leyera (MAT-05 Q2, mismo criterio que
+    bin_count en vp.*). Los PESOS de la fuerza no se declaran: van FIJOS en paridad v4
+    por decision registrada, como los ratios Fibonacci de fib.*.
+    """
+    return DataSourceDeclaration(
+        source_id=source_id,
+        source_type=SourceType.OBSERVABLE,
+        servibility=Servibility.CONTINUOUS,
+        memory_model=MemoryModel.WINDOWED,
+        value_type=ScalarType.DECIMAL,
+        evaluation_contexts=tuple(tf.value for tf in Timeframe),
+        history_units=(HistoryUnit.BARS,),
+        params=(
+            _decimal_param("ratio_floor", _RATIO_FLOOR),
+            _decimal_param("percentile", _PERCENTILE),
+            _decimal_param("aggression_min_fraction", _AGGRESSION_MIN_FRACTION),
+            _decimal_param("containment_max_fraction", _CONTAINMENT_MAX_FRACTION),
+            _decimal_param("strength_min", _STRENGTH_MIN),
+        ),
+        shared_evaluation=True,
+        sharing_scope=SharingScope.PUBLIC_CROSS_TENANT,
+        cache_key_schema=(
+            "exchange",
+            "symbol",
+            "market_type",
+            "timeframe",
+            "ratio_floor",
+            "percentile",
+            "aggression_min_fraction",
+            "containment_max_fraction",
+            "strength_min",
+        ),
+        consumes=(
+            MARKET_FOOTPRINT_SOURCE_ID,
+            CANDLE_OPEN_SOURCE_ID,
+            MARKET_CLOSE_SOURCE_ID,
+        ),
+    )
+
+
+def absorption_bid_strength_declaration() -> DataSourceDeclaration:
+    """absorption.bid_strength: fuerza de la absorcion de VENDEDORES (posible suelo)."""
+    return _absorption_declaration(ABSORPTION_BID_STRENGTH_SOURCE_ID)
+
+
+def absorption_ask_strength_declaration() -> DataSourceDeclaration:
+    """absorption.ask_strength: fuerza de la absorcion de COMPRADORES (posible
+    techo)."""
+    return _absorption_declaration(ABSORPTION_ASK_STRENGTH_SOURCE_ID)
+
+
+def declarations() -> tuple[DataSourceDeclaration, ...]:
+    """Declaraciones que este modulo publica al catalogo vivo (discovery, MAT-02).
+
+    Las dos entran a la vez: un lado sin el otro dejaria la mitad del veredicto sin
+    forma de consultarse.
+    """
+    return (
+        absorption_bid_strength_declaration(),
+        absorption_ask_strength_declaration(),
+    )

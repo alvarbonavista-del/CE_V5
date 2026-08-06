@@ -38,7 +38,6 @@ from ce_v5.entrypoints.worker_rules.materializers import (
 from ce_v5.infra.bus_redis import RedisBusConfig, RedisEventBus, create_client
 from ce_v5.infra.db.cvd_snapshot import read_cvd_snapshot_before, write_cvd_snapshot
 from ce_v5.infra.db.market_footprint import (
-    PostgresFootprintWriter,
     read_footprint_delta_range,
     read_footprint_window,
 )
@@ -57,8 +56,6 @@ from ce_v5.platform.rules.volume_profile import (
     DEFAULT_BIN_COUNT,
     compute_volume_profile,
 )
-from source.envelope import Envelope
-from source.envelope.enums import Scope
 from source.families.footprint import (
     FootprintCell,
     FootprintClosedPayload,
@@ -67,7 +64,6 @@ from source.families.footprint import (
     MarketFootprintEventType,
 )
 from source.families.market import MarketType, Timeframe
-from source.families.registry import expected_event_schema_version
 from source.rules.scalar import ScalarType, ScalarValue
 from source.time import MaturityState
 
@@ -177,43 +173,9 @@ def _corrected(
     )
 
 
-def _envelope_de(
-    payload: FootprintPayload, event_type: MarketFootprintEventType, event_time: int
-) -> bytes:
-    """El sobre canonico del footprint, como lo construye el motor (ADR-003/007)."""
-    envelope = Envelope[FootprintPayload](
-        event_type=event_type.value,
-        event_schema_version=expected_event_schema_version(event_type.value),
-        source="worker_footprint",
-        idempotency_key=payload.idempotency_key(event_type),
-        stream_key=payload.stream_key(),
-        scope=Scope.PUBLIC_MARKET,  # los publicos NO llevan tenant (ADR-011).
-        event_time=event_time,
-        ingestion_time=event_time,
-        processing_time=event_time,
-        correlation_id=payload.stream_key(),
-        payload=payload,
-    )
-    return envelope.model_dump_json().encode()
-
-
-@pytest.fixture
-def persistir_footprint(ingestion_db: PsycopgDatabase) -> Persistir:
-    """Escribe un footprint por el camino REAL: historico+outbox atomico (INGESTA)."""
-    writer = PostgresFootprintWriter(ingestion_db)
-
-    def _persistir(
-        payload: FootprintPayload, event_type: MarketFootprintEventType, event_time: int
-    ) -> bool:
-        return writer.persist_and_enqueue(
-            envelope_json=_envelope_de(payload, event_type, event_time),
-            payload=payload,
-            event_type=event_type.value,
-            stream_key=payload.stream_key(),
-            idempotency_key=payload.idempotency_key(event_type),
-        )
-
-    return _persistir
+# persistir_footprint (y su sobre canonico) viven en tests/integration/conftest.py desde
+# P08c-DET-01: nacieron aqui y ahora las comparten los tests de los detectores, que
+# siembran footprint Y vela. pytest las inyecta por nombre; no se importan.
 
 
 def _contar(db: PsycopgDatabase, sql: str, params: tuple[object, ...] = ()) -> int:

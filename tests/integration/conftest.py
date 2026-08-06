@@ -28,6 +28,7 @@ from ce_v5.infra.db.config import (
 )
 from ce_v5.infra.db.identity import register_user
 from ce_v5.infra.db.market_candles import PostgresCandleWriter
+from ce_v5.infra.db.market_footprint import PostgresFootprintWriter
 from ce_v5.infra.db.migrations.runner import apply_migrations
 from ce_v5.infra.db.provision import (
     INGESTION_PASSWORD_ENV_VAR,
@@ -45,6 +46,7 @@ from ce_v5.platform.rules.canonical import canonical_rule_hash
 from ce_v5.platform.rules.rawclose import MARKET_CLOSE_SOURCE_ID
 from source.envelope import Envelope
 from source.envelope.enums import Scope
+from source.families.footprint import FootprintPayload, MarketFootprintEventType
 from source.families.market import CandlePayload, MarketCandleEventType
 from source.families.registry import expected_event_schema_version
 from source.rules.condition import Condition
@@ -312,6 +314,57 @@ def persistir_vela(
     ) -> bool:
         return writer.persist_and_enqueue(
             envelope_json=_envelope_de(payload, event_type, event_time),
+            payload=payload,
+            event_type=event_type.value,
+            stream_key=payload.stream_key(),
+            idempotency_key=payload.idempotency_key(event_type),
+        )
+
+    return _persistir
+
+
+def _envelope_footprint(
+    payload: FootprintPayload, event_type: MarketFootprintEventType, event_time: int
+) -> bytes:
+    """El sobre canonico del footprint, como lo construye el motor (ADR-003/007)."""
+    envelope = Envelope[FootprintPayload](
+        event_type=event_type.value,
+        event_schema_version=expected_event_schema_version(event_type.value),
+        source="worker_footprint",
+        idempotency_key=payload.idempotency_key(event_type),
+        stream_key=payload.stream_key(),
+        scope=Scope.PUBLIC_MARKET,  # los publicos NO llevan tenant (ADR-011).
+        event_time=event_time,
+        ingestion_time=event_time,
+        processing_time=event_time,
+        correlation_id=payload.stream_key(),
+        payload=payload,
+    )
+    return envelope.model_dump_json().encode()
+
+
+@pytest.fixture
+def persistir_footprint(
+    ingestion_db: PsycopgDatabase,
+) -> Callable[[FootprintPayload, MarketFootprintEventType, int], bool]:
+    """Escribe un footprint por el camino REAL: historico+outbox atomico (INGESTA).
+
+    PROMOVIDA al conftest en P08c-DET-01 (paso b): nacio local en
+    test_market_footprint.py y ahora la necesitan tambien los detectores
+    (absorption/climax/void/notrade), que se materializan sobre footprint Y vela. Mismo
+    motivo que persistir_vela: que el dato lo siembre el PostgresFootprintWriter de
+    produccion con el rol de INGESTA, no un INSERT de juguete que taparia una
+    discrepancia entre escritor y lector.
+
+    Devuelve False si el footprint ya estaba (dedup por idempotency_key).
+    """
+    writer = PostgresFootprintWriter(ingestion_db)
+
+    def _persistir(
+        payload: FootprintPayload, event_type: MarketFootprintEventType, event_time: int
+    ) -> bool:
+        return writer.persist_and_enqueue(
+            envelope_json=_envelope_footprint(payload, event_type, event_time),
             payload=payload,
             event_type=event_type.value,
             stream_key=payload.stream_key(),

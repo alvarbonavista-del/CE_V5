@@ -6,6 +6,8 @@ from ce_v5.platform.rules.catalog import DataSourceCatalog
 from ce_v5.platform.rules.discovery import discover_declarations
 
 _EXPECTED = {
+    "absorption.bid_strength",
+    "absorption.ask_strength",
     "market.close",
     "market.footprint",
     "vp.poc",
@@ -58,9 +60,20 @@ def test_discovery_incluye_market_close_aditividad() -> None:
 
 
 def test_discovery_no_incluye_diferidas() -> None:
+    # absorption.* SALE de esta lista en P08c-DET-01: dejo de ser diferida cuando P08b
+    # entrego candle.open (su dependencia real). Las otras tres siguen diferidas hasta
+    # que se cablean en esta misma pieza; cuando entren, salen de aqui igual.
     ids = {d.source_id for d in discover_declarations()}
-    for prefix in ("absorption.", "climax.", "void.", "notrade."):
+    for prefix in ("climax.", "void.", "notrade."):
         assert not any(i.startswith(prefix) for i in ids)
+
+
+def test_discovery_incluye_absorption_ya_no_diferida() -> None:
+    # P08c-DET-01: dos fuentes DECIMAL, una por lado del veredicto (bid/ask). El
+    # triplete (detected, side, strength) no cabe en un ScalarType, asi que se sirve
+    # como la FUERZA de cada lado -- 0 cuando no hay absorcion de ese lado.
+    ids = {d.source_id for d in discover_declarations()}
+    assert {"absorption.bid_strength", "absorption.ask_strength"} <= ids
 
 
 def test_discovery_incluye_fib_levels_non_servible() -> None:

@@ -77,6 +77,15 @@ from ce_v5.infra.db.market_footprint import (
     read_footprint_window,
 )
 from ce_v5.infra.db.rsi_snapshot import read_rsi_snapshot_before, write_rsi_snapshot
+from ce_v5.platform.rules.absorption import (
+    ABSORPTION_ASK_STRENGTH_SOURCE_ID,
+    ABSORPTION_BID_STRENGTH_SOURCE_ID,
+    AbsorptionOutput,
+    AbsorptionSignal,
+    absorption_output,
+    adaptive_threshold,
+    detect_absorption,
+)
 from ce_v5.platform.rules.cvd import CVD_SOURCE_ID, ResetPolicy, session_starts
 from ce_v5.platform.rules.footprint_range import (
     FOOTPRINT_PRICE_RANGE_SOURCE_ID,
@@ -197,6 +206,14 @@ CVD_RESET_POLICY_V5 = ResetPolicy.ROLLING.value
 # Ventana rodante de swing.high/low. FIJA, NO param, NO cache_key (MAT-05 Q3, dictamen
 # P08b-SWING-01 Q2): la resolucion del pivote depende de strength, no de window_bars.
 SWING_WINDOW_BARS = 100
+
+# Ventana rodante de los cuatro detectores footprint+vela (P08c-DET-01). Es el
+# NORM_WINDOW que absorption, climax y notrade ya declaran por separado [PARIDAD v4] y
+# que void cubre de sobra (su horizonte es r_bars=5). FIJA, NO param y NO cache_key, por
+# el mismo criterio que PROFILE_WINDOW_BARS y SWING_WINDOW_BARS (MAT-05 Q3): lo que
+# cambia el veredicto son los UMBRALES del detector, no el tamano de la ventana de
+# normalizacion.
+DETECTOR_WINDOW_BARS = 100
 
 
 class UnwiredSourceError(RuntimeError):
@@ -403,6 +420,122 @@ class CandleWindowedSpec:
                 window_bars=self.window_bars,
                 history_bars=history_bars,
             )
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class DetectorBar:
+    """Una barra con sus DOS caras ALINEADAS: el footprint y la vela.
+
+    Los cuatro detectores de P08c-DET-01 (absorption, climax, void, notrade) miran a la
+    vez el ORDERFLOW (delta, volumen agresor, span del footprint) y la FORMA de la vela
+    (OHLC). Emparejarlas en un solo elemento deja que la ventana rodante sea UNA
+    (materialize_windowed sobre DetectorBar) en vez de dos que habria que re-alinear
+    dentro de cada sub-ventana.
+    """
+
+    footprint: FootprintPayload
+    candle: CandleOHLCV
+
+    @property
+    def aggressor_volume(self) -> Decimal:
+        """Volumen AGRESOR de la barra: comprador + vendedor del footprint.
+
+        NO es candle.volume (el volumen que publica el exchange para la vela): los
+        nucleos de absorption/climax/notrade razonan sobre AGRESION, y FootprintPayload
+        no expone un total -- solo sus dos lados --, asi que se suma aqui.
+        """
+        return self.footprint.bar_buy_volume + self.footprint.bar_sell_volume
+
+
+def _read_detector_window(
+    session: Session,
+    exchange: str,
+    symbol: str,
+    timeframe: str,
+    open_time: int,
+    bars: int,
+) -> tuple[DetectorBar, ...]:
+    """Las `bars` barras mas recientes con footprint Y vela, alineadas y verificadas.
+
+    footprint y vela viven en TABLAS DISTINTAS, las escriben caminos distintos y sus
+    lectores recortan por separado: NADA garantiza por construccion que las dos ventanas
+    cubran las mismas barras. Por eso aqui no se asume la alineacion, se COMPRUEBA --
+    misma longitud y mismo open_time barra a barra -- y se falla RUIDOSO si no cuadra.
+
+    Es la convencion que ya fija pivotphase_materializer con ReplaySeries ("las series
+    deben tener la misma longitud"), reforzada con la igualdad de open_time: dos
+    ventanas del mismo tamano pero desplazadas una barra pasarian el chequeo de
+    longitud y emparejarian el delta de una barra con el OHLC de otra, que es
+    exactamente el fallo
+    MUDO que ningun test de forma cazaria.
+    """
+    footprints = read_footprint_window(
+        session, exchange, symbol, timeframe, open_time, bars
+    )
+    candles = read_ohlcv_window(session, exchange, symbol, timeframe, open_time, bars)
+    if len(footprints) != len(candles):
+        msg = (
+            f"footprint sirvio {len(footprints)} barras y la vela {len(candles)} para "
+            f"la misma ventana hasta {open_time}: los detectores no pueden emparejar "
+            "orderflow con forma de vela (fail-loud)."
+        )
+        raise UnwiredSourceError(msg)
+    for footprint, candle in zip(footprints, candles, strict=True):
+        if footprint.open_time != candle.open_time:
+            msg = (
+                f"footprint en la barra {footprint.open_time} emparejado con la vela "
+                f"{candle.open_time}: las ventanas estan desplazadas (fail-loud)."
+            )
+            raise UnwiredSourceError(msg)
+    return tuple(
+        DetectorBar(footprint=footprint, candle=candle)
+        for footprint, candle in zip(footprints, candles, strict=True)
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class DetectorWindowedSpec:
+    """Materializador WINDOWED de un detector footprint+vela (P08c-DET-01).
+
+    Como FootprintWindowedSpec, pero su base es la barra COMPUESTA (DetectorBar) y su
+    transform devuelve el CARRIER (ScalarValue) en vez de un Decimal: entre las diez
+    salidas de los cuatro detectores hay nueve DECIMAL y una STRING (notrade.state), y
+    unificarlas en el carrier evita un segundo camino solo para la categorica. Es lo que
+    habilita materialize_windowed generica en la salida (enmienda P08c-DET-01).
+
+    El WARM-UP es el de siempre y no se toca: materialize_windowed emite MENOS valores
+    (hasta ninguno) cuando la historia no llega, y el evaluador lo lee como
+    NOT_EVALUABLE (K3). Los nucleos ademas tienen su propio minimo interno (MIN_CANDLES
+    en climax/notrade), que resuelven devolviendo "sin senal" -- un 0 legitimo, no un
+    hueco.
+    """
+
+    transform: Callable[[Sequence[DetectorBar]], ScalarValue]
+    window_bars: int = DETECTOR_WINDOW_BARS
+
+    def materialize(
+        self,
+        session: Session,
+        exchange: str,
+        symbol: str,
+        timeframe: str,
+        open_time: int,
+        history_bars: int,
+    ) -> tuple[ScalarValue, ...]:
+        base = _read_detector_window(
+            session,
+            exchange,
+            symbol,
+            timeframe,
+            open_time,
+            history_bars + self.window_bars - 1,
+        )
+        return materialize_windowed(
+            base,
+            self.transform,
+            window_bars=self.window_bars,
+            history_bars=history_bars,
         )
 
 
@@ -1109,6 +1242,58 @@ def _candle_lower_shadow_pct(candle: CandleOHLCV) -> Decimal:
     )[0]
 
 
+def _absorption_ratio(bar: DetectorBar) -> Decimal | None:
+    """El absorption_ratio de una barra (volumen agresor / span), o None si no lo hay.
+
+    Span 0 (barra de un solo nivel, o sin celdas) -> el ratio es indefinido y la barra
+    NO entra en la distribucion del umbral adaptativo. Meter un 0 o un infinito la
+    contaminaria: el percentil dejaria de describir la distribucion real de ratios.
+    """
+    span = price_range(bar.footprint)
+    if span <= 0:
+        return None
+    return bar.aggressor_volume / span
+
+
+def _absorption_signal(window: Sequence[DetectorBar]) -> AbsorptionSignal:
+    """El veredicto de absorcion de la ULTIMA barra de la ventana.
+
+    detect_absorption no recibe ventana: pide los escalares de UNA barra mas un
+    threshold. El threshold es lo que aporta la ventana -- adaptive_threshold sobre los
+    ratios de las barras PREVIAS (window[:-1]) --, misma convencion que climax con sus
+    percentiles: la barra evaluada no se autonormaliza.
+    """
+    ratios = [
+        ratio for bar in window[:-1] if (ratio := _absorption_ratio(bar)) is not None
+    ]
+    current = window[-1]
+    return detect_absorption(
+        volume=current.aggressor_volume,
+        delta=current.footprint.bar_delta,
+        price_range=price_range(current.footprint),
+        displacement=current.candle.close - current.candle.open,
+        threshold=adaptive_threshold(ratios),
+    )
+
+
+def _absorption_bid_strength(window: Sequence[DetectorBar]) -> ScalarValue:
+    return ScalarValue(
+        scalar_type=ScalarType.DECIMAL,
+        decimal_value=absorption_output(
+            _absorption_signal(window), AbsorptionOutput.BID_STRENGTH
+        ),
+    )
+
+
+def _absorption_ask_strength(window: Sequence[DetectorBar]) -> ScalarValue:
+    return ScalarValue(
+        scalar_type=ScalarType.DECIMAL,
+        decimal_value=absorption_output(
+            _absorption_signal(window), AbsorptionOutput.ASK_STRENGTH
+        ),
+    )
+
+
 def _candle_open(candle: CandleOHLCV) -> Decimal:
     return candle.open
 
@@ -1204,6 +1389,12 @@ SOURCE_MATERIALIZERS: dict[str, SourceMaterializer] = {
     CANDLE_OPEN_SOURCE_ID: CandlePointLocalSpec(extract=_candle_open),
     CANDLE_HIGH_SOURCE_ID: CandlePointLocalSpec(extract=_candle_high),
     CANDLE_LOW_SOURCE_ID: CandlePointLocalSpec(extract=_candle_low),
+    ABSORPTION_BID_STRENGTH_SOURCE_ID: DetectorWindowedSpec(
+        transform=_absorption_bid_strength
+    ),
+    ABSORPTION_ASK_STRENGTH_SOURCE_ID: DetectorWindowedSpec(
+        transform=_absorption_ask_strength
+    ),
     VOLUME_RATIO_VS_AVG_SOURCE_ID: CandleWindowedSpec(
         transform=_volume_ratio_vs_avg, window_bars=LOOKBACK_DEFAULT + 1
     ),

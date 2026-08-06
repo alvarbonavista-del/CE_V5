@@ -11,6 +11,7 @@ tanto NO entran al catalogo vivo hasta que su dependencia exista (aditividad).
 from __future__ import annotations
 
 from ce_v5.platform.rules import (
+    absorption,
     cvd,
     footprint_range,
     orderflow,
@@ -36,6 +37,7 @@ from source.datasource import DataSourceDeclaration
 def discover_declarations() -> tuple[DataSourceDeclaration, ...]:
     """Agrega las declaraciones de todos los modulos productores (lista explicita)."""
     return (
+        *absorption.declarations(),
         *rawclose.declarations(),
         *rawfootprint.declarations(),
         *volume_profile.declarations(),

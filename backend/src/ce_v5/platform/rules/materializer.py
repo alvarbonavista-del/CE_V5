@@ -39,20 +39,27 @@ if TYPE_CHECKING:
     from decimal import Decimal
 
 
-def materialize_windowed[Base](
+def materialize_windowed[Base, Out](
     base: Sequence[Base],
-    transform: Callable[[Sequence[Base]], Decimal],
+    transform: Callable[[Sequence[Base]], Out],
     *,
     window_bars: int,
     history_bars: int,
-) -> tuple[Decimal, ...]:
+) -> tuple[Out, ...]:
     """Serie WINDOWED: aplica transform sobre cada sub-ventana rodante de la base.
 
     base: elementos de la fuente BASE (p.ej. footprints), oldest->newest, ya leidos.
     transform: funcion PURA de la fuente que mapea una ventana acotada de base a su
-      valor Decimal (p.ej. lambda w: compute_volume_profile(w, ...).poc).
+      valor (p.ej. lambda w: compute_volume_profile(w, ...).poc).
     window_bars (w): tamano de la ventana acotada de cada valor.
     history_bars: cuantos valores de salida se piden (los mas recientes).
+
+    GENERICA EN LA SALIDA (Out) desde P08c-DET-01 (enmienda 2): la mecanica de ventana
+    rodante -- que barras son computables, cuantas se emiten y como se recorta -- no
+    depende del TIPO del valor. Las fuentes DECIMAL siguen infiriendo Out=Decimal y no
+    cambian ni un digito; lo que esto habilita es que una fuente WINDOWED sirva un valor
+    NO-Decimal (notrade.state, STRING) por el MISMO camino en vez de duplicar el bucle.
+    Cambio ADITIVO: ningun caller existente se toca.
 
     Devuelve la serie oldest->newest, un valor por barra de salida. El valor de la barra
     cuyo ultimo elemento de base es base[j] usa la ventana base[j-w+1 : j+1]; solo son
