@@ -21,6 +21,7 @@ from ce_v5.platform.rules import (
 )
 from ce_v5.platform.rules.indicators import (
     candle,
+    divergence,
     ema,
     fib,
     macd,
@@ -43,6 +44,7 @@ def discover_declarations() -> tuple[DataSourceDeclaration, ...]:
         *footprint_range.declarations(),
         *pivotphase.declarations(),
         *candle.declarations(),
+        *divergence.declarations(),
         *ema.declarations(),
         *fib.declarations(),
         *macd.declarations(),

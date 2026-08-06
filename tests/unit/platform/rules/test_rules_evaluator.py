@@ -19,6 +19,13 @@ from uuid import uuid4
 
 from ce_v5.platform.rules.catalog import DataSourceCatalog
 from ce_v5.platform.rules.evaluator import evaluate
+from ce_v5.platform.rules.indicators.divergence import (
+    DIVERGENCE_KIND_NONE,
+    DIVERGENCE_KIND_SOURCE_ID,
+    DIVERGENCE_REGULAR_BULL_SOURCE_ID,
+    divergence_kind_declaration,
+    divergence_regular_bull_declaration,
+)
 from ce_v5.platform.rules.indicators.fib import (
     FIB_DIRECTION_SOURCE_ID,
     fib_direction_declaration,
@@ -254,4 +261,147 @@ class TestFibDirectionExtremoAExtremo:
         )
         regla = self._regla_direction(ComparisonOperator.EQ, decimal_constant)
         diagnostics = validate_rule(regla, self._catalogo())
+        assert any(d.code == CODE_TERM_TYPE_MISMATCH for d in diagnostics)
+
+
+class TestDivergenceExtremoAExtremo:
+    """divergence.*: la primera fuente BOOLEAN real que recorre el pipeline (LOTE 5).
+
+    fib.direction ya demostro el camino STRING; lo que divergence anade es el otro
+    categorico -- BOOLEAN --, que hasta ahora solo se habia ejercitado con una fuente
+    SINTETICA. Aqui se usan las declaraciones REALES del catalogo y sus tokens reales.
+
+    Y una fuente STRING cuyo vocabulario incluye la AUSENCIA ('none'): una regla que
+    pregunte "divergence.kind != 'none'" es la forma natural de decir "hubo divergencia,
+    la que sea", asi que ese token tiene que comportarse como un valor de pleno derecho.
+    """
+
+    def _catalogo(self) -> DataSourceCatalog:
+        catalog = DataSourceCatalog()
+        catalog.register(divergence_kind_declaration())
+        catalog.register(divergence_regular_bull_declaration())
+        return catalog
+
+    def _regla_kind(self, operator: ComparisonOperator, constante: Term) -> AlertRule:
+        return _rule(
+            _condition(_source_term(DIVERGENCE_KIND_SOURCE_ID), operator, constante)
+        )
+
+    def _regla_flag(self, operator: ComparisonOperator, constante: Term) -> AlertRule:
+        return _rule(
+            _condition(
+                _source_term(DIVERGENCE_REGULAR_BULL_SOURCE_ID), operator, constante
+            )
+        )
+
+    def test_kind_eq_contra_un_token_dispara_en_la_barra_del_evento(self) -> None:
+        regla = self._regla_kind(
+            ComparisonOperator.EQ, _string_constant("regular_bear")
+        )
+        serie = {DIVERGENCE_KIND_SOURCE_ID: _string_series("regular_bear")}
+        assert evaluate(regla, serie).matched is True
+
+    def test_kind_eq_no_dispara_en_una_barra_sin_evento(self) -> None:
+        regla = self._regla_kind(
+            ComparisonOperator.EQ, _string_constant("regular_bear")
+        )
+        serie = {DIVERGENCE_KIND_SOURCE_ID: _string_series(DIVERGENCE_KIND_NONE)}
+        assert evaluate(regla, serie).matched is False
+
+    def test_kind_ne_none_es_hubo_divergencia_la_que_sea(self) -> None:
+        # El modismo que hace util el token de ausencia. Con evento dispara; sin evento,
+        # no. Si 'none' se sirviera como un hueco en vez de como un valor, esta regla no
+        # se podria escribir.
+        regla = self._regla_kind(
+            ComparisonOperator.NE, _string_constant(DIVERGENCE_KIND_NONE)
+        )
+        con_evento = {DIVERGENCE_KIND_SOURCE_ID: _string_series("hidden_bull")}
+        sin_evento = {DIVERGENCE_KIND_SOURCE_ID: _string_series(DIVERGENCE_KIND_NONE)}
+        assert evaluate(regla, con_evento).matched is True
+        assert evaluate(regla, sin_evento).matched is False
+
+    def test_un_flag_eq_true_dispara_cuando_el_flag_esta_puesto(self) -> None:
+        regla = self._regla_flag(ComparisonOperator.EQ, _boolean_constant(True))
+        assert (
+            evaluate(
+                regla, {DIVERGENCE_REGULAR_BULL_SOURCE_ID: _boolean_series(True)}
+            ).matched
+            is True
+        )
+
+    def test_un_flag_eq_true_no_dispara_cuando_no_lo_esta(self) -> None:
+        regla = self._regla_flag(ComparisonOperator.EQ, _boolean_constant(True))
+        assert (
+            evaluate(
+                regla, {DIVERGENCE_REGULAR_BULL_SOURCE_ID: _boolean_series(False)}
+            ).matched
+            is False
+        )
+
+    def test_el_bloque_3_admite_las_dos_reglas_que_tienen_sentido(self) -> None:
+        # Control positivo: sin esto, los rechazos de abajo podrian estar pasando por el
+        # motivo equivocado.
+        catalogo = self._catalogo()
+        assert (
+            validate_rule(
+                self._regla_kind(
+                    ComparisonOperator.NE, _string_constant(DIVERGENCE_KIND_NONE)
+                ),
+                catalogo,
+            )
+            == []
+        )
+        assert (
+            validate_rule(
+                self._regla_flag(ComparisonOperator.EQ, _boolean_constant(True)),
+                catalogo,
+            )
+            == []
+        )
+
+    def test_el_bloque_3_rechaza_un_operador_de_orden_sobre_kind(self) -> None:
+        # "divergence.kind > 'none'" no significa nada: los tokens no tienen orden.
+        diagnostics = validate_rule(
+            self._regla_kind(ComparisonOperator.GT, _string_constant("regular_bull")),
+            self._catalogo(),
+        )
+        assert any(d.code == CODE_OPERATOR_REQUIRES_NUMERIC for d in diagnostics)
+
+    def test_el_bloque_3_rechaza_un_operador_de_orden_sobre_un_flag(self) -> None:
+        # "divergence.regular_bull > true" tampoco: true no es mayor que nada.
+        diagnostics = validate_rule(
+            self._regla_flag(ComparisonOperator.GT, _boolean_constant(False)),
+            self._catalogo(),
+        )
+        assert any(d.code == CODE_OPERATOR_REQUIRES_NUMERIC for d in diagnostics)
+
+    def test_el_bloque_3_rechaza_comparar_kind_contra_un_booleano(self) -> None:
+        # STRING vs BOOLEAN: los dos son categoricos y aun asi NO son comparables. Es el
+        # error facil ahora que la misma fuente tiene una cara de cada tipo.
+        diagnostics = validate_rule(
+            self._regla_kind(ComparisonOperator.EQ, _boolean_constant(True)),
+            self._catalogo(),
+        )
+        assert any(d.code == CODE_TERM_TYPE_MISMATCH for d in diagnostics)
+
+    def test_el_bloque_3_rechaza_comparar_un_flag_contra_un_string(self) -> None:
+        diagnostics = validate_rule(
+            self._regla_flag(ComparisonOperator.EQ, _string_constant("true")),
+            self._catalogo(),
+        )
+        assert any(d.code == CODE_TERM_TYPE_MISMATCH for d in diagnostics)
+
+    def test_el_bloque_3_rechaza_comparar_un_flag_contra_un_decimal(self) -> None:
+        # "divergence.regular_bull == 1": un bool NO es un entero (contracts/scalar.py
+        # lo
+        # rechaza incluso al construir el valor) y el Bloque 3 lo atrapa en ADMISION.
+        decimal_constant = Term(
+            term_kind=TermKind.CONSTANT,
+            constant=ScalarValue(
+                scalar_type=ScalarType.DECIMAL, decimal_value=Decimal("1")
+            ),
+        )
+        diagnostics = validate_rule(
+            self._regla_flag(ComparisonOperator.EQ, decimal_constant), self._catalogo()
+        )
         assert any(d.code == CODE_TERM_TYPE_MISMATCH for d in diagnostics)

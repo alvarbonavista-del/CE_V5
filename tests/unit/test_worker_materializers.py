@@ -15,6 +15,9 @@ from uuid import uuid4
 import pytest
 
 from ce_v5.entrypoints.worker_rules.composition import _materialize
+from ce_v5.entrypoints.worker_rules.divergence_materializer import (
+    DivergenceRecursiveSpec,
+)
 from ce_v5.entrypoints.worker_rules.fib_materializer import FibRecursiveSpec
 from ce_v5.entrypoints.worker_rules.materializers import (
     CVD_RESET_POLICY_V5,
@@ -40,6 +43,14 @@ from ce_v5.platform.rules.indicators.candle import (
     CANDLE_LOWER_SHADOW_PCT_SOURCE_ID,
     CANDLE_OPEN_SOURCE_ID,
     CANDLE_UPPER_SHADOW_PCT_SOURCE_ID,
+)
+from ce_v5.platform.rules.indicators.divergence import (
+    DIVERGENCE_HIDDEN_BEAR_SOURCE_ID,
+    DIVERGENCE_HIDDEN_BULL_SOURCE_ID,
+    DIVERGENCE_KIND_SOURCE_ID,
+    DIVERGENCE_REGULAR_BEAR_SOURCE_ID,
+    DIVERGENCE_REGULAR_BULL_SOURCE_ID,
+    DivergenceOutput,
 )
 from ce_v5.platform.rules.indicators.ema import (
     EMA_PERIOD_DEFAULT,
@@ -211,6 +222,11 @@ class TestRegistroPorSourceId:
             FIB_NEAREST_LEVEL_SOURCE_ID,
             FIB_LEVEL_PCT_SOURCE_ID,
             FIB_DIRECTION_SOURCE_ID,
+            DIVERGENCE_KIND_SOURCE_ID,
+            DIVERGENCE_REGULAR_BULL_SOURCE_ID,
+            DIVERGENCE_REGULAR_BEAR_SOURCE_ID,
+            DIVERGENCE_HIDDEN_BULL_SOURCE_ID,
+            DIVERGENCE_HIDDEN_BEAR_SOURCE_ID,
         }
 
     @pytest.mark.parametrize(
@@ -861,3 +877,89 @@ class TestFibRecursivaRegistrada:
         # desapareciera, el grid no podria materializarse y hay que verlo en frio.
         for base in (SWING_HIGH_SOURCE_ID, SWING_LOW_SOURCE_ID):
             assert base in SOURCE_MATERIALIZERS
+
+
+def _divergence_spec(source_id: str) -> DivergenceRecursiveSpec:
+    spec = SOURCE_MATERIALIZERS[source_id]
+    assert isinstance(spec, DivergenceRecursiveSpec)
+    return spec
+
+
+_DIVERGENCE_SALIDAS = (
+    (DIVERGENCE_KIND_SOURCE_ID, DivergenceOutput.KIND),
+    (DIVERGENCE_REGULAR_BULL_SOURCE_ID, DivergenceOutput.REGULAR_BULL),
+    (DIVERGENCE_REGULAR_BEAR_SOURCE_ID, DivergenceOutput.REGULAR_BEAR),
+    (DIVERGENCE_HIDDEN_BULL_SOURCE_ID, DivergenceOutput.HIDDEN_BULL),
+    (DIVERGENCE_HIDDEN_BEAR_SOURCE_ID, DivergenceOutput.HIDDEN_BEAR),
+)
+
+
+class TestDivergenceRecursivaRegistrada:
+    """10: las CINCO divergence.* cableadas como RECURSIVE (P08b-D1-05, LOTE 5).
+
+    Comparten la cadena de pivotes, el snapshot (0028) y el calculo; lo unico que las
+    distingue es que proyeccion publican. El replay real (bootstrap, ancla, proyeccion
+    densa y el GATE bit-exacto de ADR-007) exige BD y vive en el test de integracion.
+    """
+
+    @pytest.mark.parametrize(("source_id", "output"), _DIVERGENCE_SALIDAS)
+    def test_cada_una_esta_cableada_con_su_propia_salida(
+        self, source_id: str, output: DivergenceOutput
+    ) -> None:
+        # Si dos entradas compartieran output, el catalogo ofreceria dos fuentes y el
+        # motor solo sabria servir una -- y las otras tres mentirian en silencio.
+        assert _divergence_spec(source_id).output is output
+
+    def test_las_cinco_salidas_son_distintas(self) -> None:
+        salidas = {_divergence_spec(sid).output for sid, _ in _DIVERGENCE_SALIDAS}
+        assert len(salidas) == 5
+
+    @pytest.mark.parametrize("source_id", [sid for sid, _ in _DIVERGENCE_SALIDAS])
+    def test_los_defaults_son_los_heredados(self, source_id: str) -> None:
+        # Ninguno de los dos es un default propio: strength se HEREDA de swing (la
+        # fuerza simetrica del pivote) y rsi_period de rsi.value (el 14 de Wilder).
+        spec = _divergence_spec(source_id)
+        assert spec.strength == SWING_STRENGTH_DEFAULT == 2
+        assert spec.rsi_period == RSI_PERIOD_DEFAULT == 14
+
+    def test_with_params_liga_los_dos_sin_mutar_el_registro(self) -> None:
+        # rsi_period no solo parametriza el fold: VIAJA a la serie de rsi.value que lo
+        # alimenta. Ligar mal leeria el RSI de otro periodo en los mismos pivotes.
+        spec = _divergence_spec(DIVERGENCE_KIND_SOURCE_ID)
+        ligada = spec.with_params(_entero("strength", 3) | _entero("rsi_period", 21))
+        assert isinstance(ligada, DivergenceRecursiveSpec)
+        assert (ligada.strength, ligada.rsi_period) == (3, 21)
+        assert ligada.output is spec.output
+        assert (spec.strength, spec.rsi_period) == (SWING_STRENGTH_DEFAULT, 14)
+
+    def test_with_params_solo_cambia_el_que_llega(self) -> None:
+        # ADITIVIDAD D7: lo que la regla no pide, no cambia.
+        spec = _divergence_spec(DIVERGENCE_REGULAR_BEAR_SOURCE_ID)
+        ligada = spec.with_params(_entero("rsi_period", 7))
+        assert isinstance(ligada, DivergenceRecursiveSpec)
+        assert ligada.rsi_period == 7
+        assert ligada.strength == SWING_STRENGTH_DEFAULT
+
+    @pytest.mark.parametrize("source_id", [sid for sid, _ in _DIVERGENCE_SALIDAS])
+    def test_with_params_sin_params_devuelve_un_spec_equivalente(
+        self, source_id: str
+    ) -> None:
+        assert _divergence_spec(source_id).with_params({}) == _divergence_spec(
+            source_id
+        )
+
+    @pytest.mark.parametrize("nombre", ["strength", "rsi_period"])
+    def test_with_params_rechaza_un_valor_fuera_de_dominio(self, nombre: str) -> None:
+        # Mismo dominio que los CHECK de la 0028 (>= 1). Falla RUIDOSO en vez de
+        # materializar con el default en silencio.
+        spec = _divergence_spec(DIVERGENCE_HIDDEN_BULL_SOURCE_ID)
+        with pytest.raises(UnwiredSourceError, match="no se materializa"):
+            spec.with_params(_entero(nombre, 0))
+        with pytest.raises(UnwiredSourceError, match="no se materializa"):
+            spec.with_params(_entero(nombre, -3))
+
+    def test_la_fuente_que_consume_esta_cableada(self) -> None:
+        # CONDICION MAT-08: divergence pide rsi.value POR SOURCE_ID contra este
+        # registro en vez de recalcular Wilder. Si desapareciera, la divergencia no
+        # podria materializarse y hay que verlo en frio, no en produccion.
+        assert RSI_SOURCE_ID in SOURCE_MATERIALIZERS

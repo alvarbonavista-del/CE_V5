@@ -194,6 +194,7 @@ RULES_STATE_TABLES: tuple[str, ...] = (
     "rsi_snapshot",
     "macd_snapshot",
     "fib_range_snapshot",
+    "divergence_snapshot",
 )
 
 # Privilegios que el motor SI necesita sobre su estado propio (positivos de la 0022).

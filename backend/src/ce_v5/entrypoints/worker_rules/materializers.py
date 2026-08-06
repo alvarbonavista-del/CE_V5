@@ -30,6 +30,13 @@ cableadas (MAT-07, DAG bottom-up footprint -> delta -> cvd):
   (FibRecursiveSpec, glue en fib_materializer; replay desde el snapshot de la 0027).
   Es el unico que consume DOS fuentes derivadas a la vez (swing.high/swing.low) ademas
   del cierre: las pide al REGISTRO ligadas al strength efectivo (P08b-FIB-01).
+- divergence.kind/regular_bull/regular_bear/hidden_bull/hidden_bear: RECURSIVE sobre la
+  cadena de pivotes de HIGH y de LOW (DivergenceRecursiveSpec, glue en
+  divergence_materializer; replay desde el snapshot de la 0028). UN estado -- el ultimo
+  pivote de cada lado -- y CINCO proyecciones: el token categorico y cuatro flags. Es la
+  primera fuente BOOLEAN del catalogo vivo, y la primera que proyecta DENSO un fenomeno
+  DISPERSO ('none'/false salvo en la barra del evento). Consume rsi.value por el
+  registro (P08b-D1-05).
 - rsi.value: RECURSIVE Wilder sobre los cierres (RsiRecursiveSpec, replay desde el
   snapshot de la 0025, cuyo estado son TRES valores -- avg_gain, avg_loss, last_close --
   porque el gain es un diferencial; el warm-up sale como serie MAS CORTA, nunca None a
@@ -49,6 +56,9 @@ from dataclasses import dataclass, replace
 from decimal import ROUND_HALF_EVEN, Decimal, localcontext
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
+from ce_v5.entrypoints.worker_rules.divergence_materializer import (
+    DivergenceRecursiveSpec,
+)
 from ce_v5.entrypoints.worker_rules.fib_materializer import FibRecursiveSpec
 from ce_v5.entrypoints.worker_rules.pivotphase_materializer import (
     PivotphaseConfidenceSpec,
@@ -80,6 +90,14 @@ from ce_v5.platform.rules.indicators.candle import (
     body_pct,
     lower_shadow_pct,
     upper_shadow_pct,
+)
+from ce_v5.platform.rules.indicators.divergence import (
+    DIVERGENCE_HIDDEN_BEAR_SOURCE_ID,
+    DIVERGENCE_HIDDEN_BULL_SOURCE_ID,
+    DIVERGENCE_KIND_SOURCE_ID,
+    DIVERGENCE_REGULAR_BEAR_SOURCE_ID,
+    DIVERGENCE_REGULAR_BULL_SOURCE_ID,
+    DivergenceOutput,
 )
 from ce_v5.platform.rules.indicators.ema import (
     EMA_PERIOD_DEFAULT,
@@ -1193,4 +1211,17 @@ SOURCE_MATERIALIZERS: dict[str, SourceMaterializer] = {
     FIB_NEAREST_LEVEL_SOURCE_ID: FibRecursiveSpec(output=FibOutput.NEAREST_LEVEL),
     FIB_LEVEL_PCT_SOURCE_ID: FibRecursiveSpec(output=FibOutput.LEVEL_PCT),
     FIB_DIRECTION_SOURCE_ID: FibRecursiveSpec(output=FibOutput.DIRECTION),
+    DIVERGENCE_KIND_SOURCE_ID: DivergenceRecursiveSpec(output=DivergenceOutput.KIND),
+    DIVERGENCE_REGULAR_BULL_SOURCE_ID: DivergenceRecursiveSpec(
+        output=DivergenceOutput.REGULAR_BULL
+    ),
+    DIVERGENCE_REGULAR_BEAR_SOURCE_ID: DivergenceRecursiveSpec(
+        output=DivergenceOutput.REGULAR_BEAR
+    ),
+    DIVERGENCE_HIDDEN_BULL_SOURCE_ID: DivergenceRecursiveSpec(
+        output=DivergenceOutput.HIDDEN_BULL
+    ),
+    DIVERGENCE_HIDDEN_BEAR_SOURCE_ID: DivergenceRecursiveSpec(
+        output=DivergenceOutput.HIDDEN_BEAR
+    ),
 }

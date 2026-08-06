@@ -32,6 +32,11 @@ _EXPECTED = {
     "fib.level_pct",
     "fib.direction",
     "fib.levels",
+    "divergence.kind",
+    "divergence.regular_bull",
+    "divergence.regular_bear",
+    "divergence.hidden_bull",
+    "divergence.hidden_bear",
     "volume.ratio_vs_avg",
     "vwap.value",
     "vwap.distance_pct",
@@ -65,6 +70,21 @@ def test_discovery_incluye_fib_levels_non_servible() -> None:
     ids = {d.source_id for d in discover_declarations()}
     assert "fib.levels" in ids
     assert "fib.direction" in ids
+
+
+def test_discovery_incluye_las_cinco_divergence() -> None:
+    # LOTE 5 (P08b-D1-05): UN estado (0028) y CINCO fuentes servibles. Las cuatro
+    # BOOLEAN son las primeras de ese value_type en el catalogo vivo, y no son una
+    # comodidad sobre kind: en una barra donde coincidan dos divergencias, kind colapsa
+    # a una por prioridad y solo los flags dicen que paso de verdad.
+    ids = {d.source_id for d in discover_declarations()}
+    assert {
+        "divergence.kind",
+        "divergence.regular_bull",
+        "divergence.regular_bear",
+        "divergence.hidden_bull",
+        "divergence.hidden_bear",
+    } <= ids
 
 
 def test_sin_duplicados() -> None:

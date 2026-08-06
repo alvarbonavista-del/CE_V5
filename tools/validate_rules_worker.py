@@ -253,6 +253,9 @@ def _mordida_del_check() -> list[tuple[str, bool]]:
     #           (las tres EMAs internas: ema_fast, ema_slow y ema_signal).
     #   0027 -> fib_range_snapshot (SELECT, INSERT): el RANGO vigente del grid Fibonacci
     #           con histeresis (range_high, range_low), estado del RECURSIVE fib.*.
+    #   0028 -> divergence_snapshot (SELECT, INSERT): el ULTIMO PIVOTE de cada lado
+    #           (open_time, precio y RSI de maximos y de minimos), estado del RECURSIVE
+    #           divergence.kind y sus cuatro flags.
     # Las tablas de estado se toman de RULES_STATE_TABLES para que sigan al check y no
     # se queden atras cuando entre la siguiente.
     grants_reales: dict[str, tuple[str, ...]] = {
