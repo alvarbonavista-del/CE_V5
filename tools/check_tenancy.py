@@ -101,11 +101,37 @@ TABLAS_SIN_TENANT_PERMITIDAS: dict[str, str] = {
     # sentidos: sin SELECT+INSERT no puede hacer replay; con los destructivos podria
     # reescribir un ancla ya tomada y el replay dejaria de ser reproducible (ADR-007).
     "cvd_snapshot": "system",
+    # ema_snapshot: estado de replay del RECURSIVE ema.value; scope=system SIN tenant_id
+    # (shared_evaluation public_cross_tenant, como cvd_snapshot); append-only.
+    "ema_snapshot": "system",
     # Estado de replay de pivotphase (RECURSIVE) del motor (P08c P5, migracion 0024).
     # Mismo regimen que cvd_snapshot: system, sin tenant_id (pivotphase.phase/confidence
     # son shared_evaluation/public_cross_tenant; darle tenant_id duplicaria el mismo
     # estado por tenant, la explosion que ADR-014 evita). Escritura acotada a INSERT.
     "pivotphase_snapshot": "system",
+    # rsi_snapshot: estado de replay del RECURSIVE rsi.value (Wilder); scope=system SIN
+    # tenant_id (shared_evaluation public_cross_tenant, como cvd_snapshot y
+    # ema_snapshot); append-only. Guarda TRES columnas (avg_gain, avg_loss, last_close)
+    # porque el estado de Wilder no es un solo numero y el diff de cierres exige el
+    # cierre previo; eso no cambia su regimen de tenencia.
+    "rsi_snapshot": "system",
+    # macd_snapshot: estado de replay del RECURSIVE macd.line/signal/histogram;
+    # scope=system SIN tenant_id (shared_evaluation public_cross_tenant, como las demas
+    # tablas de snapshot); append-only. Guarda las TRES EMAs internas (ema_fast,
+    # ema_slow, ema_signal), que son el estado, no las salidas derivadas de el.
+    "macd_snapshot": "system",
+    # fib_range_snapshot: estado del RANGO vigente del grid Fibonacci con histeresis
+    # (RECURSIVE fib.nearest_level/fib.level_pct); scope=system SIN tenant_id
+    # (shared_evaluation public_cross_tenant, como las demas tablas de snapshot);
+    # append-only. Guarda el rango (range_high, range_low), que es el estado; los
+    # niveles son derivados de el.
+    "fib_range_snapshot": "system",
+    # divergence_snapshot: estado de replay del RECURSIVE divergence.kind y sus cuatro
+    # flags; scope=system SIN tenant_id (shared_evaluation public_cross_tenant, como las
+    # demas tablas de snapshot); append-only. Guarda el ULTIMO PIVOTE de cada lado
+    # (open_time, precio y RSI), que es el estado; los eventos de divergencia son la
+    # comparacion de dos pivotes consecutivos y se derivan de el.
+    "divergence_snapshot": "system",
 }
 
 # Roles de RUNTIME: los que se conectan con una credencial en un proceso vivo.

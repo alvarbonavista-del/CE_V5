@@ -24,7 +24,10 @@ from decimal import Decimal
 
 import pytest
 
-from ce_v5.entrypoints.worker_rules.materializers import PROFILE_WINDOW_BARS
+from ce_v5.entrypoints.worker_rules.materializers import (
+    PROFILE_WINDOW_BARS,
+    _scalars_to_decimals,
+)
 from ce_v5.entrypoints.worker_rules.pivotphase_materializer import (
     NORM_WINDOW,
     PivotphaseConfidenceSpec,
@@ -240,8 +243,10 @@ class TestReplayPivotphaseEndToEnd:
 
         # T1: la phase spec devuelve EXACTAMENTE history_bars fases, cada una en [0,5].
         with rules_db.transaction() as session:
-            fases = PivotphasePhaseSpec().materialize(
-                session, _EXCHANGE, _SYMBOL, _TF.value, open_time, _HISTORY_BARS
+            fases = _scalars_to_decimals(
+                PivotphasePhaseSpec().materialize(
+                    session, _EXCHANGE, _SYMBOL, _TF.value, open_time, _HISTORY_BARS
+                )
             )
         assert len(fases) == _HISTORY_BARS
         for fase in fases:
@@ -249,8 +254,10 @@ class TestReplayPivotphaseEndToEnd:
 
         # T2: la confidence spec devuelve EXACTAMENTE history_bars confianzas, 0-100.
         with rules_db.transaction() as session:
-            confianzas = PivotphaseConfidenceSpec().materialize(
-                session, _EXCHANGE, _SYMBOL, _TF.value, open_time, _HISTORY_BARS
+            confianzas = _scalars_to_decimals(
+                PivotphaseConfidenceSpec().materialize(
+                    session, _EXCHANGE, _SYMBOL, _TF.value, open_time, _HISTORY_BARS
+                )
             )
         assert len(confianzas) == _HISTORY_BARS
         for confianza in confianzas:
@@ -258,8 +265,10 @@ class TestReplayPivotphaseEndToEnd:
 
         # T3: determinismo bit-exacto (ADR-007): misma llamada, misma tupla.
         with rules_db.transaction() as session:
-            fases_repetidas = PivotphasePhaseSpec().materialize(
-                session, _EXCHANGE, _SYMBOL, _TF.value, open_time, _HISTORY_BARS
+            fases_repetidas = _scalars_to_decimals(
+                PivotphasePhaseSpec().materialize(
+                    session, _EXCHANGE, _SYMBOL, _TF.value, open_time, _HISTORY_BARS
+                )
             )
         assert fases_repetidas == fases
 

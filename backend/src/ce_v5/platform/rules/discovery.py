@@ -19,6 +19,17 @@ from ce_v5.platform.rules import (
     rawfootprint,
     volume_profile,
 )
+from ce_v5.platform.rules.indicators import (
+    candle,
+    divergence,
+    ema,
+    fib,
+    macd,
+    rsi,
+    swing,
+    volume,
+    vwap,
+)
 from source.datasource import DataSourceDeclaration
 
 
@@ -32,4 +43,13 @@ def discover_declarations() -> tuple[DataSourceDeclaration, ...]:
         *cvd.declarations(),
         *footprint_range.declarations(),
         *pivotphase.declarations(),
+        *candle.declarations(),
+        *divergence.declarations(),
+        *ema.declarations(),
+        *fib.declarations(),
+        *macd.declarations(),
+        *rsi.declarations(),
+        *swing.declarations(),
+        *volume.declarations(),
+        *vwap.declarations(),
     )

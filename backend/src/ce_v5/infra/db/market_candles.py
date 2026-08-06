@@ -10,6 +10,15 @@ LECTURA (P08 D1): read_close_window sirve la ventana de cierres que consume el
 evaluador de reglas. Es SOLO LECTURA y la ejecuta ce_v5_rules con el GRANT SELECT de la
 0016; la escritura sigue siendo exclusiva del rol de ingesta.
 
+LECTURA (P08b-LOTE3-01): read_close_range sirve los cierres de un RANGO (after, up_to],
+con after NULLABLE ("desde el origen"). Es la entrada del replay acotado del RECURSIVE
+ema.value, que no pide "las ultimas N barras" sino "lo que hay despues del ancla". Mismo
+rol y mismo GRANT que read_close_window.
+
+LECTURA (P08b LOTE 5): read_ohlcv_range es la gemela ANCHA de read_close_range, con el
+cuerpo entero de la vela. La pide el replay del RECURSIVE divergence.*, cuyos pivotes
+son geometricos sobre las series de HIGH y de LOW y no sobre los cierres.
+
 LECTURA (T-05): read_ohlcv_window sirve la MISMA ventana con el cuerpo entero de la vela
 para el camino de lectura del historico. La ejecuta ce_v5_app con el GRANT SELECT de la
 0012, que es solo eso: SELECT. Que la API pueda LEER velas no le da ningun poder para
@@ -116,6 +125,49 @@ ORDER BY w.open_time
 _CLOSE_WINDOW_SQL = _WINDOW_SQL.format(externas="w.close", internas="open_time, close")
 
 _OHLCV_WINDOW_SQL = _WINDOW_SQL.format(
+    externas="w.open_time, w.open, w.high, w.low, w.close, w.volume",
+    internas="open_time, open, high, low, close, volume",
+)
+
+# RANGO (after, up_to], oldest->newest, una fila por barra (la revision vigente). Es la
+# entrada del replay de los RECURSIVE: lo que hay DESPUES del ancla de snapshot. Gemelo
+# de read_footprint_delta_range (market_footprint.py) -- mismo dedup por DISTINCT ON +
+# correction_revision DESC NULLS LAST -- con UNA diferencia: el limite inferior es
+# NULLABLE. after IS NULL significa "desde el ORIGEN del historico", que es exactamente
+# lo que pide el BOOTSTRAP del EMA: su semilla es el PRIMER cierre de la SERIE
+# (EMA[0] == close[0], invariante P08b-08), no el primero de la ventana pedida; sembrar
+# en el inicio de ventana produciria OTRA serie, no una version acotada de la misma. NO
+# lleva LIMIT a proposito: un rango es su rango entero, y recortarlo por el extremo
+# antiguo (lo que hace _WINDOW_SQL) le quitaria justo el ancla o la semilla.
+#
+# EL ESQUELETO SE ESCRIBE UNA SOLA VEZ, por el mismo motivo que en _WINDOW_SQL: el rango
+# de cierres (ema/rsi/macd) y el rango OHLCV (divergence, que necesita las series de
+# HIGH y de LOW para sus pivotes) piden lo mismo con distinta anchura. Si el dedup por
+# revision se separase en dos consultas, un dia se arreglaria en una y no en la otra.
+# Las columnas son literales DE ESTE MODULO: no hay SQL dinamico que dependa de la
+# peticion, y los siete valores del WHERE siguen viajando como parametros.
+_RANGE_SQL = """
+SELECT {externas}
+FROM (
+    SELECT DISTINCT ON (open_time) {internas}
+    FROM market_candle
+    WHERE exchange = %s
+      AND market_type = %s
+      AND symbol = %s
+      AND timeframe = %s
+      AND maturity_state IN ('closed', 'correction')
+      AND (%s::bigint IS NULL OR open_time > %s)
+      AND open_time <= %s
+    ORDER BY open_time DESC, correction_revision DESC NULLS LAST
+) AS w
+ORDER BY w.open_time
+"""
+
+_CLOSE_RANGE_SQL = _RANGE_SQL.format(
+    externas="w.open_time, w.close", internas="open_time, close"
+)
+
+_OHLCV_RANGE_SQL = _RANGE_SQL.format(
     externas="w.open_time, w.open, w.high, w.low, w.close, w.volume",
     internas="open_time, open, high, low, close, volume",
 )
@@ -322,6 +374,107 @@ def read_ohlcv_window(
             timeframe,
             up_to_open_time,
             bars,
+        ),
+    )
+    return tuple(
+        CandleOHLCV(
+            open_time=_entero(row[0]),
+            open=_decimal(row[1]),
+            high=_decimal(row[2]),
+            low=_decimal(row[3]),
+            close=_decimal(row[4]),
+            volume=_decimal(row[5]),
+        )
+        for row in rows
+    )
+
+
+def read_close_range(
+    session: Session,
+    exchange: str,
+    symbol: str,
+    timeframe: str,
+    after_open_time: int | None,
+    up_to_open_time: int,
+) -> tuple[tuple[int, Decimal], ...]:
+    """Los (open_time, close) de las velas maduras del rango, oldest->newest.
+
+    El rango es (after_open_time, up_to_open_time] y sale con una fila por barra (la
+    revision VIGENTE si hubo correcciones, por el DISTINCT ON + correction_revision DESC
+    NULLS LAST). Es la secuencia de cierres que el materializador de ema.value
+    (RECURSIVE) pliega sobre el valor del snapshot ancla. El limite inferior es ABIERTO
+    (after excluido: el ancla ya lleva incorporado el cierre de su propia barra) y el
+    superior CERRADO (up_to incluido: la barra pedida). Rango vacio -> ().
+
+    after_open_time=None es DESDE EL ORIGEN del historico: el caso del BOOTSTRAP del
+    EMA, que no tiene ancla y cuya semilla es el PRIMER cierre de la serie
+    (EMA[0] == close[0], invariante P08b-08). Por eso el limite inferior es nullable y
+    no se simula con un 0: "sin ancla" no es "ancla en el instante 0", y confundirlos
+    dejaria la puerta abierta a sembrar el EMA en el sitio equivocado.
+
+    HERMANA de read_close_window: mismo filtro de madurez y mismo dedup por revision.
+    Lo que cambia es el recorte -- el rango en vez de las ultimas N barras -- porque el
+    replay acotado se define por DONDE esta el ancla, no por cuantas barras pide la
+    regla.
+
+    market_type esta FIJADO a spot porque v5.0 solo tiene spot (MarketType), como en
+    read_close_window. Lo ejecuta ce_v5_rules con el GRANT SELECT de la 0016.
+    """
+    rows = session.fetchall(
+        _CLOSE_RANGE_SQL,
+        (
+            exchange,
+            MarketType.SPOT.value,
+            symbol,
+            timeframe,
+            after_open_time,
+            after_open_time,
+            up_to_open_time,
+        ),
+    )
+    return tuple((_entero(row[0]), _decimal(row[1])) for row in rows)
+
+
+def read_ohlcv_range(
+    session: Session,
+    exchange: str,
+    symbol: str,
+    timeframe: str,
+    after_open_time: int | None,
+    up_to_open_time: int,
+) -> tuple[CandleOHLCV, ...]:
+    """Las velas maduras del rango (after, up_to] con su cuerpo entero, oldest->newest.
+
+    HERMANA de read_close_range: mismo rango semiabierto, mismo after NULLABLE ("desde
+    el
+    ORIGEN") y mismo dedup por revision vigente, compartiendo el esqueleto SQL
+    (_RANGE_SQL). Lo unico que cambia es la anchura: aqui salen
+    open/high/low/close/volume
+    porque quien la pide no evalua sobre el cierre.
+
+    LA PIDE divergence.*: sus pivotes de precio son GEOMETRICOS sobre las series de HIGH
+    y de LOW (convencion v4, DA-I03-9), no sobre los cierres, asi que el replay desde su
+    snapshot necesita el cuerpo de la vela y no solo su cierre. Es la primera fuente que
+    lo necesita en forma de RANGO; las anteriores (ema, rsi, macd) se replayan sobre
+    cierres y fib lo hace a traves de swing.*.
+
+    Rango vacio -> (). NO rellena nada, igual que las demas lecturas de este modulo: un
+    hueco es un hecho ausente, y una vela inventada seria un hecho falso con aspecto de
+    dato de mercado.
+
+    market_type esta FIJADO a spot porque v5.0 solo tiene spot (MarketType), como en
+    read_close_range. Lo ejecuta ce_v5_rules con el GRANT SELECT de la 0016.
+    """
+    rows = session.fetchall(
+        _OHLCV_RANGE_SQL,
+        (
+            exchange,
+            MarketType.SPOT.value,
+            symbol,
+            timeframe,
+            after_open_time,
+            after_open_time,
+            up_to_open_time,
         ),
     )
     return tuple(

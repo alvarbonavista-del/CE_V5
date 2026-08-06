@@ -13,8 +13,18 @@ posterior): aqui las reglas llegan estrictas y solo se reordenan a canonica.
 
 ALCANCE (minimo viable; flagged para Central): las condiciones del VETO no declaran
 evaluation_context en el modelo actual, asi que se validan salvo el soporte de contexto.
-La coherencia de tipos de una comparacion y las reglas no_combinable/doble_conteo (que
-exigen campos de catalogo que anade I-02) quedan como refinaciones posteriores.
+Las reglas no_combinable/doble_conteo (que exigen campos de catalogo que anade I-02)
+quedan como refinaciones posteriores.
+
+COHERENCIA DE TIPOS DE UNA COMPARACION (D1, dictamen P08b-D1-03, OPCION 1 fail-loud).
+Antes esto quedaba diferido; ahora se rechaza en ADMISION, no en runtime: (a) los
+operadores de ORDEN (>,>=,<,<=) exigen un value_type NUMERICO (decimal/integer) en
+AMBOS lados -- "mayor que" sobre un categorico (STRING/BOOLEAN) no significa nada; (b)
+CUALQUIER operador, EQ/NE incluidos, exige que los DOS lados tengan el MISMO
+value_type -- comparar un STRING contra una constante DECIMAL es tan incoherente como
+comparar contra un BOOLEAN, y el error se atrapa UNA VEZ al admitir la regla, no en cada
+tick de cada barra. El evaluador (evaluator.py) YA NO revalida esto: confia en que toda
+Rule que llega a evaluate() paso por aqui (docstring de evaluate: "Rule YA ADMITIDA").
 """
 
 from dataclasses import dataclass
@@ -31,8 +41,13 @@ from source.rules.budget import (
 from source.rules.condition import Condition
 from source.rules.reference import DataSourceRef
 from source.rules.rule import Rule
-from source.rules.term import SourceTerm, TermKind
-from source.rules.vocab import NO_OFFSET_FUNCTIONS, OFFSET_FUNCTIONS
+from source.rules.scalar import ScalarType
+from source.rules.term import SourceTerm, Term, TermKind
+from source.rules.vocab import (
+    NO_OFFSET_FUNCTIONS,
+    OFFSET_FUNCTIONS,
+    ComparisonOperator,
+)
 
 # codigos de diagnostico (ADR-016). La UI los traduce por i18n.
 CODE_SOURCE_UNKNOWN = "rule.source.unknown"
@@ -43,6 +58,20 @@ CODE_FUNCTION_REQUIRES_SPORADIC = "rule.function.requires_sporadic"
 CODE_PARAM_UNKNOWN = "rule.param.unknown"
 CODE_PARAM_TYPE_MISMATCH = "rule.param.type_mismatch"
 CODE_PARAM_MISSING = "rule.param.missing"
+CODE_OPERATOR_REQUIRES_NUMERIC = "rule.operator.requires_numeric"
+CODE_TERM_TYPE_MISMATCH = "rule.term.type_mismatch"
+
+# NUMERICO: los unicos value_type que soportan orden total (>,>=,<,<=). CATEGORICO
+# (STRING/BOOLEAN) solo soporta EQ/NE (D1, P08b-D1-02 Q2).
+_NUMERIC_TYPES = frozenset({ScalarType.DECIMAL, ScalarType.INTEGER})
+_ORDERING_OPERATORS = frozenset(
+    {
+        ComparisonOperator.GT,
+        ComparisonOperator.GE,
+        ComparisonOperator.LT,
+        ComparisonOperator.LE,
+    }
+)
 
 
 @dataclass
@@ -195,6 +224,77 @@ def _validate_condition(
             _validate_source_term(
                 term.source, str(condition.node_id), context, catalog, diagnostics
             )
+    _validate_type_coherence(condition, catalog, diagnostics)
+
+
+def _term_value_type(term: Term, catalog: DataSourceCatalog) -> ScalarType | None:
+    """El value_type EFECTIVO de un termino, o None si no se puede determinar.
+
+    Constante: su propio scalar_type, siempre presente (garantia del contrato
+    ScalarValue). Fuente: el value_type DECLARADO en el catalogo; None si la fuente es
+    desconocida -- ese hecho YA lo diagnostica CODE_SOURCE_UNKNOWN por su cuenta, y
+    aqui no hay tipo del que hablar.
+    """
+    if term.term_kind is TermKind.CONSTANT:
+        assert term.constant is not None
+        return term.constant.scalar_type
+    assert term.source is not None
+    try:
+        declaration = catalog.resolve(term.source.ref.source_id)
+    except UnknownDataSourceError:
+        return None
+    return declaration.value_type
+
+
+def _validate_type_coherence(
+    condition: Condition,
+    catalog: DataSourceCatalog,
+    diagnostics: list[Diagnostic],
+) -> None:
+    """Coherencia de tipos de una comparacion (D1, dictamen P08b-D1-03, OPCION 1).
+
+    Dos hechos INDEPENDIENTES, los dos fail-loud en admision:
+    (a) un operador de ORDEN (>,>=,<,<=) sobre un lado CATEGORICO (STRING/BOOLEAN) no
+        tiene semantica -- "mayor que" sobre 'above'/'below' o true/false no es nada.
+    (b) los DOS lados de CUALQUIER operador (EQ/NE incluidos) deben tener el MISMO
+        value_type -- comparar un STRING contra una constante DECIMAL es tan
+        incoherente como contra un BOOLEAN.
+    Si un lado no se puede tipar (fuente desconocida, ya diagnosticada aparte) se omite
+    la comprobacion de ESE lado: no se apila un segundo diagnostico sobre un primer
+    error ya reportado.
+    """
+    node_id = str(condition.node_id)
+    left_type = _term_value_type(condition.left, catalog)
+    right_type = _term_value_type(condition.right, catalog)
+    for side, value_type in (("left", left_type), ("right", right_type)):
+        if (
+            value_type is not None
+            and condition.operator in _ORDERING_OPERATORS
+            and value_type not in _NUMERIC_TYPES
+        ):
+            diagnostics.append(
+                Diagnostic(
+                    CODE_OPERATOR_REQUIRES_NUMERIC,
+                    {
+                        "operator": condition.operator.value,
+                        "value_type": value_type.value,
+                        "side": side,
+                        "node_id": node_id,
+                    },
+                )
+            )
+    if left_type is not None and right_type is not None and left_type is not right_type:
+        diagnostics.append(
+            Diagnostic(
+                CODE_TERM_TYPE_MISMATCH,
+                {
+                    "operator": condition.operator.value,
+                    "left_type": left_type.value,
+                    "right_type": right_type.value,
+                    "node_id": node_id,
+                },
+            )
+        )
 
 
 def _validate_source_term(

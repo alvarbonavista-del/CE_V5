@@ -33,6 +33,7 @@ from ce_v5.entrypoints.worker_rules.materializers import (
     SOURCE_MATERIALIZERS,
     FootprintWindowedSpec,
     ParameterizedMaterializer,
+    _scalars_to_decimals,
 )
 from ce_v5.infra.bus_redis import RedisBusConfig, RedisEventBus, create_client
 from ce_v5.infra.db.cvd_snapshot import read_cvd_snapshot_before, write_cvd_snapshot
@@ -629,8 +630,8 @@ class TestMaterializacionWindowedSobreLaVentanaReal:
         )
 
         with rules_db.transaction() as session:
-            serie = spec.materialize(
-                session, "binance", "BTC-USDT", _TF.value, ultimo, 5
+            serie = _scalars_to_decimals(
+                spec.materialize(session, "binance", "BTC-USDT", _TF.value, ultimo, 5)
             )
 
         # Con 5 barras y ventana 3 solo hay 3 valores computables (las barras 3, 4 y 5);
@@ -661,13 +662,15 @@ class TestMaterializacionWindowedSobreLaVentanaReal:
         )
 
         with rules_db.transaction() as session:
-            serie = spec.materialize(
-                session,
-                "binance",
-                "BTC-USDT",
-                _TF.value,
-                escritas[-1].open_time,
-                5,
+            serie = _scalars_to_decimals(
+                spec.materialize(
+                    session,
+                    "binance",
+                    "BTC-USDT",
+                    _TF.value,
+                    escritas[-1].open_time,
+                    5,
+                )
             )
 
         assert serie == ()
@@ -696,13 +699,15 @@ class TestMaterializacionPointLocalDeOrderflowDelta:
         spec = SOURCE_MATERIALIZERS[ORDERFLOW_DELTA_SOURCE_ID]
 
         with rules_db.transaction() as session:
-            serie = spec.materialize(
-                session,
-                "binance",
-                "BTC-USDT",
-                _TF.value,
-                escritas[-1].open_time,
-                4,
+            serie = _scalars_to_decimals(
+                spec.materialize(
+                    session,
+                    "binance",
+                    "BTC-USDT",
+                    _TF.value,
+                    escritas[-1].open_time,
+                    4,
+                )
             )
 
         assert serie == tuple(deltas)
@@ -719,13 +724,15 @@ class TestMaterializacionPointLocalDeOrderflowDelta:
         spec = SOURCE_MATERIALIZERS[ORDERFLOW_DELTA_SOURCE_ID]
 
         with rules_db.transaction() as session:
-            serie = spec.materialize(
-                session,
-                "binance",
-                "BTC-USDT",
-                _TF.value,
-                escritas[-1].open_time,
-                2,
+            serie = _scalars_to_decimals(
+                spec.materialize(
+                    session,
+                    "binance",
+                    "BTC-USDT",
+                    _TF.value,
+                    escritas[-1].open_time,
+                    2,
+                )
             )
 
         assert serie == (escritas[2].bar_delta, escritas[3].bar_delta)
@@ -1167,8 +1174,10 @@ def _materializar_cvd(
     """cvd.value materializado con el spec REAL del registro, con el rol de reglas."""
     spec = SOURCE_MATERIALIZERS[CVD_SOURCE_ID]
     with rules_db.transaction() as session:
-        return spec.materialize(
-            session, "binance", "BTC-USDT", _TF.value, open_time, history_bars
+        return _scalars_to_decimals(
+            spec.materialize(
+                session, "binance", "BTC-USDT", _TF.value, open_time, history_bars
+            )
         )
 
 
@@ -1191,8 +1200,10 @@ def _materializar_cvd_session_utc(
         }
     )
     with rules_db.transaction() as session:
-        return ligada.materialize(
-            session, "binance", "BTC-USDT", _TF.value, open_time, history_bars
+        return _scalars_to_decimals(
+            ligada.materialize(
+                session, "binance", "BTC-USDT", _TF.value, open_time, history_bars
+            )
         )
 
 
@@ -1415,8 +1426,10 @@ def _materializar_delta_momentum(
     """delta_momentum con el spec REAL del registro, leyendo con el rol de reglas."""
     spec = SOURCE_MATERIALIZERS[ORDERFLOW_DELTA_MOMENTUM_SOURCE_ID]
     with rules_db.transaction() as session:
-        return spec.materialize(
-            session, "binance", "BTC-USDT", _TF.value, open_time, history_bars
+        return _scalars_to_decimals(
+            spec.materialize(
+                session, "binance", "BTC-USDT", _TF.value, open_time, history_bars
+            )
         )
 
 
