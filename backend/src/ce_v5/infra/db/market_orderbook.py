@@ -10,8 +10,13 @@ SIN outbox para lo que no se publica). Los dos caminos:
 
 - persist_sample: la muestra intra-ventana va SIN outbox, como los trades.
 
+- read_orderbook_frontier_window: la LECTURA que estrena el motor de reglas
+  (P08c-CONF-05, grant 0029). Hermana de read_footprint_window: mismo esqueleto de
+  recorte y orden, filtrada a kind='frontier'.
+
 Solo el rol de INGESTA escribe aqui (regla 5.20, 0020): si lo intentara la API, la
-rechazaria PostgreSQL, no un if de este fichero.
+rechazaria PostgreSQL, no un if de este fichero. El rol de REGLAS solo LEE, y solo
+el snapshot (0029).
 
 Cumple OrderbookWriterPort de ce_v5.platform.market por FORMA (Protocol estructural):
 este modulo NO importa platform, ni platform importa infra.
@@ -25,12 +30,17 @@ from __future__ import annotations
 
 import json
 import uuid
+from typing import TYPE_CHECKING
 
 from ce_v5.infra.db.ports import Database
+from source.families.market import MarketType
 from source.families.orderbook import (
     OrderbookResyncedPayload,
     OrderbookSnapshotPayload,
 )
+
+if TYPE_CHECKING:
+    from ce_v5.infra.db.ports import Session
 
 # ON CONFLICT DO NOTHING ... RETURNING: si la clave ya existe no se duplica ni falla,
 # y el RETURNING delata si la fila entro DE VERDAD (dedup honesto), como el footprint.
@@ -278,3 +288,118 @@ class PostgresOrderbookWriter:
             )
             for row in rows
         )
+
+
+# La ventana de snapshots FRONTIER de un flujo hasta una barra, oldest->newest. Calcado
+# de _FOOTPRINT_WINDOW_SQL salvo por dos cosas: el filtro kind='frontier' y la AUSENCIA
+# de DISTINCT ON. El footprint lo necesita porque una barra puede tener varias
+# revisiones (correcciones); el libro NO se corrige -- se REINICIA, y el reinicio es su
+# propio hecho (market.orderbook_resynced) --, asi que la PK (idempotency_key, que ya
+# incluye la ventana y la config) deja como mucho un frontier por open_time.
+_FRONTIER_WINDOW_SQL = """
+SELECT
+    exchange, market_type, symbol, depth_k, bids, asks, sequence, kind,
+    timeframe, open_time, close_time, sample_time, is_complete,
+    cadence_ms, formula_version
+FROM (
+    SELECT
+        exchange, market_type, symbol, depth_k, bids, asks, sequence, kind,
+        timeframe, open_time, close_time, sample_time, is_complete,
+        cadence_ms, formula_version
+    FROM market_orderbook_snapshot
+    WHERE exchange = %s
+      AND market_type = %s
+      AND symbol = %s
+      AND timeframe = %s
+      AND kind = 'frontier'
+      AND open_time <= %s
+    ORDER BY open_time DESC
+    LIMIT %s
+) AS w
+ORDER BY w.open_time
+"""
+
+_FRONTIER_COLUMNS = (
+    "exchange",
+    "market_type",
+    "symbol",
+    "depth_k",
+    "bids",
+    "asks",
+    "sequence",
+    "kind",
+    "timeframe",
+    "open_time",
+    "close_time",
+    "sample_time",
+    "is_complete",
+    "cadence_ms",
+    "formula_version",
+)
+
+
+def read_orderbook_frontier_window(
+    session: Session,
+    exchange: str,
+    symbol: str,
+    timeframe: str,
+    up_to_open_time: int,
+    bars: int,
+) -> tuple[OrderbookSnapshotPayload, ...]:
+    """La ventana de snapshots FRONTIER de un flujo hasta una barra, oldest->newest.
+
+    Hermana de read_footprint_window y con su MISMA firma a proposito: quien materializa
+    un WINDOWED pide una ventana igual de las dos tablas y las empareja por open_time.
+    Devuelve OrderbookSnapshotPayload (la BASE del contrato) y no un tipo de lectura
+    propio, por la misma razon que el footprint: las funciones puras que lo consumen ya
+    hablan ese tipo.
+
+    La reconstruccion pasa por model_validate, igual que el footprint: pydantic
+    COACCIONA los tipos (Decimal desde el texto de los niveles jsonb, enums desde su
+    value) y RE-EJECUTA los validadores del contrato -- una fila con niveles
+    desordenados, de tamano no positivo o fuera del top-K LANZA aqui, en vez de servir
+    un libro mentiroso a las features de L2.
+
+    SOLO 'frontier'. La variante 'sample' comparte tabla pero es otra cosa: una muestra
+    intra-ventana a cadencia, de la que puede haber MUCHAS por barra. Mezclarlas
+    romperia el 1:1 con la barra del que depende el emparejamiento con el footprint.
+
+    DEVUELVE MENOS DE `bars` (hasta la tupla VACIA) si el historico no da para mas, y NO
+    RELLENA NADA. Aqui eso importa mas que en el footprint: una barra sin frontier es
+    normal (el libro pudo no estar suscrito, o hubo resync) y el consumidor tiene que
+    verlo como AUSENCIA para aplicar su fail-safe -- por eso el emparejamiento con el
+    footprint se hace por open_time y no por posicion. market_type FIJADO a spot (v5.0
+    solo tiene spot), igual que en read_footprint_window.
+    """
+    rows = session.fetchall(
+        _FRONTIER_WINDOW_SQL,
+        (
+            exchange,
+            MarketType.SPOT.value,
+            symbol,
+            timeframe,
+            up_to_open_time,
+            bars,
+        ),
+    )
+    return tuple(
+        OrderbookSnapshotPayload.model_validate(
+            dict(zip(_FRONTIER_COLUMNS, row, strict=True))
+        )
+        for row in rows
+    )
+
+
+def frontier_by_open_time(
+    frontiers: tuple[OrderbookSnapshotPayload, ...],
+) -> dict[int, OrderbookSnapshotPayload]:
+    """Indice open_time -> frontier, para emparejar con la ventana de footprint.
+
+    El emparejamiento va por CLAVE y no por posicion porque las dos ventanas pueden no
+    cubrir las mismas barras: el footprint existe siempre que hubo trades, el frontier
+    solo si el libro estaba vivo. Un zip posicional emparejaria el libro de una barra
+    con el footprint de otra -- el mismo fallo MUDO que _read_detector_window comprueba
+    entre footprint y vela --, y aqui no se puede exigir igualdad porque la ausencia es
+    un caso LEGITIMO con fail-safe propio.
+    """
+    return {snapshot.open_time: snapshot for snapshot in frontiers}

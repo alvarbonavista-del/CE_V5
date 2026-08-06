@@ -7,7 +7,8 @@ direccional: es un GATE que MODULA las senales de entrada (no una entrada).
 ENTREGA EN DOS PARTES + L2 DIFERIDO (dictamen Central, opcion b): el score de v4 tiene
 tres bloques -- Footprint Inefficiency (40%), L2 Instability (35%), Flow Dislocation
 (25%). Este modulo construye AHORA los dos que salen de footprint+vela (FP + Flow = 65%
-del maximo); el bloque L2 (35%) se DECLARA pero contribuye 0 hasta que exista l2.*.
+del maximo); el bloque L2 (35%) YA CONTRIBUYE desde P08c-CONF-05, sobre el frontier
+del libro.
 Hasta entonces el score es un LIMITE INFERIOR (L2 solo anade toxicidad), "toxic" es
 inalcanzable y el estado es PROVISIONAL. La DataSourceDeclaration se DIFIERE hasta que
 candle.* (OHLC) sea servible, como climax.
@@ -39,6 +40,7 @@ from ce_v5.platform.rules.indicators.candle import (
     CANDLE_LOW_SOURCE_ID,
     CANDLE_OPEN_SOURCE_ID,
 )
+from ce_v5.platform.rules.rawbook import ORDERBOOK_SNAPSHOT_SOURCE_ID
 from ce_v5.platform.rules.rawclose import MARKET_CLOSE_SOURCE_ID
 from ce_v5.platform.rules.rawfootprint import MARKET_FOOTPRINT_SOURCE_ID
 from source.datasource import (
@@ -58,7 +60,7 @@ if TYPE_CHECKING:
 
 # Version de la formula. El golden se ata a esta cadena: si la formula cambia, sube
 # la version y se regenera. Alimentara el formula_version de la declaracion diferida.
-NOTRADE_FORMULA_VERSION = "notrade.v1"
+NOTRADE_FORMULA_VERSION = "notrade.v2"
 
 # Semillas [PARIDAD v4] (engines/l1/no_trade_engine.py). NO son verdades: punto de
 # partida parametrizado; el valor final lo fija la calibracion (AHP), diferida.
@@ -74,6 +76,14 @@ _W_DIVERGENCE = Decimal("0.20")
 _W_MOVE_NO_DELTA = Decimal("0.40")
 _W_DELTA_STALL = Decimal("0.40")
 _W_FAILED_BREAK = Decimal("0.20")
+
+# Sub-pesos del bloque L2 (P08c-CONF-05). [A CALIBRAR AHP], no paridad v4: v4 no tenia
+# este bloque implementado, asi que estas cuatro no tienen fichero ni linea que citar --
+# a diferencia de las siete de arriba --. Suman 1 y el bloque escala por su peso (35).
+_W_IMBALANCE_VOL = Decimal("0.30")
+_W_LIQUIDITY_SHIFT = Decimal("0.30")
+_W_SPOOF_PROXY = Decimal("0.20")
+_W_THIN_BOOK = Decimal("0.20")
 
 # Bandas de estado (v4 lineas 63-88) y modulador (linea 162).
 _STATE_SAFE_MAX = Decimal("30")
@@ -120,6 +130,10 @@ class NoTradeParams:
     w_move_no_delta: Decimal = _W_MOVE_NO_DELTA
     w_delta_stall: Decimal = _W_DELTA_STALL
     w_failed_break: Decimal = _W_FAILED_BREAK
+    w_imbalance_vol: Decimal = _W_IMBALANCE_VOL
+    w_liquidity_shift: Decimal = _W_LIQUIDITY_SHIFT
+    w_spoof_proxy: Decimal = _W_SPOOF_PROXY
+    w_thin_book: Decimal = _W_THIN_BOOK
     state_safe_max: Decimal = _STATE_SAFE_MAX
     state_caution_max: Decimal = _STATE_CAUTION_MAX
     state_no_trade_max: Decimal = _STATE_NO_TRADE_MAX
@@ -135,8 +149,35 @@ _DEFAULT_PARAMS = NoTradeParams()
 
 
 @dataclass(frozen=True, slots=True)
+class BookDepth:
+    """Las profundidades agregadas del frontier del libro en una barra (P08c-CONF-05).
+
+    Es lo MINIMO que las cuatro features de L2 necesitan del snapshot, ya reducido: no
+    entra el libro entero porque el nucleo de notrade es PURO y no tiene por que conocer
+    el contrato de la familia orderbook. La reduccion (sumar tamanos por lado, quedarse
+    con el mayor y el medio) la hace el materializador.
+
+    bid_size / ask_size: suma de tamanos del top-K de cada lado.
+    max_level_size / mean_level_size: el nivel mas grande y la media de TODOS los
+    niveles (los dos lados juntos), que es lo que alimenta el proxy de spoofing.
+    """
+
+    bid_size: Decimal
+    ask_size: Decimal
+    max_level_size: Decimal
+    mean_level_size: Decimal
+
+
+@dataclass(frozen=True, slots=True)
 class NoTradeCandle:
-    """Vela de entrada: delta y volumen agresor (footprint) + OHLC (candle.*)."""
+    """Vela de entrada: delta y volumen agresor (footprint) + OHLC (candle.*) + libro.
+
+    book es OPCIONAL y su default es None A PROPOSITO (P08c-CONF-05): una barra puede no
+    tener frontier del libro -- el flujo pudo no estar suscrito, o hubo un resync -- y
+    eso NO es un error, es una ausencia legitima con fail-safe propio (el bloque L2
+    aporta 0 en esa barra). El default ademas deja intactas las construcciones que no
+    pasan libro, asi que los tests y los otros tres detectores no se enteran.
+    """
 
     delta: Decimal
     volume: Decimal
@@ -144,6 +185,7 @@ class NoTradeCandle:
     low: Decimal
     close: Decimal
     open: Decimal
+    book: BookDepth | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -247,6 +289,95 @@ def _feature_columns(
     return columns
 
 
+def _l2_columns(
+    window: Sequence[NoTradeCandle], params: NoTradeParams
+) -> dict[str, list[Decimal]] | None:
+    """Las 4 features L2 por barra, o None si NINGUNA barra trae libro.
+
+    None y no ceros: "no hay libro en toda la ventana" es distinto de "el libro dice 0".
+    Con None el llamador aplica el fail-safe (bloque L2 = 0) en vez de normalizar una
+    columna inventada -- y como _norm es min-max, una columna de ceros daria 0.5, que es
+    justo la mentira que hay que evitar.
+
+    Las barras SIN libro dentro de una ventana que si lo tiene aportan 0 a sus columnas:
+    entran en la distribucion (son un hecho, no un hueco) pero no inventan
+    desequilibrio.
+    """
+    if all(candle.book is None for candle in window):
+        return None
+    columns: dict[str, list[Decimal]] = {
+        "imbalance_vol": [],
+        "liquidity_shift": [],
+        "spoof_proxy": [],
+        "thin_book": [],
+    }
+    profundidades: list[Decimal] = []
+    for index, candle in enumerate(window):
+        book = candle.book
+        if book is None:
+            for nombre in columns:
+                columns[nombre].append(_ZERO)
+            profundidades.append(_ZERO)
+            continue
+        total = book.bid_size + book.ask_size
+        profundidades.append(total)
+        # (a) DESEQUILIBRIO de volumen entre lados: |B - A| / (B + A).
+        columns["imbalance_vol"].append(
+            abs(book.bid_size - book.ask_size) / (total + params.eps)
+        )
+        # (b) SALTO de liquidez respecto de la barra anterior, en tanto por uno. La
+        # primera barra de la ventana no tiene anterior -> 0 (no hay salto que medir,
+        # no es que el salto sea nulo).
+        anterior = profundidades[index - 1] if index > 0 else None
+        columns["liquidity_shift"].append(
+            _ZERO
+            if anterior is None
+            else abs(total - anterior) / (anterior + params.eps)
+        )
+        # (c) PROXY de spoofing: cuanto sobresale el nivel mayor sobre la media. Un muro
+        # muy por encima del resto del libro es el patron que deja un spoof, pero SOLO
+        # el delta-log (v5.1, diferido en 0020) puede distinguir un muro que se retira
+        # de uno real: por eso es PROXY y se dice en el nombre.
+        columns["spoof_proxy"].append(
+            book.max_level_size / (book.mean_level_size + params.eps)
+        )
+        # (d) LIBRO FINO: se invierte DESPUES de normalizar, no aqui. Se acumula la
+        # profundidad cruda y el 1 - norm() se aplica abajo, porque normalizar el
+        # inverso no es lo mismo que invertir el normalizado.
+        columns["thin_book"].append(total)
+    return columns
+
+
+def _l2_instability(window: Sequence[NoTradeCandle], params: NoTradeParams) -> Decimal:
+    """El bloque L2 (0 a params.l2_block_weight) de la ULTIMA barra de la ventana.
+
+    FAIL-SAFE (OBS-1): sin libro en la ventana -- o sin libro en la barra evaluada -- el
+    bloque vale 0 y el score queda como LIMITE INFERIOR (FP + Flow). NO se proyecta el
+    valor de la barra anterior: inventar toxicidad donde no se observo es peor que
+    quedarse corto, porque el score gobierna un veto de entrada.
+    """
+    if not window or window[-1].book is None:
+        return _ZERO
+    columns = _l2_columns(window, params)
+    if columns is None:
+        return _ZERO
+
+    def norm_last(name: str) -> Decimal:
+        values = columns[name]
+        return _norm(values, values[-1], params.eps)
+
+    # thin_book se INVIERTE aqui: la columna lleva profundidad cruda, y poca profundidad
+    # (norm bajo) es mucha toxicidad. Es el unico de los cuatro que invierte, igual que
+    # F7 es el unico que invierte en el modelo de confianza.
+    thin = _ONE - norm_last("thin_book")
+    return (
+        norm_last("imbalance_vol") * params.w_imbalance_vol
+        + norm_last("liquidity_shift") * params.w_liquidity_shift
+        + norm_last("spoof_proxy") * params.w_spoof_proxy
+        + thin * params.w_thin_book
+    ) * params.l2_block_weight
+
+
 def _state(score: Decimal, params: NoTradeParams) -> NoTradeState:
     """Estado de toxicidad por bandas [PARIDAD v4]."""
     if score < params.state_safe_max:
@@ -286,7 +417,11 @@ def evaluate_no_trade(
         + norm_last("delta_stall") * params.w_delta_stall
         + norm_last("failed_break") * params.w_failed_break
     ) * params.flow_block_weight
-    l2_instability = _ZERO  # DIFERIDO hasta l2.*; peso params.l2_block_weight reservado
+    # L2 VIVO desde P08c-CONF-05 (antes: 0 fijo, peso 35 reservado). Se SUMA sin
+    # rescalar FP ni Flow -- que es lo que el diseno prometio cuando reservo el peso --,
+    # asi que el tope pasa de 65 a 100 sin mover un solo umbral de los otros dos
+    # bloques.
+    l2_instability = _l2_instability(window, params)
     score = footprint_ineff + flow_dislocation + l2_instability
     if score < _ZERO:
         score = _ZERO
@@ -450,6 +585,11 @@ def _notrade_declaration(
             CANDLE_HIGH_SOURCE_ID,
             CANDLE_LOW_SOURCE_ID,
             MARKET_CLOSE_SOURCE_ID,
+            # El LIBRO entra en P08c-CONF-05, cuando el bloque L2 deja de ser 0. Es
+            # NON_SERVIBLE (un top-K no es un escalar), asi que no se pide por dispatch:
+            # el materializador lee su ventana de frontier por su cuenta, el patron de
+            # void con el LVN y de MACD con sus EMAs. Se declara porque se LEE.
+            ORDERBOOK_SNAPSHOT_SOURCE_ID,
         ),
     )
 

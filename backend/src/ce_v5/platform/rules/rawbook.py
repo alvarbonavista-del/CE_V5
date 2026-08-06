@@ -5,11 +5,13 @@ Cierra el hueco que Central (G2) senalo: el snapshot del libro se persiste con u
 idempotency/cache_key explicita (cond.1) pero NO tenia declaracion ADR-008, asi que sus
 dimensiones de cache vivian solo en el codigo de persistencia.
 
-ADITIVA (CE-14): este modulo solo ANADE una declaracion. NO se registra en el catalogo
-vivo del worker de reglas (composition.py): registrarla exigiria un evaluador para una
-fuente que en v5.0 NO se sirve como termino escalar, y eso seria tocar el nucleo. La
-declaracion existe, es verificable por test y queda lista para el catalogo que disena
-I-02 (P08b/P08c, el orderflow).
+AL CATALOGO VIVO DESDE P08c-CONF-05, y sigue sin necesitar evaluador. Hasta esta
+pieza la declaracion existia pero no se registraba, porque nadie la consumia. Ahora
+notrade.* la declara en su consumes (el bloque L2 se computa sobre el frontier), y el
+catalogo VALIDA que toda arista apunte a un nodo existente: sin registrar, la validacion
+rompe con MissingDependencyError. Es el mismo sitio que ocupa market.footprint, tambien
+NON_SERVIBLE y tambien registrada: un nodo NON_SERVIBLE es un nodo del DAG que no se
+sirve como termino, no un nodo invisible.
 
 POR QUE NON_SERVIBLE: un snapshot top-K no es un escalar. El marco (ADR-008) admite
 exactamente este caso -- "se calcula pero NO se combina en reglas" --; las magnitudes
@@ -97,3 +99,12 @@ def orderbook_snapshot_declaration() -> DataSourceDeclaration:
         sharing_scope=SharingScope.PUBLIC_CROSS_TENANT,
         cache_key_schema=ORDERBOOK_SNAPSHOT_CACHE_KEY_SCHEMA,
     )
+
+
+def declarations() -> tuple[DataSourceDeclaration, ...]:
+    """Declaraciones que este modulo publica al catalogo vivo (discovery).
+
+    Espejo de rawfootprint.declarations(): el nodo BASE del que cuelgan las fuentes
+    derivadas del libro. Hoy solo lo consume notrade.* (bloque L2, P08c-CONF-05).
+    """
+    return (orderbook_snapshot_declaration(),)

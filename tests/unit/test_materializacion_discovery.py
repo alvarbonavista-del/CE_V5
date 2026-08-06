@@ -18,6 +18,7 @@ _EXPECTED = {
     "notrade.state",
     "market.close",
     "market.footprint",
+    "market.orderbook_snapshot",
     "vp.poc",
     "vp.vah",
     "vp.val",
@@ -166,3 +167,12 @@ def test_discovery_incluye_imbalance_para_F5() -> None:
     # fijos, asi que no hay ventana que leer -- misma forma que footprint.price_range.
     ids = {d.source_id for d in discover_declarations()}
     assert {"imbalance.buy_stack", "imbalance.sell_stack"} <= ids
+
+
+def test_discovery_incluye_el_libro_como_nodo_base() -> None:
+    # P08c-CONF-05: notrade.* declara market.orderbook_snapshot en su consumes (bloque
+    # L2 sobre el frontier), y el catalogo exige que toda arista apunte a un nodo que
+    # exista. Es NON_SERVIBLE, como market.footprint: un nodo del DAG que no se sirve
+    # como termino escalar, no un nodo invisible.
+    ids = {d.source_id for d in discover_declarations()}
+    assert "market.orderbook_snapshot" in ids

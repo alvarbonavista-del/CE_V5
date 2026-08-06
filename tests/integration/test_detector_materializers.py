@@ -24,6 +24,7 @@ from ce_v5.entrypoints.worker_rules.materializers import (
     SOURCE_MATERIALIZERS,
     UnwiredSourceError,
 )
+from ce_v5.infra.db.market_orderbook import PostgresOrderbookWriter
 from ce_v5.infra.db.psycopg_adapter import PsycopgDatabase
 from ce_v5.platform.rules.absorption import (
     ABSORPTION_ASK_STRENGTH_SOURCE_ID,
@@ -49,6 +50,7 @@ from ce_v5.platform.rules.void import (
     VOID_SNAP_BEARISH_SOURCE_ID,
     VOID_SNAP_BULLISH_SOURCE_ID,
 )
+from source.envelope import Envelope, Scope
 from source.families.footprint import (
     FootprintCell,
     FootprintClosedPayload,
@@ -62,6 +64,13 @@ from source.families.market import (
     MarketType,
     Timeframe,
 )
+from source.families.orderbook import (
+    MarketOrderbookEventType,
+    MarketOrderbookSnapshotKind,
+    OrderbookLevel,
+    OrderbookSnapshotPayload,
+)
+from source.families.registry import expected_event_schema_version
 from source.rules.scalar import ScalarType, ScalarValue
 from source.time import MaturityState
 
@@ -197,12 +206,18 @@ def _sembrar(
 
 @pytest.fixture
 def limpiar_detectores(migrator_db: PsycopgDatabase) -> Iterator[None]:
-    """market_candle/market_footprint/outbox: sin FK a tenant, se limpian a mano."""
+    """Las tablas de mercado sin FK a tenant, que se limpian a mano.
+
+    market_orderbook_snapshot entra en P08c-CONF-05: sin borrarla, el frontier sembrado
+    por un test se filtraria al siguiente y el caso "sin libro" (OBS-1) dejaria de
+    probar lo que dice -- pasaria en verde leyendo el libro de otro test.
+    """
 
     def _wipe() -> None:
         with migrator_db.transaction() as session:
             session.execute("DELETE FROM market_candle")
             session.execute("DELETE FROM market_footprint")
+            session.execute("DELETE FROM market_orderbook_snapshot")
             session.execute("DELETE FROM outbox")
 
     _wipe()
@@ -687,3 +702,130 @@ class TestImbalanceMaterializado:
             otra = _materializar(rules_db, source_id, _open_time(2), 3)
             assert una == otra
             assert [str(v) for v in una] == [str(v) for v in otra]
+
+
+# --- Bloque L2 de notrade: el frontier del libro (P08c-CONF-05, grant 0029) -----------
+
+_CADENCIA_MS = 1000
+_FORMULA_LIBRO = 1
+
+
+def _frontier(indice: int, *, bid: str, ask: str) -> OrderbookSnapshotPayload:
+    """Snapshot FRONTIER de una barra: un nivel por lado, tamanos parametrizados."""
+    open_time = _open_time(indice)
+    return OrderbookSnapshotPayload(
+        exchange=_EXCHANGE,
+        market_type=MarketType.SPOT,
+        symbol=_SYMBOL,
+        depth_k=1,
+        bids=(OrderbookLevel(price=Decimal("99"), size=Decimal(bid)),),
+        asks=(OrderbookLevel(price=Decimal("101"), size=Decimal(ask)),),
+        sequence=indice,
+        kind=MarketOrderbookSnapshotKind.FRONTIER,
+        timeframe=_TF,
+        open_time=open_time,
+        close_time=open_time + _TF.duration_ms,
+        is_complete=True,
+        cadence_ms=_CADENCIA_MS,
+        formula_version=_FORMULA_LIBRO,
+    )
+
+
+@pytest.fixture
+def persistir_frontier(
+    ingestion_db: PsycopgDatabase,
+) -> Callable[[OrderbookSnapshotPayload], bool]:
+    """Escribe un frontier por el camino REAL (historico+outbox atomico, INGESTA).
+
+    Mismo criterio que persistir_footprint: que el dato lo siembre el
+    PostgresOrderbookWriter de produccion con el rol de INGESTA, no un INSERT de juguete
+    que taparia una discrepancia entre escritor y lector -- que es justo lo que este
+    fichero existe para cazar, ahora sobre una TERCERA tabla.
+    """
+    writer = PostgresOrderbookWriter(ingestion_db)
+    tipo = MarketOrderbookEventType.ORDERBOOK_FRONTIER
+
+    def _persistir(payload: OrderbookSnapshotPayload) -> bool:
+        clave = payload.idempotency_key(payload.kind)
+        envelope = Envelope[OrderbookSnapshotPayload](
+            event_type=tipo.value,
+            event_schema_version=expected_event_schema_version(tipo.value),
+            source="worker_ingestion",
+            idempotency_key=clave,
+            stream_key=payload.stream_key(),
+            scope=Scope.PUBLIC_MARKET,
+            event_time=payload.close_time,
+            ingestion_time=payload.close_time,
+            processing_time=payload.close_time,
+            correlation_id=payload.stream_key(),
+            payload=payload,
+        )
+        return writer.persist_and_enqueue(
+            envelope_json=envelope.model_dump_json().encode(),
+            payload=payload,
+            event_type=tipo.value,
+            stream_key=payload.stream_key(),
+            idempotency_key=clave,
+            event_time=payload.close_time,
+        )
+
+    return _persistir
+
+
+class TestBloqueL2Materializado:
+    """notrade.* leyendo el LIBRO desde PostgreSQL con el rol de reglas (grant 0029).
+
+    Es lo unico que no se puede probar sin BD: que el rol de reglas TIENE el SELECT que
+    la 0029 abrio, que el lector filtra a kind='frontier' y que el emparejamiento por
+    open_time aguanta que falten barras.
+    """
+
+    def test_el_rol_de_reglas_puede_leer_el_libro_y_el_bloque_l2_aporta(
+        self,
+        rules_db: PsycopgDatabase,
+        persistir_footprint: PersistirFootprint,
+        persistir_vela: PersistirVela,
+        persistir_frontier: Callable[[OrderbookSnapshotPayload], bool],
+        limpiar_detectores: None,
+    ) -> None:
+        # Sin el grant de la 0029 esto no seria un fallo de asercion sino un error de
+        # permisos de PostgreSQL, que es exactamente como tiene que salir.
+        _sembrar(persistir_footprint, persistir_vela)
+        for indice in range(_BARRAS):
+            # Libro cada vez mas desequilibrado: la ultima barra es la mas toxica.
+            persistir_frontier(_frontier(indice, bid=str(100 + indice * 10), ask="10"))
+        score = _materializar(rules_db, NOTRADE_SCORE_SOURCE_ID, _open_time(_ULTIMA), 1)
+        assert score[0].decimal_value is not None
+        assert score[0].decimal_value > Decimal(0)
+
+    def test_sin_frontier_el_score_no_pasa_de_65(
+        self,
+        rules_db: PsycopgDatabase,
+        persistir_footprint: PersistirFootprint,
+        persistir_vela: PersistirVela,
+        limpiar_detectores: None,
+    ) -> None:
+        # OBS-1 de punta a punta: se siembra footprint y vela pero NINGUN frontier. El
+        # lector devuelve la tupla vacia, el emparejamiento deja book=None en todas las
+        # barras y el bloque L2 aporta 0 -- sin reventar y sin inventar toxicidad.
+        _sembrar(persistir_footprint, persistir_vela)
+        score = _materializar(rules_db, NOTRADE_SCORE_SOURCE_ID, _open_time(_ULTIMA), 1)
+        assert score[0].decimal_value is not None
+        assert Decimal(0) <= score[0].decimal_value <= Decimal(65)
+
+    def test_es_determinista_bit_a_bit_con_el_libro(
+        self,
+        rules_db: PsycopgDatabase,
+        persistir_footprint: PersistirFootprint,
+        persistir_vela: PersistirVela,
+        persistir_frontier: Callable[[OrderbookSnapshotPayload], bool],
+        limpiar_detectores: None,
+    ) -> None:
+        # ADR-007 sobre las TRES tablas a la vez.
+        _sembrar(persistir_footprint, persistir_vela)
+        for indice in range(_BARRAS):
+            persistir_frontier(_frontier(indice, bid="500", ask="300"))
+        una = _materializar(rules_db, NOTRADE_SCORE_SOURCE_ID, _open_time(_ULTIMA), 3)
+        otra = _materializar(rules_db, NOTRADE_SCORE_SOURCE_ID, _open_time(_ULTIMA), 3)
+        assert una == otra
+        assert [str(v) for v in una] == [str(v) for v in otra]

@@ -126,6 +126,17 @@ MARKET_FOOTPRINT_TABLE = "market_footprint"
 # que flujos se suscriben, asi que no la ejecuta.
 MARKET_DEMAND_FUNCTION = "market_public_demand"
 
+# El SNAPSHOT del LIBRO L2 (P07c, 0020) que el motor YA LEE (P08c-CONF-05, 0029): el
+# bloque L2 de notrade computa sus cuatro features sobre el frontier -- la foto as-of el
+# cierre de cada barra --. La 0020 dejo esta lectura PREVISTA y la 0029 la ejecuta, con
+# el mismo patron que la 0021 abrio para market_footprint.
+MARKET_ORDERBOOK_SNAPSHOT_TABLE = "market_orderbook_snapshot"
+
+# El registro de RESYNCS sigue CERRADO al motor, y no por olvido: el fail-safe de una
+# barra sin frontier se resuelve con la AUSENCIA de la fila del snapshot, no leyendo la
+# discontinuidad. Un grant "por si acaso" es lo que la regla 5.20 prohibe.
+MARKET_ORDERBOOK_DISCONTINUITY_TABLE = "market_orderbook_discontinuity"
+
 # Tablas de mercado sobre las que el motor NO puede tener NINGUN privilegio, ni
 # siquiera lectura. market_instrument esta AQUI a proposito (prueba 2): el motor recibe
 # exchange/symbol ya CANONICOS por el evento y por market_scope, y nunca resuelve un
@@ -134,16 +145,16 @@ MARKET_DEMAND_FUNCTION = "market_public_demand"
 MARKET_TABLES_FORBIDDEN: tuple[str, ...] = (
     "market_instrument",
     "market_subscription_intent",
+    # El motor computa L2 sobre el SNAPSHOT; el registro de resyncs no lo necesita.
+    MARKET_ORDERBOOK_DISCONTINUITY_TABLE,
 )
 
-# El LIBRO L2 (P07c). NO va en MARKET_TABLES_FORBIDDEN a proposito: P08c consumira el
-# frontier del libro y podria necesitar LECTURA, decision que no es de esta tanda. Lo
-# que si es innegociable YA es la ESCRITURA: el motor de reglas no ingiere mercado, y un
-# snapshot del libro fabricado por el motor alimentaria sus propias reglas de orderflow.
-# Van en MARKET_TABLES, que es el conjunto de "no escribir".
+# Lo innegociable para las DOS: la ESCRITURA. El motor de reglas no ingiere mercado, y
+# un snapshot del libro fabricado por el motor alimentaria sus propias reglas de
+# orderflow. Van en MARKET_TABLES, que es el conjunto de "no escribir".
 MARKET_ORDERBOOK_TABLES: tuple[str, ...] = (
-    "market_orderbook_snapshot",
-    "market_orderbook_discontinuity",
+    MARKET_ORDERBOOK_SNAPSHOT_TABLE,
+    MARKET_ORDERBOOK_DISCONTINUITY_TABLE,
 )
 
 # Tablas de mercado sobre las que el motor NO puede ESCRIBIR (market_candle incluida:
@@ -380,6 +391,27 @@ def _market_read_violations(
             out.append(
                 f"{MARKET_FOOTPRINT_TABLE}: el rol {RULES_ROLE_NAME} tiene {privilege} "
                 "(P08c CE-14): el motor LEE el footprint, no lo escribe."
+            )
+
+    # Prueba D1-orderbook (POSITIVO, P08c-CONF-05, 0029): el motor computa el bloque L2
+    # de notrade sobre la ventana de frontier del libro; sin SELECT no puede, y el
+    # bloque volveria a valer 0 en silencio -- que es justo el fallo mudo que la
+    # simetria con footprint existe para impedir.
+    if not privileges.get(
+        (RULES_ROLE_NAME, MARKET_ORDERBOOK_SNAPSHOT_TABLE, "SELECT"), False
+    ):
+        out.append(
+            f"{MARKET_ORDERBOOK_SNAPSHOT_TABLE}: el rol {RULES_ROLE_NAME} NO tiene "
+            "SELECT (P08c-CONF-05, 0029): el bloque L2 de notrade se computa sobre la "
+            "ventana de snapshots frontier; sin esa lectura no puede materializarse."
+        )
+    for privilege in _WRITE_PRIVILEGES:
+        if privileges.get(
+            (RULES_ROLE_NAME, MARKET_ORDERBOOK_SNAPSHOT_TABLE, privilege), False
+        ):
+            out.append(
+                f"{MARKET_ORDERBOOK_SNAPSHOT_TABLE}: el rol {RULES_ROLE_NAME} tiene "
+                f"{privilege} (P08c-CONF-05): el motor LEE el libro, no lo escribe."
             )
 
     # Pruebas 2 y 7 (NEGATIVOS): ninguna otra tabla de mercado, ni para leer.

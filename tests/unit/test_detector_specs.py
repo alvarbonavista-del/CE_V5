@@ -17,6 +17,8 @@ from ce_v5.entrypoints.worker_rules.materializers import (
     SOURCE_MATERIALIZERS,
     DetectorBar,
     DetectorWindowedSpec,
+    NotradeBar,
+    NotradeWindowedSpec,
     _absorption_signal,
     _climax_signal,
     _notrade_signal,
@@ -370,27 +372,36 @@ class TestNoTradeTransform:
     """La transform de notrade: cuatro salidas de UN veredicto -- tres DECIMAL y una
     STRING."""
 
-    def _ventana(self) -> list[DetectorBar]:
+    def _ventana(self) -> list[NotradeBar]:
         # Cierres y volumenes variados para que la normalizacion min-max tenga recorrido
         # (con una ventana plana todas las features quedarian en 0.5 y el score seria
         # constante, que no probaria nada).
+        #
+        # SIN LIBRO (book=None) a proposito: notrade es el unico detector con base
+        # propia (NotradeBar, P08c-CONF-05) y aqui se ejercita justo el camino sin
+        # frontier, que es el que mantiene el tope en 65. El bloque L2 con libro tiene
+        # su fichero (test_notrade_l2.py).
         return [
-            _bar(
-                i,
-                buy=str(5 + i % 7),
-                sell=str(3 + i % 5),
-                close_price=str(100 + i % 9),
-                open_price=str(104 - i % 4),
+            NotradeBar(
+                bar=_bar(
+                    i,
+                    buy=str(5 + i % 7),
+                    sell=str(3 + i % 5),
+                    close_price=str(100 + i % 9),
+                    open_price=str(104 - i % 4),
+                ),
+                book=None,
             )
             for i in range(40)
         ]
 
-    def test_el_score_no_pasa_de_65_sin_l2(self) -> None:
-        # El bloque L2 (peso 35) esta DIFERIDO y contribuye 0: el score es un LIMITE
-        # INFERIOR de la toxicidad. Si algun dia pasara de 65 sin que l2.* exista,
-        # alguien habria renormalizado y las series historicas cambiarian de sentido.
+    def test_el_score_no_pasa_de_65_sin_frontier(self) -> None:
+        # El bloque L2 YA NO esta diferido (P08c-CONF-05), pero SIN frontier del libro
+        # aporta 0 y el score sigue siendo un LIMITE INFERIOR que no pasa de 65. Si
+        # algun dia pasara de 65 sin libro, alguien habria renormalizado o proyectado un
+        # valor que no se observo, y las series historicas cambiarian de sentido.
         spec = SOURCE_MATERIALIZERS[NOTRADE_SCORE_SOURCE_ID]
-        assert isinstance(spec, DetectorWindowedSpec)
+        assert isinstance(spec, NotradeWindowedSpec)
         valor = spec.transform(self._ventana())
         assert valor.decimal_value is not None
         assert Decimal(0) <= valor.decimal_value <= Decimal(65)
@@ -403,7 +414,7 @@ class TestNoTradeTransform:
         }
         for source_id, tope in topes.items():
             spec = SOURCE_MATERIALIZERS[source_id]
-            assert isinstance(spec, DetectorWindowedSpec)
+            assert isinstance(spec, NotradeWindowedSpec)
             valor = spec.transform(ventana)
             assert valor.decimal_value is not None
             assert Decimal(0) <= valor.decimal_value <= tope
@@ -418,17 +429,18 @@ class TestNoTradeTransform:
 
     def test_state_sirve_un_token_string_del_vocabulario(self) -> None:
         spec = SOURCE_MATERIALIZERS[NOTRADE_STATE_SOURCE_ID]
-        assert isinstance(spec, DetectorWindowedSpec)
+        assert isinstance(spec, NotradeWindowedSpec)
         valor = spec.transform(self._ventana())
         assert valor.scalar_type is ScalarType.STRING
         assert valor.decimal_value is None
         assert valor.string_value in {estado.value for estado in NoTradeState}
 
-    def test_toxic_es_inalcanzable_mientras_l2_este_diferido(self) -> None:
-        # La banda superior arranca en 80 y el score no pasa de 65: es una limitacion
-        # DECLARADA del estado PROVISIONAL, no un defecto del cableado.
+    def test_toxic_es_inalcanzable_sin_frontier(self) -> None:
+        # La banda superior arranca en 80 y sin libro el score no pasa de 65. Ya NO es
+        # una limitacion estructural -- con frontier TOXIC si se alcanza, y lo prueba
+        # test_notrade_l2.py --: aqui se fija que la ausencia de libro no la dispara.
         spec = SOURCE_MATERIALIZERS[NOTRADE_STATE_SOURCE_ID]
-        assert isinstance(spec, DetectorWindowedSpec)
+        assert isinstance(spec, NotradeWindowedSpec)
         assert spec.transform(self._ventana()).string_value != NoTradeState.TOXIC.value
 
     def test_las_cuatro_salidas_no_son_la_misma(self) -> None:

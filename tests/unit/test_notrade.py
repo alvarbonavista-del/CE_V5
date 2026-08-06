@@ -158,12 +158,15 @@ def test_l2_diferido_contribuye_cero() -> None:
     assert signal.no_trade_score == signal.footprint_ineff + signal.flow_dislocation
 
 
-def test_pesos_absolutos_maximo_activo_65() -> None:
-    # Sin L2, el score activo nunca supera 65 (FP<=40, Flow<=25).
+def test_pesos_absolutos_sin_libro_el_maximo_sigue_siendo_65() -> None:
+    # Con L2 ya vivo (P08c-CONF-05), una ventana SIN libro sigue topando en 65: el
+    # bloque aporta 0 y los otros dos NO se rescalan. Es el fail-safe visto desde el
+    # tope, y la razon de que el golden de abajo no haya cambiado de valor.
     signal = evaluate_no_trade(_GOLDEN_WINDOW)
     assert signal is not None
     assert signal.footprint_ineff <= Decimal("40")
     assert signal.flow_dislocation <= Decimal("25")
+    assert signal.l2_instability == Decimal(0)
     assert signal.no_trade_score <= Decimal("65")
 
 
@@ -183,9 +186,15 @@ def test_referente_independiente_del_score() -> None:
 
 
 def test_golden_atado_a_formula_version() -> None:
-    # GOLDEN [NOTRADE_FORMULA_VERSION = notrade.v1]: si la formula cambia, sube la
+    # GOLDEN [NOTRADE_FORMULA_VERSION = notrade.v2]: si la formula cambia, sube la
     # version y se regenera. 8 decimales (presentacion; la fuente no redondea).
-    assert NOTRADE_FORMULA_VERSION == "notrade.v1"
+    #
+    # v1 -> v2 en P08c-CONF-05 (entra el bloque L2). LOS VALORES DE ABAJO NO CAMBIARON,
+    # y eso no es casualidad ni descuido: la ventana golden no lleva libro, asi que L2
+    # aporta 0 y los otros dos bloques no se rescalan. Que el golden sobreviva intacto a
+    # la activacion del bloque ES la prueba de la aditividad que el diseno prometio
+    # cuando reservo el peso 35.
+    assert NOTRADE_FORMULA_VERSION == "notrade.v2"
     signal = evaluate_no_trade(_GOLDEN_WINDOW)
     assert signal is not None
     q = Decimal("0.00000001")
@@ -327,6 +336,12 @@ class TestDeclaracionesServibles:
     def test_consumes_incluye_candle_open_al_reves_que_climax(self) -> None:
         # NoTradeCandle SI tiene open y lo usa: price_change = close - open alimenta
         # divergence, move_no_delta y delta_stall.
+        #
+        # El LIBRO entra en P08c-CONF-05: el bloque L2 se computa sobre el frontier, asi
+        # que la arista se declara porque se LEE (DAG honesto).
+        # market.orderbook_snapshot es NON_SERVIBLE, asi que no se pide por dispatch --
+        # el materializador lee su ventana por su cuenta --, igual que void con
+        # market.footprint para el LVN.
         for declaration in declarations():
             assert set(declaration.consumes) == {
                 "market.footprint",
@@ -334,4 +349,5 @@ class TestDeclaracionesServibles:
                 "candle.high",
                 "candle.low",
                 "market.close",
+                "market.orderbook_snapshot",
             }

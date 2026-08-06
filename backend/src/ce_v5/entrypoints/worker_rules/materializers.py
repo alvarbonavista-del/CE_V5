@@ -76,6 +76,10 @@ from ce_v5.infra.db.market_footprint import (
     read_footprint_delta_range,
     read_footprint_window,
 )
+from ce_v5.infra.db.market_orderbook import (
+    frontier_by_open_time,
+    read_orderbook_frontier_window,
+)
 from ce_v5.infra.db.rsi_snapshot import read_rsi_snapshot_before, write_rsi_snapshot
 from ce_v5.platform.rules.absorption import (
     ABSORPTION_ASK_STRENGTH_SOURCE_ID,
@@ -182,6 +186,7 @@ from ce_v5.platform.rules.notrade import (
     NOTRADE_FOOTPRINT_INEFF_SOURCE_ID,
     NOTRADE_SCORE_SOURCE_ID,
     NOTRADE_STATE_SOURCE_ID,
+    BookDepth,
     NoTradeCandle,
     NoTradeOutput,
     NoTradeSignal,
@@ -225,6 +230,7 @@ if TYPE_CHECKING:
     from ce_v5.infra.db.market_candles import CandleOHLCV
     from ce_v5.infra.db.ports import Session
     from source.families.footprint import FootprintPayload
+    from source.families.orderbook import OrderbookSnapshotPayload
 
 # Ventana rodante del perfil de volumen [PARIDAD v4 _WINDOW]. NO es dimension de
 # cache_key (VP_CACHE_KEY_SCHEMA no la lleva): es constante FIJA de materializacion
@@ -564,6 +570,108 @@ class DetectorWindowedSpec:
             timeframe,
             open_time,
             history_bars + self.window_bars - 1,
+        )
+        return materialize_windowed(
+            base,
+            self.transform,
+            window_bars=self.window_bars,
+            history_bars=history_bars,
+        )
+
+
+def _book_depth(snapshot: OrderbookSnapshotPayload | None) -> BookDepth | None:
+    """Reduce el frontier del libro a lo MINIMO que piden las cuatro features de L2.
+
+    La reduccion vive AQUI y no en el nucleo a proposito: notrade.py es puro y no
+    conoce el contrato de la familia orderbook. Le llega un BookDepth de cuatro Decimal,
+    igual que a los otros detectores les llegan escalares y no el FootprintPayload.
+
+    Un libro sin NINGUN nivel (los dos lados vacios) devuelve None y no un BookDepth de
+    ceros: sin niveles no hay media que calcular, y un cero ahi entraria en la
+    distribucion como si fuera una observacion.
+    """
+    if snapshot is None:
+        return None
+    niveles = [*snapshot.bids, *snapshot.asks]
+    if not niveles:
+        return None
+    tamanos = [nivel.size for nivel in niveles]
+    total = sum(tamanos, Decimal(0))
+    return BookDepth(
+        bid_size=sum((nivel.size for nivel in snapshot.bids), Decimal(0)),
+        ask_size=sum((nivel.size for nivel in snapshot.asks), Decimal(0)),
+        max_level_size=max(tamanos),
+        mean_level_size=total / Decimal(len(tamanos)),
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class NotradeBar:
+    """DetectorBar + el frontier del libro de esa barra (P08c-CONF-05).
+
+    Composicion y no herencia: NotradeBar LLEVA un DetectorBar en vez de extenderlo, asi
+    que absorption/climax/void siguen recibiendo exactamente el tipo de antes y no se
+    enteran de que existe el libro.
+
+    book es None cuando esa barra no tuvo frontier, que es un caso LEGITIMO (el libro
+    pudo no estar suscrito, o hubo un resync) y no un error: el nucleo le aplica su
+    fail-safe (OBS-1).
+    """
+
+    bar: DetectorBar
+    book: BookDepth | None
+
+
+@dataclass(frozen=True, slots=True)
+class NotradeWindowedSpec:
+    """Materializador WINDOWED de notrade.*, que ademas del footprint+vela lee el LIBRO.
+
+    POR QUE UN SPEC PROPIO Y NO DetectorWindowedSpec (P08c-CONF-05). El transform de
+    DetectorWindowedSpec recibe `Sequence[DetectorBar]` y NADA MAS -- sin session --,
+    asi que desde ahi es IMPOSIBLE leer una tercera tabla. Las opciones eran meter el
+    libro en DetectorBar (y entonces absorption, climax y void pagarian una lectura que
+    no usan, y su DAG declararia una arista muerta) o dar a notrade su propio spec y su
+    propia base. Se eligio lo segundo: los otros tres detectores siguen EXACTAMENTE
+    igual, con su DetectorWindowedSpec y su DetectorBar intactos.
+
+    Se apoya en que materialize_windowed es GENERICA EN LA BASE (materialize_windowed
+    [Base, Out]): la mecanica de ventana rodante no depende del tipo de los elementos,
+    asi que sirve NotradeBar sin duplicar el bucle ni pasar nada por un lado.
+
+    El libro se empareja por OPEN_TIME, no por posicion, y esa es la otra diferencia con
+    _read_detector_window. Alli footprint y vela deben cubrir las mismas barras y una
+    discrepancia es fail-loud. Aqui NO: una barra puede tener footprint y no tener
+    frontier, y eso es legitimo. La ausencia viaja como book=None hasta el nucleo, que
+    le aplica su fail-safe (OBS-1: L2 = 0 en esa barra, score como limite inferior).
+    """
+
+    transform: Callable[[Sequence[NotradeBar]], ScalarValue]
+    window_bars: int = DETECTOR_WINDOW_BARS
+
+    def materialize(
+        self,
+        session: Session,
+        exchange: str,
+        symbol: str,
+        timeframe: str,
+        open_time: int,
+        history_bars: int,
+    ) -> tuple[ScalarValue, ...]:
+        total = history_bars + self.window_bars - 1
+        detector = _read_detector_window(
+            session, exchange, symbol, timeframe, open_time, total
+        )
+        frontiers = frontier_by_open_time(
+            read_orderbook_frontier_window(
+                session, exchange, symbol, timeframe, open_time, total
+            )
+        )
+        base = tuple(
+            NotradeBar(
+                bar=bar,
+                book=_book_depth(frontiers.get(bar.footprint.open_time)),
+            )
+            for bar in detector
         )
         return materialize_windowed(
             base,
@@ -1409,7 +1517,7 @@ def _void_snap_bearish(window: Sequence[DetectorBar]) -> ScalarValue:
     )
 
 
-def _notrade_signal(window: Sequence[DetectorBar]) -> NoTradeSignal:
+def _notrade_signal(window: Sequence[NotradeBar]) -> NoTradeSignal:
     """El veredicto de no-trade de la ULTIMA barra de la ventana.
 
     NoTradeCandle mezcla las dos caras: delta y volumen AGRESOR del footprint, y el OHLC
@@ -1425,14 +1533,17 @@ def _notrade_signal(window: Sequence[DetectorBar]) -> NoTradeSignal:
     veredicto = evaluate_no_trade(
         [
             NoTradeCandle(
-                delta=bar.footprint.bar_delta,
-                volume=bar.aggressor_volume,
-                high=bar.candle.high,
-                low=bar.candle.low,
-                close=bar.candle.close,
-                open=bar.candle.open,
+                delta=elemento.bar.footprint.bar_delta,
+                volume=elemento.bar.aggressor_volume,
+                high=elemento.bar.candle.high,
+                low=elemento.bar.candle.low,
+                close=elemento.bar.candle.close,
+                open=elemento.bar.candle.open,
+                # None cuando esa barra no tuvo frontier: ausencia legitima con
+                # fail-safe propio en el nucleo (OBS-1), no un error.
+                book=elemento.book,
             )
-            for bar in window
+            for elemento in window
         ]
     )
     if veredicto is None:
@@ -1444,7 +1555,7 @@ def _notrade_signal(window: Sequence[DetectorBar]) -> NoTradeSignal:
     return veredicto
 
 
-def _notrade_score(window: Sequence[DetectorBar]) -> ScalarValue:
+def _notrade_score(window: Sequence[NotradeBar]) -> ScalarValue:
     return ScalarValue(
         scalar_type=ScalarType.DECIMAL,
         decimal_value=notrade_decimal_output(
@@ -1453,7 +1564,7 @@ def _notrade_score(window: Sequence[DetectorBar]) -> ScalarValue:
     )
 
 
-def _notrade_footprint_ineff(window: Sequence[DetectorBar]) -> ScalarValue:
+def _notrade_footprint_ineff(window: Sequence[NotradeBar]) -> ScalarValue:
     return ScalarValue(
         scalar_type=ScalarType.DECIMAL,
         decimal_value=notrade_decimal_output(
@@ -1462,7 +1573,7 @@ def _notrade_footprint_ineff(window: Sequence[DetectorBar]) -> ScalarValue:
     )
 
 
-def _notrade_flow_dislocation(window: Sequence[DetectorBar]) -> ScalarValue:
+def _notrade_flow_dislocation(window: Sequence[NotradeBar]) -> ScalarValue:
     return ScalarValue(
         scalar_type=ScalarType.DECIMAL,
         decimal_value=notrade_decimal_output(
@@ -1471,7 +1582,7 @@ def _notrade_flow_dislocation(window: Sequence[DetectorBar]) -> ScalarValue:
     )
 
 
-def _notrade_state(window: Sequence[DetectorBar]) -> ScalarValue:
+def _notrade_state(window: Sequence[NotradeBar]) -> ScalarValue:
     """La UNICA salida STRING de la familia de detectores (carrier D1)."""
     return ScalarValue(
         scalar_type=ScalarType.STRING,
@@ -1592,14 +1703,14 @@ SOURCE_MATERIALIZERS: dict[str, SourceMaterializer] = {
     ),
     VOID_SNAP_BULLISH_SOURCE_ID: DetectorWindowedSpec(transform=_void_snap_bullish),
     VOID_SNAP_BEARISH_SOURCE_ID: DetectorWindowedSpec(transform=_void_snap_bearish),
-    NOTRADE_SCORE_SOURCE_ID: DetectorWindowedSpec(transform=_notrade_score),
-    NOTRADE_FOOTPRINT_INEFF_SOURCE_ID: DetectorWindowedSpec(
+    NOTRADE_SCORE_SOURCE_ID: NotradeWindowedSpec(transform=_notrade_score),
+    NOTRADE_FOOTPRINT_INEFF_SOURCE_ID: NotradeWindowedSpec(
         transform=_notrade_footprint_ineff
     ),
-    NOTRADE_FLOW_DISLOCATION_SOURCE_ID: DetectorWindowedSpec(
+    NOTRADE_FLOW_DISLOCATION_SOURCE_ID: NotradeWindowedSpec(
         transform=_notrade_flow_dislocation
     ),
-    NOTRADE_STATE_SOURCE_ID: DetectorWindowedSpec(transform=_notrade_state),
+    NOTRADE_STATE_SOURCE_ID: NotradeWindowedSpec(transform=_notrade_state),
     VOLUME_RATIO_VS_AVG_SOURCE_ID: CandleWindowedSpec(
         transform=_volume_ratio_vs_avg, window_bars=LOOKBACK_DEFAULT + 1
     ),
