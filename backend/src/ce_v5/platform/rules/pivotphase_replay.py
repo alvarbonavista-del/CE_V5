@@ -25,6 +25,7 @@ from decimal import Decimal
 from ce_v5.platform.rules.pivotphase import (
     BEARISH,
     BULLISH,
+    AbsorptionZone,
     BarSignals,
     Phase,
     PivotParams,
@@ -153,6 +154,48 @@ def _absorption_raw(
     return None
 
 
+def _absorption_zone(
+    price: Decimal, bid_strength: Decimal, ask_strength: Decimal
+) -> AbsorptionZone | None:
+    """La AbsorptionZone de la barra para el gate de fase 3, o None sin absorcion.
+
+    ZONE_TYPE ESTA INVERTIDO RESPECTO DEL LADO, y no es un descuido (P08c-CONF-04): el
+    dominio de zone_type son las constantes BULLISH/BEARISH y describen QUE HACE la zona
+    al precio, no quien agredio.
+
+      ASK (agresion COMPRADORA absorbida, el precio no logra subir) = TECHO = zona que
+        empuja a la BAJA -> zone_type = BEARISH.
+      BID (agresion VENDEDORA absorbida, el precio no logra hundirse) = SUELO = zona que
+        empuja al ALZA -> zone_type = BULLISH.
+
+    Asi encaja con is_counter_zone de _on_encounter, que con impulso BULLISH (espera
+    TECHO) exige una zona BEARISH; es la misma orientacion que ya usa _absorption_raw
+    para F1. Tomar el lado tal cual haria que ninguna zona casara nunca.
+
+    ZONE_PRICE = el CIERRE de la barra (P08c-CONF-04). detect_absorption no produce un
+    nivel: razona sobre escalares de la barra (volumen, delta, span, desplazamiento) y
+    devuelve (detected, side, strength) sin precio. El cierre es el unico precio con
+    significado disponible en la barra donde la absorcion ocurrio, y es el MISMO que
+    alimenta BarSignals.price, asi que zona y precio viven en la misma escala -- que es
+    lo que la comparacion de _on_encounter (|zone_price - level| / level) necesita.
+
+    A lo sumo un lado es > 0 por CONSTRUCCION: absorption.bid/ask_strength salen de un
+    unico AbsorptionSignal con un unico `side`, y cada fuente publica 0 cuando la
+    absorcion no es de su lado. No se comprueba aqui porque no es una alineacion entre
+    dos lecturas independientes (eso si se verifica, en _read_detector_window): es una
+    invariante de un solo computo aguas arriba.
+    """
+    if ask_strength > 0:
+        return AbsorptionZone(
+            zone_price=price, zone_type=BEARISH, zone_strength=ask_strength
+        )
+    if bid_strength > 0:
+        return AbsorptionZone(
+            zone_price=price, zone_type=BULLISH, zone_strength=bid_strength
+        )
+    return None
+
+
 def _toxicity_raw(
     climax_top: Decimal,
     climax_bottom: Decimal,
@@ -241,13 +284,13 @@ def replay_from_series(
             vp_touch=_nearest_vp_touch(
                 series.price[i], series.vp_poc[i], series.vp_vah[i], series.vp_val[i]
             ),
-            # SIGUE None tras P08c-CONF-01 (paso 3a), y no por olvido: el gate de fase 3
-            # exige un AbsorptionZone con zone_price, y absorption.bid/ask_strength solo
-            # sirven la FUERZA [0,1] -- el nucleo detect_absorption no produce un nivel.
-            # Inventar aqui un precio de zona (p.ej. el cierre) seria fabricar
-            # semantica. F1 SI esta vivo: usa esa fuerza para la CONFIANZA, que no
-            # necesita nivel.
-            absorption=None,
+            # VIVA desde P08c-CONF-04 (paso 3d). Hasta 3c iba None a proposito: faltaba
+            # el mandato de que precio usar como nivel de zona, y fabricarlo sin
+            # ratificar habria sido inventar semantica. Ratificado el cierre como
+            # zone_price, el camino completo 0->5 ya confirma en vivo.
+            absorption=_absorption_zone(
+                series.price[i], series.absorption_bid[i], series.absorption_ask[i]
+            ),
         )
         state, _event = evaluate_bar(state, bar, params)
         # F1 se calcula DESPUES de avanzar la FSM porque necesita la direccion VIGENTE

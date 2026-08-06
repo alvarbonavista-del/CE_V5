@@ -5,14 +5,24 @@ cumplen sea cual sea el detalle del FSM; el comportamiento fino ya lo cubren P3/
 test de integracion del replay (ci_local).
 """
 
+from dataclasses import replace
 from decimal import Decimal
 
 import pytest
 
-from ce_v5.platform.rules.pivotphase import PivotParams, PivotState, VpTouch
+from ce_v5.platform.rules.pivotphase import (
+    BEARISH,
+    BULLISH,
+    Phase,
+    PivotParams,
+    PivotState,
+    VpTouch,
+)
 from ce_v5.platform.rules.pivotphase_confidence import default_params
 from ce_v5.platform.rules.pivotphase_replay import (
+    ReplayResult,
     ReplaySeries,
+    _absorption_zone,
     _nearest_vp_touch,
     _project_confidence,
     replay_from_series,
@@ -447,4 +457,143 @@ class TestF3EnElReplay:
         ]
         assert [o.confidence for o in acompana.outcomes] != [
             o.confidence for o in diverge.outcomes
+        ]
+
+
+# --- Gate de fase 3 VIVO en el replay (P08c-CONF-04) ----------------------------------
+
+_NIVEL = Decimal(100)
+
+
+def _series_hacia_fase_3(
+    *, lado: str = "ask", rompe_la_zona: bool = False, n: int = 24
+) -> ReplaySeries:
+    """Serie que lleva la FSM por el camino COMPLETO hasta fase 3 y mas alla.
+
+    La forma esta calibrada contra los gates reales, no inventada: 12 barras de cebado
+    con delta 1 (para que la ventana de normalizacion tenga distribucion), 2 de impulso
+    con delta 500 (percentil alto -> impulse_score >= 70 -> fase 1), una barra que clava
+    el precio EN el nivel VP (vp_poc == price, asi que el toque esta a distancia 0 ->
+    fase 2) y despues absorcion sostenida en ese nivel (-> fase 3).
+
+    lado="ask" da zona BEARISH, que es la que SOPORTA un impulso alcista; lado="bid" da
+    la contraria y la FSM debe quedarse clavada en fase 2.
+    rompe_la_zona=True hace que el precio atraviese la zona al alza (100.4 > 100.3).
+    """
+    precio: list[Decimal] = []
+    delta: list[Decimal] = []
+    bid: list[Decimal] = []
+    ask: list[Decimal] = []
+    for i in range(n):
+        fuerza = Decimal(0)
+        if i < 12:
+            precio.append(Decimal(90) + Decimal(i) / Decimal(10))
+            delta.append(Decimal(1))
+        elif i < 14:
+            precio.append(Decimal("99") + Decimal(i - 12) / Decimal(2))
+            delta.append(Decimal(500))
+        elif i == 14:
+            precio.append(_NIVEL)
+            delta.append(Decimal(10))
+        else:
+            precio.append(Decimal("100.4") if (rompe_la_zona and i >= 17) else _NIVEL)
+            delta.append(Decimal(10))
+            fuerza = Decimal("0.8")
+        bid.append(fuerza if lado == "bid" else Decimal(0))
+        ask.append(fuerza if lado == "ask" else Decimal(0))
+    plana = tuple(Decimal(0) for _ in range(n))
+    return ReplaySeries(
+        price=tuple(precio),
+        delta=tuple(delta),
+        delta_momentum=plana,
+        price_range=tuple(Decimal(2) for _ in range(n)),
+        vp_poc=tuple(precio),
+        vp_vah=tuple(Decimal(500) for _ in range(n)),
+        vp_val=tuple(Decimal(50) for _ in range(n)),
+        vp_hvn=tuple(precio),
+        vp_lvn=tuple(Decimal(50) for _ in range(n)),
+        absorption_bid=tuple(bid),
+        absorption_ask=tuple(ask),
+        climax_top=plana,
+        climax_bottom=plana,
+        void_bull=plana,
+        void_bear=plana,
+        notrade_score=plana,
+        cvd=plana,
+    )
+
+
+def _replay(series: ReplaySeries, params: PivotParams | None = None) -> ReplayResult:
+    return replay_from_series(
+        series, PivotState(), params or PivotParams(), default_params(), 10, 10
+    )
+
+
+class TestGateDeFase3EnElReplay:
+    """El camino 0->3 CONFIRMA EN VIVO desde P08c-CONF-04 (antes moria en fase 2)."""
+
+    def test_el_zone_type_invierte_el_lado_de_la_absorcion(self) -> None:
+        # ASK (agresion compradora absorbida) = TECHO = zona BEARISH, y al reves. Si
+        # esto se toma tal cual en vez de invertido, is_counter_zone no casa NUNCA.
+        techo = _absorption_zone(_NIVEL, Decimal(0), Decimal("0.8"))
+        assert techo is not None
+        assert techo.zone_type == BEARISH
+        assert techo.zone_price == _NIVEL
+        assert techo.zone_strength == Decimal("0.8")
+        suelo = _absorption_zone(_NIVEL, Decimal("0.7"), Decimal(0))
+        assert suelo is not None
+        assert suelo.zone_type == BULLISH
+        assert suelo.zone_strength == Decimal("0.7")
+
+    def test_sin_absorcion_de_ningun_lado_no_hay_zona(self) -> None:
+        # None y no una zona de fuerza 0: "no hubo absorcion" no es una zona debil, es
+        # la AUSENCIA de zona, y el gate de fase 3 tiene que quedarse quieto.
+        assert _absorption_zone(_NIVEL, Decimal(0), Decimal(0)) is None
+
+    def test_el_replay_alcanza_fase_3_por_el_camino_completo(self) -> None:
+        # LA PRUEBA DE QUE 3d SIRVE PARA ALGO: antes de alimentar BarSignals.absorption
+        # el replay se quedaba clavado en fase 2 pasara lo que pasara.
+        resultado = _replay(_series_hacia_fase_3())
+        fases = [o.phase for o in resultado.outcomes]
+        assert int(Phase.ABSORPTION) in fases
+        assert max(fases) >= int(Phase.ABSORPTION)
+        assert resultado.final_state.phase3_zone_price == _NIVEL
+        assert resultado.final_state.phase3_zone_strength == Decimal("0.8")
+
+    def test_la_absorcion_del_lado_CONTRARIO_deja_la_fsm_en_fase_2(self) -> None:
+        # MUERDE la orientacion: misma serie, misma fuerza, solo cambia el lado. Con
+        # impulso alcista, una zona de SUELO no soporta el techo que se espera.
+        fases = [o.phase for o in _replay(_series_hacia_fase_3(lado="bid")).outcomes]
+        assert int(Phase.ABSORPTION) not in fases
+        assert max(fases) == int(Phase.ENCOUNTER)
+
+    def test_romper_la_zona_invalida_y_devuelve_la_fsm_a_idle(self) -> None:
+        # PHASE3_ZONE_BREAK visto desde el replay: el precio atraviesa la zona al alza
+        # (100.4 > 100 * 1.003) y la secuencia entera muere.
+        fases = [
+            o.phase for o in _replay(_series_hacia_fase_3(rompe_la_zona=True)).outcomes
+        ]
+        assert int(Phase.ABSORPTION) in fases
+        assert fases[-1] == int(Phase.IDLE)
+
+    def test_el_11o_param_gobierna_la_rotura_tambien_en_el_replay(self) -> None:
+        # Sin rotura por defecto; con el umbral apretado a 0.001 el mismo precio rompe.
+        series = _series_hacia_fase_3(rompe_la_zona=True)
+        laxo = _replay(
+            series, replace(PivotParams(), phase3_break_threshold=Decimal("0.01"))
+        )
+        assert laxo.final_state.phase != int(Phase.IDLE)
+        estricto = _replay(
+            series, replace(PivotParams(), phase3_break_threshold=Decimal("0.001"))
+        )
+        assert estricto.final_state.phase == int(Phase.IDLE)
+
+    def test_sigue_siendo_determinista_bit_a_bit_con_la_zona_viva(self) -> None:
+        # ADR-007: la zona entra en el estado (phase3_zone_price/strength), asi que el
+        # determinismo hay que reafirmarlo con el gate abierto.
+        series = _series_hacia_fase_3()
+        una, otra = _replay(series), _replay(series)
+        assert una == otra
+        assert [str(o.confidence) for o in una.outcomes] == [
+            str(o.confidence) for o in otra.outcomes
         ]

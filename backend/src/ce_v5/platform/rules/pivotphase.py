@@ -21,11 +21,13 @@ DECISIONES DE DISENO (AHP REV 2, para revision de Central en P3):
 - FASE 4 (agotamiento): gate por DELTA real menguante (decision 6b, F2): |delta| cae por
   debajo de phase4_delta_drop * pico, sostenido phase4_min_candles. NO usa el
   phase4_exhaustion_min de v4 (era el umbral del proxy notrade, ahora F7/confianza, P4).
-  phase4_exhaustion_min se conserva INYECTABLE (los 10 params de paridad) para el uso de
+  phase4_exhaustion_min se conserva INYECTABLE (los params de paridad) para el uso de
   F2 en P4; el gate ESTRUCTURAL de fase 4 no lo lee. Se eleva en el informe de P3.
-- FASE 3 (absorcion): gate estructural; absorption puede ser None (DIFERIDA hasta
-  candle.open, P08b): entonces la FSM se queda en fase 2 (no confirma en vivo por el
-  camino completo). Los tests inyectan absorption.
+- FASE 3 (absorcion): gate estructural. absorption YA NO es None en el replay
+  (P08c-CONF-04): se arma desde absorption.bid/ask_strength + close, asi que el camino
+  completo 0->5 confirma en vivo. Sigue admitiendo None (barra sin absorcion de ningun
+  lado), y entonces la FSM se queda en fase 2. Ademas la fase 3 INVALIDA
+  (PHASE3_ZONE_BREAK) si el precio atraviesa la zona siguiendo el impulso.
 """
 
 from __future__ import annotations
@@ -95,7 +97,12 @@ class Invalidation:
 
 @dataclass(frozen=True, slots=True)
 class PivotParams:
-    """Los 10 parametros inyectables de la FSM (semillas [PARIDAD v4]), en Decimal.
+    """Los 11 parametros inyectables de la FSM, en Decimal.
+
+    Diez son semillas [PARIDAD v4]; phase3_break_threshold es el 11o (P08c-CONF-04) y NO
+    tiene semilla v4 documentada -- es [A CALIBRAR AHP], y arranca igualada a
+    phase2_break_threshold porque ambas miden lo mismo (que tanto por uno de ruptura
+    invalida un nivel) sobre precios del mismo orden.
 
     phase4_exhaustion_min NO es un gate ESTRUCTURAL en v5 (decision 6b): se conserva
     para el factor F2 de la confianza (P4). Los demas gobiernan las transiciones/
@@ -107,6 +114,7 @@ class PivotParams:
     phase2_near_tolerance: Decimal = Decimal("0.001")
     phase2_break_threshold: Decimal = Decimal("0.003")
     phase3_zone_match: Decimal = Decimal("0.002")
+    phase3_break_threshold: Decimal = Decimal("0.003")
     phase4_exhaustion_min: Decimal = Decimal("60")
     phase4_min_candles: int = 3
     phase4_delta_drop: Decimal = Decimal("0.5")
@@ -124,7 +132,12 @@ class VpTouch:
 
 @dataclass(frozen=True, slots=True)
 class AbsorptionZone:
-    """Una zona de absorcion detectada en la barra (DIFERIDA hasta candle.open)."""
+    """Una zona de absorcion detectada en la barra.
+
+    zone_type toma los valores de BULLISH/BEARISH y describe QUE HACE la zona al precio
+    (suelo que empuja al alza / techo que empuja a la baja), NO que lado agredio: el
+    armado desde absorption.bid/ask_strength invierte el lado (ver _absorption_zone).
+    """
 
     zone_price: Decimal
     zone_type: str
@@ -144,7 +157,7 @@ class BarSignals:
     impulse_score: Decimal | None = None  # 0-100 normalizado (6a); None -> sin impulso
     delta_momentum: Decimal | None = None
     vp_touch: VpTouch | None = None
-    absorption: AbsorptionZone | None = None  # DIFERIDA (candle.open)
+    absorption: AbsorptionZone | None = None  # None = sin absorcion de ningun lado
 
 
 @dataclass(frozen=True, slots=True)
@@ -308,6 +321,38 @@ def _on_encounter(
 def _on_absorption(
     state: PivotState, bar: BarSignals, params: PivotParams
 ) -> tuple[PivotState, PivotEvent]:
+    # Invalidacion (P08c-CONF-04): el precio ATRAVIESA la zona de absorcion siguiendo el
+    # impulso. La zona es la tesis de la fase 3 -- "aqui hay un muro que para el
+    # impulso" --; si el precio la deja atras por mas del umbral, ese muro no existia y
+    # la secuencia de pivote muere.
+    #
+    # ORIENTACION, derivada del patron de fase 2 (_on_encounter) que es su gemelo: alli
+    # direction BULLISH invalida cuando bar.price SUPERA el nivel, porque el impulso
+    # alcista sigue subiendo en vez de girar. Aqui igual: state.direction es la del
+    # IMPULSO (BULLISH = impulso alcista -> pivote esperado bearish), asi que un impulso
+    # BULLISH esperaba un TECHO y se rompe HACIA ARRIBA; el BEARISH esperaba un
+    # SUELO y se rompe HACIA ABAJO. La rotura va SIEMPRE en el sentido del impulso,
+    # nunca contra el.
+    zone = state.phase3_zone_price
+    if zone > 0:
+        if state.direction == BULLISH and bar.price > zone * (
+            1 + params.phase3_break_threshold
+        ):
+            return _reset(), PivotEvent(
+                "invalidated",
+                int(Phase.ABSORPTION),
+                state.direction,
+                Invalidation.PHASE3_ZONE_BREAK,
+            )
+        if state.direction == BEARISH and bar.price < zone * (
+            1 - params.phase3_break_threshold
+        ):
+            return _reset(), PivotEvent(
+                "invalidated",
+                int(Phase.ABSORPTION),
+                state.direction,
+                Invalidation.PHASE3_ZONE_BREAK,
+            )
     peak = state.phase1_peak_delta
     if peak <= 0:
         return state, _NONE_EVENT

@@ -68,6 +68,7 @@ _PIVOT_PARAM_FIELDS: tuple[str, ...] = (
     "phase2_near_tolerance",
     "phase2_break_threshold",
     "phase3_zone_match",
+    "phase3_break_threshold",
     "phase4_exhaustion_min",
     "phase4_min_candles",
     "phase4_delta_drop",

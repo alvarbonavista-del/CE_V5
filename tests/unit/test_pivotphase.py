@@ -2,22 +2,20 @@
 
 Senales INYECTADAS a mano (BarSignals construidos en el test), sin BD, sin IO, sin
 catalogo vivo: el nucleo se prueba en aislamiento total. Cubre las dos secuencias
-COMPLETAS (bullish y bearish, 0->1->2->3->4->5 CONFIRMED con vuelta a IDLE), las tres
-invalidaciones con gatillo vivo, la paridad de los 10 params, la mordida (mutar un
+COMPLETAS (bullish y bearish, 0->1->2->3->4->5 CONFIRMED con vuelta a IDLE), las CUATRO
+invalidaciones con gatillo vivo, la paridad de los 11 params, la mordida (mutar un
 umbral rompe la confirmacion), el determinismo, el gate estructural de absorcion y el
 NOT_EVALUABLE de impulse_score.
 
-PHASE3_ZONE_BREAK queda PENDIENTE (test skipped): la constante existe en el modulo por
-paridad v4 pero NO tiene gatillo vivo en este nucleo, porque absorption.* esta DIFERIDA
-(candle.open, P08b). Se cubrira cuando el gate exista; no se fuerza codigo muerto.
+PHASE3_ZONE_BREAK YA TIENE GATILLO VIVO (P08c-CONF-04): la cuarta invalidacion se cubre
+con secuencia real en las dos direcciones, con la orientacion probada por su lado malo y
+con la mordida del 11o param. Aqui ya no queda ningun test saltado.
 """
 
 from __future__ import annotations
 
 from dataclasses import replace
 from decimal import Decimal
-
-import pytest
 
 from ce_v5.platform.rules.pivotphase import (
     BEARISH,
@@ -223,35 +221,89 @@ def test_invalidacion_phase5_timeout_vuelve_a_idle() -> None:
     assert final == PivotState()
 
 
-@pytest.mark.skip(
-    reason=(
-        "PHASE3_ZONE_BREAK: PENDIENTE. La constante existe por paridad v4 pero no "
-        "tiene gatillo vivo en el nucleo v5 porque absorption.* esta DIFERIDA "
-        "(candle.open, P08b). No se fuerza codigo muerto: se cubre en P5."
+def test_invalidacion_phase3_zone_break() -> None:
+    """En fase 3 el precio ATRAVIESA la zona siguiendo el impulso (> 0.3%) -> invalida.
+
+    Con la zona en 100 y umbral 0.003, el corte esta en 100.3: 100.4 la deja atras. El
+    muro que justificaba la fase 3 no existia, asi que la secuencia muere.
+    """
+    bars = [*_bullish_sequence()[:4], BarSignals(price=_D("100.4"), delta=_D("10"))]
+    final, events = _run(bars)
+    assert events[-1] == PivotEvent(
+        "invalidated",
+        int(Phase.ABSORPTION),
+        BULLISH,
+        Invalidation.PHASE3_ZONE_BREAK,
     )
-)
-def test_invalidacion_phase3_zone_break() -> None:  # pragma: no cover
-    raise AssertionError("pendiente: sin gatillo vivo (absorption.* diferida)")
+    assert final == PivotState()
 
 
-def test_phase3_zone_break_declarada_pero_sin_gatillo() -> None:
-    """Lo que SI se puede afirmar hoy: la constante existe y no la emite nadie."""
+def test_invalidacion_phase3_zone_break_bearish() -> None:
+    """Simetrico: en bajista la zona se rompe por DEBAJO de 100 * (1 - 0.003) = 99.7."""
+    bars = [*_bearish_sequence()[:4], BarSignals(price=_D("99.6"), delta=_D("-10"))]
+    final, events = _run(bars)
+    assert events[-1].reason == Invalidation.PHASE3_ZONE_BREAK
+    assert events[-1].direction == BEARISH
+    assert final == PivotState()
+
+
+def test_phase3_zone_break_solo_rompe_EN_EL_SENTIDO_DEL_IMPULSO() -> None:
+    """LA ORIENTACION, y aqui es donde muerde de verdad.
+
+    state.direction es la del IMPULSO. Con impulso BULLISH se espera un TECHO, asi que
+    el precio ALEJANDOSE HACIA ABAJO de la zona es el pivote FUNCIONANDO, no rompiendose
+    -- por lejos que caiga. Si la desigualdad estuviera invertida, este caso invalidaria
+    justo la secuencia que va bien, y las dos pruebas de arriba seguirian en verde.
+    """
+    lejos_a_la_baja = BarSignals(price=_D("90"), delta=_D("10"))
+    state, events = _run([*_bullish_sequence()[:4], lejos_a_la_baja])
+    assert events[-1].reason != Invalidation.PHASE3_ZONE_BREAK
+    assert state.phase == int(Phase.ABSORPTION)
+    # Y en bajista, el espejo: subir MUY por encima de la zona no rompe un SUELO.
+    lejos_al_alza = BarSignals(price=_D("110"), delta=_D("-10"))
+    state_b, events_b = _run([*_bearish_sequence()[:4], lejos_al_alza])
+    assert events_b[-1].reason != Invalidation.PHASE3_ZONE_BREAK
+    assert state_b.phase == int(Phase.ABSORPTION)
+
+
+def test_una_secuencia_sana_no_emite_phase3_zone_break() -> None:
+    """Sin falsos positivos: el camino completo 0->5 nunca dispara la invalidacion."""
     assert Invalidation.PHASE3_ZONE_BREAK == "phase3_zone_break"
     _, events = _run(_bullish_sequence())
+    assert events[-1].kind == "confirmed"
     assert all(e.reason != Invalidation.PHASE3_ZONE_BREAK for e in events)
 
 
-# --- Paridad de los 10 parametros -----------------------------------------------
+def test_param_phase3_break_threshold_gobierna_la_rotura_de_zona() -> None:
+    """MUERDE con el 11o param: con 0.003 el precio 100.2 aguanta; con 0.001 rompe."""
+    bars = [*_bullish_sequence()[:4], BarSignals(price=_D("100.2"), delta=_D("10"))]
+    state, events = _run(bars)
+    assert events[-1].kind == "none"
+    assert state.phase == int(Phase.ABSORPTION)
+    strict_state, strict = _run(
+        bars, replace(_PARAMS, phase3_break_threshold=_D("0.001"))
+    )
+    assert strict[-1].reason == Invalidation.PHASE3_ZONE_BREAK
+    assert strict_state == PivotState()
+
+
+# --- Paridad de los parametros --------------------------------------------------
 
 
 def test_semillas_de_paridad_v4() -> None:
-    """Los 10 params tienen exactamente las semillas [PARIDAD v4], en Decimal."""
+    """Los 11 params tienen exactamente sus semillas, en Decimal.
+
+    Diez son [PARIDAD v4]; phase3_break_threshold es el 11o (P08c-CONF-04) y es [A
+    CALIBRAR AHP] -- no hay semilla v4 documentada para la rotura de zona de fase 3 --,
+    igualada de arranque a phase2_break_threshold.
+    """
     p = PivotParams()
     assert p.phase1_impulse_min == _D("70")
     assert p.phase1_min_candles == 2
     assert p.phase2_near_tolerance == _D("0.001")
     assert p.phase2_break_threshold == _D("0.003")
     assert p.phase3_zone_match == _D("0.002")
+    assert p.phase3_break_threshold == _D("0.003")
     assert p.phase4_exhaustion_min == _D("60")
     assert p.phase4_min_candles == 3
     assert p.phase4_delta_drop == _D("0.5")
@@ -347,7 +399,7 @@ def test_phase4_exhaustion_min_no_es_gate_estructural() -> None:
 def test_phase2_near_tolerance_no_es_gate_estructural() -> None:
     """phase2_near_tolerance tampoco se lee: fase 2 usa phase3_zone_match.
 
-    Se conserva por paridad de los 10 params; se eleva a Central en el informe de P3.
+    Se conserva por paridad de los params v4; se eleva a Central en el informe de P3.
     """
     baseline, base_events = _run(_bullish_sequence())
     mutated, events = _run(
