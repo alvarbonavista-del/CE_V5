@@ -2489,7 +2489,7 @@ semantica.
 =====================================================================
 
 =====================================================================
-38. CIERRE DE PIEZA P08b + COLOCACION P10
+38. CIERRE DE PIEZA P08b + COLOCACION DE LA REAPERTURA DE P08c
 =====================================================================
 Estado: P08b ENTREGADA. Doble revision Central+CSA CONFORME. Firmada Alvaro
 2026-08-06. 6 de 8 de M3.
@@ -2522,19 +2522,94 @@ append-only, scope system, GATE bit-exacto ADR-007.
 
 DIFERIDOS PROPIOS DE P08b: CERO (D1 resuelto en esta entrega).
 
-COLOCACION P10 (pieza nueva, NO extension de P08c):
+COLOCACION (registrada aqui como "P10"; CORREGIDO a P08c REABIERTA, ver sec.39):
   Detectores footprint desbloqueados por P08b (swing.* + candle.open):
   absorption.*, climax.*, void.*, notrade.* (parte FP+Flow; bloque L2 sigue
   diferido). Activacion F1/F3 en pivotphase.confidence (formula_version se
   incrementa). Evaluar F5/F7 si las fuentes existen. Resolver skip
   PHASE3_ZONE_BREAK. Documentar nuevo techo de confianza. Observacion CSA:
-  nombrar como pieza nueva (P10), no como extension de P08c, para auditorias
-  limpias.
+  nombrar como pieza nueva, no como extension, para auditorias limpias.
+  ENMIENDA (2026-08-06): el trabajo se ejecuto finalmente como REAPERTURA DE P08c,
+  no como pieza P10 -- el nombre P10 estaba tomado por P10a/P10b (BYOC/ejecucion,
+  M5) y habria colisionado en el roadmap. Ver sec.39.
 
-RECOMENDACIONES CSA (no bloqueantes, guia para P10):
+RECOMENDACIONES CSA (no bloqueantes, guia para la reapertura de P08c):
   1. formula_version obligatorio al activar F1/F3/F5/F7.
   2. Tabla viva F1-F7 (disponible/construido/activo/peso).
   3. Documentar patron ScalarValue como contrato general.
+
+REGLA 5.37 registrada en sec.36 (P08c). Vigente.
+=====================================================================
+
+=====================================================================
+39. CIERRE REAPERTURA P08c (completar F1-F7 + notrade L2)
+=====================================================================
+Estado: REAPERTURA DE P08c CERRADA. 2026-08-06, merge 4ec79f7 en main,
+EXC-CI-P08C-01. 11 commits (ff9da47 a 36d2a4a). 7 de 8 de M3.
+
+Completa los diferidos de P08c que P08b desbloqueo (swing.*, candle.open, D1).
+
+DICTAMENES:
+  P08c-DET-01: los CUATRO detectores como fuentes WINDOWED / CONTINUOUS /
+    DEFAULT-ONLY, con computo INTERNO (patron void/MACD: lo NON_SERVIBLE no se
+    pide por dispatch, se lee en el materializador). candle.high/low POINT_LOCAL
+    (espejo de candle.open). void computa su LVN internamente. notrade.state es
+    STRING, la primera categorica servida por el carrier D1.
+  P08c-CONF-01: activar F1 (absorcion, raw orientado por LADO) + reweight 6x(1/6)
+    + formula_version 2 -> 3.
+  P08c-CONF-02: el gate de fase 3 se construye como SUB-PIEZA (opcion A).
+  P08c-CONF-03: F3 divergencia precio-vs-CVD CLOSE-ONLY (reutiliza el
+    emparejamiento de divergence.*, convencion 'indicador leido en la barra del
+    pivote de precio'); magnitud = desplazamiento RELATIVO
+    |price_curr - price_prev| / price_prev.
+  P08c-CONF-04: gate de fase 3 VIVO. AbsorptionZone armada desde el CLOSE de la
+    barra + el lado de absorcion (zone_type INVIERTE el lado: ASK = techo =
+    zona BEARISH); 11o parametro phase3_break_threshold, semilla 0.003
+    [A CALIBRAR AHP] -- NO hay semilla v4 documentada para esta rotura --;
+    invalidacion PHASE3_ZONE_BREAK que devuelve la FSM a IDLE cuando el precio
+    atraviesa la zona EN EL SENTIDO DEL IMPULSO. Skip autorizado RESUELTO.
+  P08c-CONF-05: F5 imbalance apilado (pre-registro AHP: ratio 3.0, min_stack 3,
+    diagonal) + bloque L2 de notrade (pre-registro AHP: imbalance_vol 0.30,
+    liquidity_shift 0.30, spoof_proxy 0.20, thin_book 0.20). Reweight a 7x(1/7),
+    formula_version 3 -> 4. Techo efectivo 100.
+  EXC-CI-P08C-01: el merge se apoya en ci_local 24/24 porque la CI de GitHub
+    Actions estuvo caida por INFRAESTRUCTURA. Evidencia: ci.yml IDENTICO al que
+    paso en P08b (git diff origin/main..HEAD -- .github/workflows/ VACIO); el
+    fallo era la ASIGNACION DE RUNNER, del lado de GitHub (jobs 'cancelled' tras
+    ~15 min en cola con duration_ms 0, runner_id 0, steps vacios: ni un solo paso
+    llego a ejecutarse, asi que ningun check del repo fallo de verdad).
+    LECCION REGISTRADA: NO reintentar con pushes en rafaga -- a partir del 3er
+    reintento GitHub dejo de CREAR el run, sintoma compatible con throttle
+    anti-abuso; el remedio empeoro el problema.
+
+ENMIENDAS DE DAG HONESTO (una arista se declara cuando se LEE, no antes):
+  - climax.* NO consume candle.open (su nucleo no lo lee).
+  - F7 consume SOLO notrade.score (ya agrega los otros bloques; no se releen).
+  - F3 consume SOLO cvd.value.
+  - materialize_windowed generalizada a [Base, Out]: la mecanica de ventana
+    rodante no depende del tipo, lo que habilito servir una categorica (STRING)
+    y una base compuesta propia (NotradeBar) sin duplicar el bucle.
+  - imbalance.* se declaro POINT_LOCAL y NO WINDOWED: su formula es
+    auto-contenida en las celdas de UNA barra, asi que declarar una ventana que
+    el nucleo no lee habria sido deshonesto (y habria cegado 99 barras con un
+    warm-up sin motivo).
+
+DIFERIDOS CON DUENO:
+  R-1: formula_version DEBE entrar en el cache_key_schema de TODA fuente cuando
+    se implemente el cache de valor. Hoy notrade.* sube su version (v1 -> v2)
+    pero esa version NO esta en su clave, asi que el bump es documental; el dia
+    que exista cache de valor, la misma clave devolveria valores de dos formulas
+    distintas. Plegado al gate de la seccion 33.
+  R-2: el score practico de notrade llega a ~88, no a 100: dentro del bloque
+    Flow, move_no_delta y delta_stall son RECIPROCAS (su producto ~ 1), asi que
+    sus normalizados no pueden valer 1 a la vez. Es propiedad de la formula de
+    PARIDAD v4, anterior a esta tanda. 'toxic' (>=80) SI es alcanzable, que es lo
+    que el destope perseguia. Observacion para calibracion.
+  R-3: spoof_proxy es un PROXY y el nombre lo dice: distinguir un muro que se
+    retira de uno real exige el DELTA-LOG del libro, diferido a v5.1 en la
+    migracion 0020.
+  Calibracion de TODAS las semillas [A CALIBRAR AHP] (pesos, ratios, umbrales,
+    ventanas): dueno P08c, requiere corpus. Fuera de la frontera de codigo.
 
 REGLA 5.37 registrada en sec.36 (P08c). Vigente.
 =====================================================================

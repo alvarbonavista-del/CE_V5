@@ -4,11 +4,37 @@ Archivo vivo de estado de proceso (sin logica). Lo mantiene Claude Code
 en disco; Alvaro lo resube al knowledge cada vez que se cierra una pieza
 o un hito (DOC_ENTREGABLES sec.8).
 
-Ultima actualizacion: 2026-08-06 (P08b ENTREGADA: pieza CERRADA con doble revision
+Ultima actualizacion: 2026-08-06 (P08c REAPERTURA: CERRADA. Merge 4ec79f7 en main (bajo
+excepcion EXC-CI-P08C-01: CI de GitHub Actions caido por infra, codigo verificado
+ci_local 24/24). Completa los diferidos de P08c que P08b desbloqueo (swing.*,
+candle.open, D1). Entregables: candle.high/low POINT_LOCAL; 4 detectores WINDOWED
+(absorption/climax/void/notrade, 10 fuentes); imbalance.* (F5, 2 fuentes); activacion
+F1/F3/F5/F7 en pivotphase.confidence (reweight 7x1/7, formula_version 4, techo 100);
+gate estructural de fase 3 VIVO (AbsorptionZone + invalidacion phase3_zone_break + 11o
+param); notrade L2 (4 features frontier, score destopado a 100, 'toxic' alcanzable).
+Skip PHASE3_ZONE_BREAK RESUELTO (0 skips propios). 11 commits (ff9da47 a 36d2a4a). M3
+SIGUE ABIERTO: falta P09a).
+
+MODELO DE CONFIANZA pivotphase.confidence -- TABLA VIVA F1-F7 (formula_version 4):
+
+| Factor | Peso | Estado | Nota                                             |
+|--------|------|--------|--------------------------------------------------|
+| F1 absorcion           | 1/7 | activo | + gate estructural de fase 3          |
+| F2 delta exhaustion    | 1/7 | activo |                                       |
+| F3 divergencia CVD     | 1/7 | activo | close-only                            |
+| F4 esfuerzo/resultado  | 1/7 | activo |                                       |
+| F5 imbalance apilado   | 1/7 | activo | imbalance.buy_stack/sell_stack        |
+| F6 contexto VP         | 1/7 | activo |                                       |
+| F7 void/notrade/climax | 1/7 | activo | PENALIZA; notrade ya con bloque L2    |
+
+Techo 100 (los siete con peso E input vivo). CERO factores diferidos: la distincion
+"peso != input vivo" que goberno los pasos 3a-3e deja de existir.
+
+Anterior: 2026-08-06 (P08b ENTREGADA: pieza CERRADA con doble revision
 Central+CSA CONFORME y firma de Alvaro. 16 commits en wip/p08b (c8040ce a 0bc376d),
 merge --no-ff a main via PR #6. 22 fuentes servibles + 1 NON_SERVIBLE (fib.levels). D1
 (carrier ScalarValue) resuelto. 1903 passed, 1 skip preexistente ajeno (P08c
-pivotphase), cero deuda. M3 SIGUE ABIERTO: faltan P09a (+ P10 agendada)).
+pivotphase), cero deuda. M3 SIGUE ABIERTO: faltan P09a (+ P08c reabierta agendada)).
 
 Anterior: 2026-08-04 (P08c ENTREGADA: pieza CERRADA con doble revision
 Central+CSA CONFORME y firma de Alvaro. 9 merges en main (19bed2b, 6c3b63b, ca4d5f4,
@@ -111,8 +137,8 @@ P07 - Ingesta de market data (hibrida), ADR-014: ENTREGADA. ABRE el hito M3
   cola en el arbol.)
 
 ## Pieza en curso
-P09a (router de notificaciones backend) PENDIENTE. P10 (detectores footprint +
-pivotphase completion) PENDIENTE.
+P09a (router de notificaciones backend) PENDIENTE. P08c reabierta (detectores footprint +
+pivotphase completion) CERRADA (merge 4ec79f7, EXC-CI-P08C-01).
 T-05 (visor de desarrollo, transversal): CERRADA (ver "Transversales cerradas").
 
 ## Piezas cerradas
@@ -172,10 +198,11 @@ T-05 (visor de desarrollo, transversal): CERRADA (ver "Transversales cerradas").
   fib.levels (declaracion-only). D1 carrier ScalarValue resuelto (firma unica tuple[ScalarValue,...]).
   Snapshots: 0023 ema, 0025 rsi, 0026 macd, 0027 fib_range, 0028 divergence. 1903 passed, 1 skip
   preexistente ajeno, cero deuda. Diferidos D1-gateados RESUELTOS en esta entrega. Detectores
-  desbloqueados (absorption/climax/void/notrade + F1-F7) colocados en P10. Ver REGISTRO_DECISIONES
-  secciones 37-38.
-Van 15 piezas cerradas de 24 (inventario ampliado de 23 a 24 por la colocacion de P10, ficha nueva de
-detectores footprint + pivotphase completion desbloqueada por P08b).
+  desbloqueados (absorption/climax/void/notrade + F1-F7) colocados en P08c REABIERTA (ya
+  cerrada, merge 4ec79f7). Ver REGISTRO_DECISIONES secciones 37-39.
+Van 15 piezas cerradas de 24 (inventario ampliado de 23 a 24 por la reapertura de P08c,
+ficha de detectores footprint + pivotphase completion desbloqueada por P08b; esa
+reapertura quedo CERRADA el 2026-08-06 con el merge 4ec79f7).
 
 ## Transversales cerradas (no cuentan en las 23 piezas)
 - T-05 - Visor de desarrollo (herramienta desechable / semilla de P13): ENTREGADA/CERRADA.

@@ -5,9 +5,14 @@ estable para revisar las piezas. El CSA revisa coherencia y calidad
 contra los documentos-norte; NO decide (firma Alvaro). Archivo vivo
 mantenido por Claude Code.
 
-Ultima actualizacion: 2026-08-06 (P08b ENTREGADA: cierre formal Central+CSA CONFORME,
+Ultima actualizacion: 2026-08-06 (REAPERTURA DE P08c CERRADA: merge 4ec79f7 bajo
+excepcion EXC-CI-P08C-01. Modelo de confianza COMPLETO -7 factores a 1/7,
+formula_version 4, techo 100-, gate de fase 3 VIVO, notrade destopado a 100 con el
+bloque L2. M3 sigue abierto -7/8: falta P09a-).
+
+Anterior: 2026-08-06 (P08b ENTREGADA: cierre formal Central+CSA CONFORME,
 firmada por Alvaro. PR #6, Actions VERDE 3/3 (run 31078282783). M3 sigue abierto
--6/8: faltan P09a y P10-).
+-6/8: faltan P09a y la reapertura de P08c-).
 
 Anterior: 2026-08-04 (P08c ENTREGADA: cierre formal Central+CSA CONFORME,
 firmada por Alvaro. 9 merges en main. M3 sigue abierto -5/7: faltan P08b y P09a-).
@@ -688,7 +693,7 @@ incrementa si la semantica cambia.
 ## CIERRE: PIEZA P08b (DataSources candle-derived) - 2026-08-06
 
 Veredicto: CONFORME (Central y CSA). Firmado por Alvaro 2026-08-06.
-P08b ENTREGADA (6/8 de M3). NO cierra M3: faltan P09a y P10.
+P08b ENTREGADA (6/8 de M3). NO cierra M3: faltan P09a y la reapertura de P08c.
 PR #6, HEAD 0bc376d, 16 commits (c8040ce a 0bc376d). Actions VERDE 3/3 (run 31078282783). 1903 passed,
 1 skip preexistente ajeno (P08c pivotphase). Cero deuda.
 
@@ -704,16 +709,89 @@ D1-05 (carrier ScalarValue, fib.levels NON_SERVIBLE, divergence RECURSIVE). 8 el
 dictaminadas sin desviacion.
 
 DETECTORES DESBLOQUEADOS: P08b entrego swing.* + candle.open que desbloquean absorption.*/climax.*/
-void.*/notrade.* y F1/F3 de pivotphase. Colocados en P10 (pieza nueva, NO extension de P08c).
+void.*/notrade.* y F1/F3 de pivotphase. Colocados en la REAPERTURA DE P08c (ver el cierre siguiente).
 
-RECOMENDACIONES CSA (3, no bloqueantes, para P10):
+RECOMENDACIONES CSA (3, no bloqueantes, para la reapertura de P08c):
   1. formula_version al activar F1/F3/F5/F7.
   2. Tabla viva F1-F7 (disponible/construido/activo/peso).
   3. Documentar patron ScalarValue como contrato general.
 
-PARA LA PROXIMA REVISION: P10 (detectores footprint + pivotphase completion) construye
-absorption.*/climax.*/void.*/notrade.*, activa F1/F3 en pivotphase.confidence, resuelve skip
+PARA LA PROXIMA REVISION: la REAPERTURA DE P08c (detectores footprint + pivotphase completion)
+construye absorption.*/climax.*/void.*/notrade.*, activa F1/F3 en pivotphase.confidence, resuelve skip
 PHASE3_ZONE_BREAK, sube el techo de confianza. P09a (router de notificaciones backend) cierra M3 junto
-con P10. El CSA debe vigilar: que F1/F3 se activan SIN reestructurar el modelo (solo peso+funcion+input);
-que formula_version se incrementa; que el techo nuevo se documenta; que el patron ScalarValue no se
-reimplemente en paralelo.
+con ella. El CSA debe vigilar: que F1/F3 se activan SIN reestructurar el modelo (solo
+peso+funcion+input); que formula_version se incrementa; que el techo nuevo se documenta; que el patron
+ScalarValue no se reimplemente en paralelo.
+(CERRADA el 2026-08-06; las tres recomendaciones se atendieron -- ver el cierre siguiente.)
+
+## CIERRE: REAPERTURA DE P08c (detectores footprint + completar F1-F7) - 2026-08-06
+
+Estado: CERRADA. Merge 4ec79f7 en main, 11 commits (ff9da47 a 36d2a4a). 7/8 de M3
+(falta solo P09a). Aprobada por Central + CSA + Alvaro.
+
+RESUMEN: completa lo que P08b desbloqueo (swing.*, candle.open, D1). Entra el catalogo
+de detectores footprint (10 fuentes: absorption.bid/ask_strength, climax.top/bottom_
+strength, void.snap_bullish/bearish, notrade.score/footprint_ineff/flow_dislocation/
+state) + candle.high/low (POINT_LOCAL) + imbalance.buy_stack/sell_stack (POINT_LOCAL).
+El modelo de confianza de pivotphase queda COMPLETO y el score de notrade DESTOPADO.
+
+TABLA VIVA F1-F7 (recomendacion CSA 2, atendida) -- formula_version 4:
+  F1 absorcion            1/7  activo   (+ gate estructural de fase 3)
+  F2 delta exhaustion     1/7  activo
+  F3 divergencia CVD      1/7  activo   (close-only)
+  F4 esfuerzo/resultado   1/7  activo
+  F5 imbalance apilado    1/7  activo   (imbalance.buy_stack/sell_stack)
+  F6 contexto VP          1/7  activo
+  F7 void/notrade/climax  1/7  activo   (PENALIZA; notrade ya con bloque L2)
+  Techo 100. CERO factores diferidos: peso E input vivo coinciden en los siete, asi que
+  la distincion "peso != input vivo" -- que goberno toda la construccion -- desaparece.
+
+DICTAMENES: P08c-DET-01 (4 detectores WINDOWED/CONTINUOUS/DEFAULT-ONLY con computo
+interno, patron void/MACD; candle.high/low; notrade.state STRING via carrier D1);
+P08c-CONF-01 (F1 + reweight 6x1/6 + fv 3); P08c-CONF-02 (gate fase 3 como sub-pieza);
+P08c-CONF-03 (F3 close-only, magnitud relativa); P08c-CONF-04 (gate fase 3 VIVO:
+AbsorptionZone desde close, 11o param phase3_break_threshold, invalidacion a IDLE);
+P08c-CONF-05 (F5 + notrade L2, reweight 7x1/7, fv 3 -> 4).
+
+SKIP RESUELTO: PHASE3_ZONE_BREAK tenia un test saltado desde el cierre de P08c, gateado
+a absorption.*. Ya tiene gatillo vivo y cobertura real (secuencia en las dos direcciones,
+orientacion probada por su lado malo y mordida del 11o param). 0 skips propios.
+
+NOTRADE DESTOPADO: el bloque L2 (peso 35, RESERVADO desde P08c-DET-01) deja de valer 0.
+Cuatro features sobre el frontier del libro (grant 0029 a ce_v5_rules). El tope pasa de
+65 a 100 y la banda 'toxic' (>=80), que estaba DECLARADA Y MUERTA, es alcanzable.
+Aditividad demostrada: el golden de notrade NO cambio ni un digito -- su ventana no
+lleva libro, asi que L2 aporta 0 y FP/Flow no se rescalan.
+
+EXCEPCION EXC-CI-P08C-01: el merge se apoya en ci_local 24/24 porque la CI de GitHub
+Actions estuvo caida por INFRAESTRUCTURA. ci.yml IDENTICO al que paso en P08b (diff
+vacio); los jobs salian 'cancelled' tras ~15 min en cola con duration_ms 0, runner_id 0
+y steps vacios: ni un paso llego a correr, asi que ningun check del repo fallo de
+verdad. LECCION: no reintentar con pushes en rafaga (a partir del 3er reintento GitHub
+dejo de CREAR el run; sintoma de throttle anti-abuso).
+
+QUE DEBE VIGILAR EL CSA EN ESTE CIERRE:
+  - Que la activacion de F1/F3/F5/F7 NO reestructuro el modelo: cada una fue anadir
+    campo + peso + extractor (recomendacion CSA 1 y 3, atendidas: formula_version subio
+    en cada reweight -- 2->3 con F1, 3->4 con F5 -- y el patron ScalarValue no se
+    reimplemento).
+  - La ORIENTACION de F1/F3/F5: las tres invierten respecto de la lectura ingenua porque
+    PivotState.direction es la del IMPULSO, no la del pivote. Cada una tiene test que
+    muerde por su lado malo.
+  - El DAG honesto: climax no consume candle.open; F7 solo notrade.score; F3 solo
+    cvd.value; imbalance.* declarada POINT_LOCAL (no WINDOWED) porque su formula es
+    auto-contenida en una barra.
+
+DIFERIDOS CON DUENO (para la revision del CSA):
+  R-1: formula_version DEBE entrar en el cache_key_schema de toda fuente cuando exista
+    el cache de valor. notrade.* subio v1 -> v2 pero esa version NO esta en su clave: el
+    bump es documental hoy y se vuelve load-bearing cuando el cache aterrice.
+  R-2: el score practico de notrade llega a ~88, no a 100: move_no_delta y delta_stall
+    (bloque Flow) son RECIPROCAS y no pueden maximizarse a la vez. Propiedad de la
+    paridad v4, anterior a esta tanda. 'toxic' si se alcanza.
+  R-3: spoof_proxy es PROXY hasta que exista el delta-log del libro (v5.1, diferido en
+    la migracion 0020): sin el no se distingue un muro que se retira de uno real.
+  Calibracion de TODAS las semillas [A CALIBRAR AHP]: dueno P08c, requiere corpus.
+
+SIGUIENTE FRENTE: la CALIBRACION (fuera de la frontera de codigo; necesita corpus y
+walk-forward). En construccion, P09a (router de notificaciones backend) cierra M3.
