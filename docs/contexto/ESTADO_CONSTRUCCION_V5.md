@@ -4,7 +4,13 @@ Archivo vivo de estado de proceso (sin logica). Lo mantiene Claude Code
 en disco; Alvaro lo resube al knowledge cada vez que se cierra una pieza
 o un hito (DOC_ENTREGABLES sec.8).
 
-Ultima actualizacion: 2026-08-04 (P08c ENTREGADA: pieza CERRADA con doble revision
+Ultima actualizacion: 2026-08-06 (P08b ENTREGADA: pieza CERRADA con doble revision
+Central+CSA CONFORME y firma de Alvaro. 16 commits en wip/p08b (c8040ce a 0bc376d),
+merge --no-ff a main via PR #6. 22 fuentes servibles + 1 NON_SERVIBLE (fib.levels). D1
+(carrier ScalarValue) resuelto. 1903 passed, 1 skip preexistente ajeno (P08c
+pivotphase), cero deuda. M3 SIGUE ABIERTO: faltan P09a (+ P10 agendada)).
+
+Anterior: 2026-08-04 (P08c ENTREGADA: pieza CERRADA con doble revision
 Central+CSA CONFORME y firma de Alvaro. 9 merges en main (19bed2b, 6c3b63b, ca4d5f4,
 9025588, 89f8534, 6905aa7, f0a728b, 1a8c2ab, 06d739f). Entregables: materializacion
 CE-14, delta_momentum, AHP pre-registros, pivotphase (FSM+confianza+cableado), MAT-05 Q2
@@ -105,8 +111,8 @@ P07 - Ingesta de market data (hibrida), ADR-014: ENTREGADA. ABRE el hito M3
   cola en el arbol.)
 
 ## Pieza en curso
-P08b (DataSources candle-derived) PENDIENTE (en pausa gateada; reactivacion tras cierre
-de P08c). P09a (router de notificaciones backend) PENDIENTE.
+P09a (router de notificaciones backend) PENDIENTE. P10 (detectores footprint +
+pivotphase completion) PENDIENTE.
 T-05 (visor de desarrollo, transversal): CERRADA (ver "Transversales cerradas").
 
 ## Piezas cerradas
@@ -156,8 +162,20 @@ T-05 (visor de desarrollo, transversal): CERRADA (ver "Transversales cerradas").
   F1->P08b, F3->P08b, F5->imbalance, F7->notrade consumible, cache_key-valor->pieza
   cache, multi-instancia param->cache_key-valor, calibracion->fuera de codigo.
   Ver REGISTRO_DECISIONES secciones 30-34.
-Van 14 piezas cerradas de 23 (inventario ampliado de 19 a 23 por EXP-M3-01,
-firmada 2026-07-17: entran P07b, P07c, P08b y P08c).
+- P08b - DataSources candle-derived: ENTREGADA (cierre formal, doble revision Central+CSA CONFORME,
+  firmada por Alvaro 2026-08-06). 16 commits en wip/p08b (c8040ce a 0bc376d), merge a main via PR #6
+  --no-ff. Actions VERDE 3/3 (run 31078282783). 22 fuentes servibles: candle.open/body_pct/
+  upper_shadow_pct/lower_shadow_pct (POINT_LOCAL), volume.ratio_vs_avg/vwap.value/vwap.distance_pct/
+  swing.high/swing.low (WINDOWED), ema.value/rsi.value/macd.line/macd.signal/macd.histogram/
+  fib.nearest_level/fib.level_pct/fib.direction/divergence.kind/divergence.regular_bull/
+  divergence.regular_bear/divergence.hidden_bull/divergence.hidden_bear (RECURSIVE). 1 NON_SERVIBLE:
+  fib.levels (declaracion-only). D1 carrier ScalarValue resuelto (firma unica tuple[ScalarValue,...]).
+  Snapshots: 0023 ema, 0025 rsi, 0026 macd, 0027 fib_range, 0028 divergence. 1903 passed, 1 skip
+  preexistente ajeno, cero deuda. Diferidos D1-gateados RESUELTOS en esta entrega. Detectores
+  desbloqueados (absorption/climax/void/notrade + F1-F7) colocados en P10. Ver REGISTRO_DECISIONES
+  secciones 37-38.
+Van 15 piezas cerradas de 24 (inventario ampliado de 23 a 24 por la colocacion de P10, ficha nueva de
+detectores footprint + pivotphase completion desbloqueada por P08b).
 
 ## Transversales cerradas (no cuentan en las 23 piezas)
 - T-05 - Visor de desarrollo (herramienta desechable / semilla de P13): ENTREGADA/CERRADA.

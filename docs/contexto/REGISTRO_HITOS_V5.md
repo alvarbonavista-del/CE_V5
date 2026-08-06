@@ -3,7 +3,11 @@
 Archivo vivo (sin logica). Mantenido por Claude Code; Alvaro lo resube
 al knowledge al cerrar cada pieza o hito (DOC_ENTREGABLES sec.8).
 
-Ultima actualizacion: 2026-08-04 (P08c ENTREGADA: cierre formal Central+CSA CONFORME,
+Ultima actualizacion: 2026-08-06 (P08b ENTREGADA: cierre formal Central+CSA CONFORME,
+firmada por Alvaro. PR #6, Actions VERDE 3/3 (run 31078282783). M3 SIGUE ABIERTO en 6
+de 8: faltan P09a y P10).
+
+Anterior: 2026-08-04 (P08c ENTREGADA: cierre formal Central+CSA CONFORME,
 firmada por Alvaro. 9 merges en main. M3 SIGUE ABIERTO en 3 de 7: faltan P08b y P09a).
 
 Anterior: 2026-07-31 (P08c sub-pieza PIVOTPHASE CERRADA: merge f0a728b).
@@ -17,7 +21,7 @@ Anterior: 2026-07-26 (P07c ENTREGADA: orderbook L2 con estado, firmada).
 | M0 | Repo creado + CI de guardarrailes en verde (base estructural) | P00 | CERRADO |
 | M1 | Un evento viaja de punta a punta con envelope, idempotencia y Clock sobre el bus externo, con outbox transaccional; reinicio sin perdida | P01, P02, P02b, P03 | CERRADO |
 | M2 | Un Componente se descubre por carpeta, aislado por tenant/RLS, con capacidades por el gate fail-closed; API/auth/realtime en pie; kill switch en caliente | P04, P05, P06, P06b | CERRADO |
-| M3 | Una Rule dispara sobre datos reales y proyecta signal.*/alert.*; el router backend entrega por un canal no-PWA/mock (sin overlay, sin ejecucion) | P07, P07b, P07c, P08, P08b, P08c, P09a | ABIERTO (5 de 7: P07, P07b, P07c, P08 y P08c ENTREGADAS; faltan P08b y P09a; EXPANDIDO por EXP-M3-01) |
+| M3 | Una Rule dispara sobre datos reales y proyecta signal.*/alert.*; el router backend entrega por un canal no-PWA/mock (sin overlay, sin ejecucion) | P07, P07b, P07c, P08, P08b, P08c, P09a, P10 | ABIERTO (6 de 8: P07, P07b, P07c, P08, P08c y P08b ENTREGADAS; faltan P09a y P10; EXPANDIDO por EXP-M3-01) |
 | M4 | PWA instalable con dashboard, chart y overlays de signal.* en movil real; push PWA; geo-blocking corta ejecucion, no visualizacion | P12a, P12b, P13, P09b | PENDIENTE |
 | M5 | Ejecucion gateada: bloqueo UE/EEA/UK, orden manual BYOC, autotrade BYOC, reconciliacion | P10a, P10b, P11 | PENDIENTE |
 
@@ -259,6 +263,12 @@ se escribio y se conserva sin tocar; queda DEROGADA hacia delante (regla
   control de grados de libertad en calibracion.
   Ver REGISTRO_DECISIONES secciones 30-34.
   M3: 5 de 7; SIGUE ABIERTO (faltan P08b y P09a).
+- P08b ENTREGADA -- DataSources candle-derived. Firmada Alvaro 2026-08-06. PR #6, Actions VERDE 3/3
+  (run 31078282783). HEAD 0bc376d, 16 commits (c8040ce a 0bc376d). 22 fuentes servibles + 1
+  NON_SERVIBLE. D1 carrier ScalarValue resuelto. Snapshots 0023/0025/0026/0027/0028. 1903 passed, 1
+  skip preexistente ajeno, cero deuda. Dictamenes: SWING-01, LOTE3-01, FIB-01, D1-01 a D1-05.
+  Detectores desbloqueados colocados en P10. Recomendaciones CSA: formula_version al activar F1-F7,
+  tabla viva F1-F7, documentar patron ScalarValue.
 
 ## Nota EXP-M3-01 (2026-07-17): M3 AMPLIADO A PARIDAD FUNCIONAL v4
 M3 queda AMPLIADO a paridad funcional v4. Firmado por Alvaro 2026-07-17, con doble

@@ -2450,3 +2450,91 @@ RESUMEN:
 
 FIRMADO POR ALVARO: 2026-08-04.
 =====================================================================
+
+=====================================================================
+37. ELEVACIONES Y DICTAMENES DE P08b (REACTIVACION + D1 + LOTE 5)
+=====================================================================
+Estado: P08b ENTREGADA. Firmada Alvaro 2026-08-06.
+
+DICTAMENES DE REACTIVACION:
+  SWING-01: forma servible opcion A (ultimo pivote + fallback max/min), W=100 fijo
+    (MAT-05 Q3), strength overridable default 2,
+    cache_key=(exchange,symbol,timeframe,strength).
+  LOTE3-01: EMA period default 20; RSI rsi.value period 14 snapshot
+    (avg_gain,avg_loss); MACD tres fuentes un step 12/26/9 snapshot
+    (ema_fast,ema_slow,ema_signal); snapshot por columnas (opcion A); replay/step
+    GATE ADR-007; migraciones 0025/0026; sub-lotes 3A/3B/3C.
+  FIB-01: opcion B RECURSIVE con histeresis 0.414 (resuelve
+    DEC-FIB-RANGO-DIFERIDO); solo fib.nearest_level y fib.level_pct escalares;
+    fib.levels/direction diferidos a LOTE 5 (D1); close-based aceptado en v5.0;
+    snapshot 0027 (range_high, range_low) por columnas.
+
+DICTAMENES D1 (carrier Serie no-Decimal):
+  D1-01: fib.levels NON_SERVIBLE (sin operador de pertenencia); divergence denso
+    STRING/BOOLEAN (no SPORADIC); firma unica tuple[ScalarValue,...] (no canal
+    separado).
+  D1-02: P08b autorizado a editar pivotphase_materializer.py (5.34 superficie
+    compartida); rama evaluador EQ/NE aditiva sin ADR; secuencia 5A->5B->5C.
+  D1-03: cerrar 5A con 50 tests de envoltura + fib_materializer; fail-loud en
+    Bloque 3 para tipo incompatible (opcion 1, retira rama runtime 5.11).
+  D1-04: fib.levels declaracion-only NON_SERVIBLE (patron vp.hvn/vp.lvn, sin
+    carrier vectorial).
+  D1-05: divergence.* RECURSIVE (no WINDOWED); pivotes consecutivos sin cota ->
+    WINDOWED daria falsos silenciosos; snapshot 0028 por columnas.
+  DIV-01: divergence.* defiere entera a LOTE 5 (D1) -- luego resuelta al
+    construir D1.
+
+ADR: sin ADR nuevo ni reabierto. D1 es ensanchamiento compatible, no cambio de
+semantica.
+=====================================================================
+
+=====================================================================
+38. CIERRE DE PIEZA P08b + COLOCACION P10
+=====================================================================
+Estado: P08b ENTREGADA. Doble revision Central+CSA CONFORME. Firmada Alvaro
+2026-08-06. 6 de 8 de M3.
+
+PR #6, Actions VERDE 3/3 (run 31078282783). HEAD 0bc376d. 16 commits (c8040ce a
+0bc376d).
+
+CATALOGO VIVO P08b (22 servibles + 1 NON_SERVIBLE):
+  POINT_LOCAL/CONTINUOUS: candle.open, candle.body_pct, candle.upper_shadow_pct,
+    candle.lower_shadow_pct.
+  WINDOWED/CONTINUOUS: volume.ratio_vs_avg, vwap.value, vwap.distance_pct,
+    swing.high, swing.low.
+  RECURSIVE/CONTINUOUS: ema.value (DECIMAL, period 20), rsi.value (DECIMAL,
+    period 14), macd.line/signal/histogram (DECIMAL, 12/26/9),
+    fib.nearest_level/level_pct (DECIMAL, histeresis 0.414), fib.direction
+    (STRING, above/below), divergence.kind (STRING,
+    none/regular_bull/regular_bear/hidden_bull/hidden_bear),
+    divergence.regular_bull/regular_bear/hidden_bull/hidden_bear (BOOLEAN).
+  NON_SERVIBLE: fib.levels (lista 17 Decimals, declaracion-only).
+
+SUITE: 1903 passed, 1 skip preexistente ajeno (P08c pivotphase
+phase3_zone_break). Cero deuda.
+
+D1 RESUELTO: carrier ScalarValue (firma unica). Rama evaluador EQ/NE
+STRING/BOOLEAN. Fail-loud Bloque 3 tipos incompatibles. 50 tests de envoltura
+bit-identicos. Sin ADR.
+
+SNAPSHOTS: 0023 ema, 0025 rsi, 0026 macd, 0027 fib_range, 0028 divergence. Todos
+append-only, scope system, GATE bit-exacto ADR-007.
+
+DIFERIDOS PROPIOS DE P08b: CERO (D1 resuelto en esta entrega).
+
+COLOCACION P10 (pieza nueva, NO extension de P08c):
+  Detectores footprint desbloqueados por P08b (swing.* + candle.open):
+  absorption.*, climax.*, void.*, notrade.* (parte FP+Flow; bloque L2 sigue
+  diferido). Activacion F1/F3 en pivotphase.confidence (formula_version se
+  incrementa). Evaluar F5/F7 si las fuentes existen. Resolver skip
+  PHASE3_ZONE_BREAK. Documentar nuevo techo de confianza. Observacion CSA:
+  nombrar como pieza nueva (P10), no como extension de P08c, para auditorias
+  limpias.
+
+RECOMENDACIONES CSA (no bloqueantes, guia para P10):
+  1. formula_version obligatorio al activar F1/F3/F5/F7.
+  2. Tabla viva F1-F7 (disponible/construido/activo/peso).
+  3. Documentar patron ScalarValue como contrato general.
+
+REGLA 5.37 registrada en sec.36 (P08c). Vigente.
+=====================================================================

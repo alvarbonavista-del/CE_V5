@@ -5,7 +5,11 @@ estable para revisar las piezas. El CSA revisa coherencia y calidad
 contra los documentos-norte; NO decide (firma Alvaro). Archivo vivo
 mantenido por Claude Code.
 
-Ultima actualizacion: 2026-08-04 (P08c ENTREGADA: cierre formal Central+CSA CONFORME,
+Ultima actualizacion: 2026-08-06 (P08b ENTREGADA: cierre formal Central+CSA CONFORME,
+firmada por Alvaro. PR #6, Actions VERDE 3/3 (run 31078282783). M3 sigue abierto
+-6/8: faltan P09a y P10-).
+
+Anterior: 2026-08-04 (P08c ENTREGADA: cierre formal Central+CSA CONFORME,
 firmada por Alvaro. 9 merges en main. M3 sigue abierto -5/7: faltan P08b y P09a-).
 
 Anterior: 2026-07-30 (P08c sub-pieza MATERIALIZACION CERRADA y firmada; merge ca4d5f4).
@@ -680,3 +684,36 @@ LOTE 5. P09a (router de notificaciones backend) cierra M3. Para P08b el CSA debe
 que los factores diferidos F1/F3 se activan SIN reestructurar el modelo de confianza (solo
 anadir peso+funcion+input); que el techo sube correctamente; y que formula_version se
 incrementa si la semantica cambia.
+
+## CIERRE: PIEZA P08b (DataSources candle-derived) - 2026-08-06
+
+Veredicto: CONFORME (Central y CSA). Firmado por Alvaro 2026-08-06.
+P08b ENTREGADA (6/8 de M3). NO cierra M3: faltan P09a y P10.
+PR #6, HEAD 0bc376d, 16 commits (c8040ce a 0bc376d). Actions VERDE 3/3 (run 31078282783). 1903 passed,
+1 skip preexistente ajeno (P08c pivotphase). Cero deuda.
+
+RESUMEN: catalogo VIVO de 22 fuentes candle-derived servibles + 1 NON_SERVIBLE (fib.levels). LOTES 1-5
+completos. D1 (carrier ScalarValue, firma unica) resuelto: habilita fuentes STRING/BOOLEAN sin alterar
+semantica Decimal. 5 snapshots recursivos (0023/0025/0026/0027/0028) con GATE bit-exacto ADR-007.
+Evaluador extendido con EQ/NE STRING/BOOLEAN (aditivo, sin operador nuevo). Bloque 3 fail-loud para
+tipos incompatibles.
+
+DICTAMENES: SWING-01 (forma servible + W=100 + fallback), LOTE3-01 (EMA 20 / RSI 14 / MACD 12-26-9,
+snapshots por columnas), FIB-01 (RECURSIVE histeresis 0.414, resuelve DEC-FIB-RANGO-DIFERIDO), D1-01 a
+D1-05 (carrier ScalarValue, fib.levels NON_SERVIBLE, divergence RECURSIVE). 8 elevaciones, todas
+dictaminadas sin desviacion.
+
+DETECTORES DESBLOQUEADOS: P08b entrego swing.* + candle.open que desbloquean absorption.*/climax.*/
+void.*/notrade.* y F1/F3 de pivotphase. Colocados en P10 (pieza nueva, NO extension de P08c).
+
+RECOMENDACIONES CSA (3, no bloqueantes, para P10):
+  1. formula_version al activar F1/F3/F5/F7.
+  2. Tabla viva F1-F7 (disponible/construido/activo/peso).
+  3. Documentar patron ScalarValue como contrato general.
+
+PARA LA PROXIMA REVISION: P10 (detectores footprint + pivotphase completion) construye
+absorption.*/climax.*/void.*/notrade.*, activa F1/F3 en pivotphase.confidence, resuelve skip
+PHASE3_ZONE_BREAK, sube el techo de confianza. P09a (router de notificaciones backend) cierra M3 junto
+con P10. El CSA debe vigilar: que F1/F3 se activan SIN reestructurar el modelo (solo peso+funcion+input);
+que formula_version se incrementa; que el techo nuevo se documenta; que el patron ScalarValue no se
+reimplemente en paralelo.
