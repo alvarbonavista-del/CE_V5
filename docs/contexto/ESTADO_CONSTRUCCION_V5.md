@@ -141,6 +141,10 @@ P09a (router de notificaciones backend) PENDIENTE. P08c reabierta (detectores fo
 pivotphase completion) CERRADA (merge 4ec79f7, EXC-CI-P08C-01).
 T-05 (visor de desarrollo, transversal): CERRADA (ver "Transversales cerradas").
 
+## Piezas futuras (elevacion P08c-CAL-01, REGISTRO_DECISIONES sec.40)
+- P08d Calibracion AHP: BLOQUEADA (falta corpus). Titular: periferico propio (NO P08c). Hereda las 7 calibraciones AHP diferidas. Prerequisito: T-CORPUS.
+- T-CORPUS (alias P07d) Corpus reproducible: PENDIENTE. Titular: periferico propio. Input: ingesta de P07b. Output: dataset fijo reproducible (velas cerradas + footprint + delta + CVD de los 3 exchanges, por regimen, semilla fija, ADR-007). Alcance (exchanges/periodos/regimenes) a definir por Alvaro. Prerequisito de P08d.
+
 ## Piezas cerradas
 - P00 - Esqueleto de repositorio + CI base: ENTREGADA (hito M0 CERRADO).
   Commits: d3f7ad6 -> 15f936d.

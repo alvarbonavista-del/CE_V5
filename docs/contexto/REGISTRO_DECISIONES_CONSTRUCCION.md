@@ -2613,3 +2613,19 @@ DIFERIDOS CON DUENO:
 
 REGLA 5.37 registrada en sec.36 (P08c). Vigente.
 =====================================================================
+
+=====================================================================
+40. ELEVACION P08c-CAL-01: ORQUESTACION DE LA CALIBRACION AHP (DIFERIDA)
+=====================================================================
+Fecha: 2026-08-06. Origen: elevacion P08c-CAL-01 (periferico P08c) -> dictamen Central -> firma Alvaro.
+CONTEXTO: los 6 pre-registros AHP de P08c quedaron firmados con la CALIBRACION DIFERIDA (dueno P08c). Se elevo si convenia abrir un periferico dedicado.
+DICTAMEN CENTRAL (firmado por Alvaro):
+- La calibracion NO se mete en P08c ni abre periferico ahora. Se crea pieza nueva P08d "Calibracion AHP", que hereda las 7 calibraciones diferidas y nace BLOQUEADA hasta que exista corpus reproducible. Tendra su PROPIO periferico al arrancar (NO es campo de P08c).
+- El corpus reproducible es INFRAESTRUCTURA DE DATOS, no calibracion. Se crea pieza transversal T-CORPUS (alias P07d): toma la ingesta de P07b y produce un dataset fijo reproducible (velas cerradas + footprint + delta + CVD de los 3 exchanges, por regimen, semilla fija, ADR-007). Es prerequisito de P08d. Tendra su PROPIO periferico.
+- FRONTERA DE ALVARO: definir que exchanges/periodos/regimenes entran en el corpus (decision suya con asesoria, no tecnica). Pendiente hasta que T-CORPUS arranque.
+- SECUENCIA: cerrar P08c (hecho) -> P09a (cierra M3) -> T-CORPUS en paralelo (Alvaro define alcance) -> P08d cuando el corpus este listo.
+- ESTADO DEL SISTEMA MIENTRAS TANTO: corre con las semillas [A CALIBRAR AHP] y tests deterministas; funcional. La calibracion mejora la calidad de senales pero NO bloquea M4 (cliente) ni M5 (ejecucion).
+INVENTARIO DE CALIBRACION (7 bloques, ~35 parametros; titularidad P08d): (1) confianza pivotphase F1-F7 (pesos w_i, ventanas L/k/R, W_norm, tasa base; los 10 params de la FSM se FIJAN en paridad v4); (2) absorcion F1; (3) climax F7-1; (4) void F7-2; (5) notrade F7-3 (mas definir "edge realizado"); (6) contexto VP HVN/LVN F6; (7) imbalance apilado F5 mas F3 divergencia CVD.
+NOTA REGLA DE ORO: DOC_ROADMAP_V5 (doc prescriptivo cerrado) NO se reescribe en esta tanda; el alta formal de P08d y T-CORPUS en el roadmap, si procede, es orquestacion de Central. Aqui se registra la DECISION y su estado.
+FIN SECCION 40.
+=====================================================================
