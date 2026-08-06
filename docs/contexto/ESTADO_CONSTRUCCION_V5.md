@@ -44,7 +44,7 @@ no reabre ADR). Piezas de M3 y su estado:
   - P07b (trades + footprint) ........................ ENTREGADA
   - P07c (orderbook L2 con estado) ................... ENTREGADA
   - P08  (motor de reglas) ........................... ENTREGADA
-  - P08b (DataSources candle-derived) ................ EN PAUSA (gateada)
+  - P08b (DataSources candle-derived) ................ ENTREGADA (ver Piezas cerradas)
   - P08c (DataSources footprint/L2-derived) .......... ENTREGADA
   - P09a (router de notificaciones backend) .......... PENDIENTE
 Orden: P07 -> T-03 -> P07b -> P07c -> P08 -> P08b -> P08c -> P09a.
