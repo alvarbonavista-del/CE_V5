@@ -37,6 +37,7 @@ def _series(n: int) -> ReplaySeries:
         void_bull=tuple(Decimal(0) for _ in range(n)),
         void_bear=tuple(Decimal(0) for _ in range(n)),
         notrade_score=tuple(Decimal(0) for _ in range(n)),
+        cvd=tuple(Decimal(0) for _ in range(n)),
     )
 
 
@@ -115,6 +116,7 @@ def test_series_length_mismatch_raises() -> None:
             void_bull=(Decimal(1),),
             void_bear=(Decimal(1),),
             notrade_score=(Decimal(1),),
+            cvd=(Decimal(1),),
         )
 
 
@@ -146,6 +148,7 @@ def _series_absorcion_en(n: int, lado: str) -> ReplaySeries:
         void_bull=plana,
         void_bear=plana,
         notrade_score=plana,
+        cvd=plana,
     )
 
 
@@ -174,6 +177,7 @@ class TestF1EnElReplay:
                 void_bull=(Decimal(1),),
                 void_bear=(Decimal(1),),
                 notrade_score=(Decimal(1),),
+                cvd=(Decimal(1),),
             )
 
     def test_el_replay_sigue_siendo_determinista_con_absorcion(self) -> None:
@@ -229,6 +233,7 @@ def _series_climax_top_creciente(n: int) -> ReplaySeries:
         void_bull=plana,
         void_bear=plana,
         notrade_score=plana,
+        cvd=plana,
     )
 
 
@@ -259,6 +264,7 @@ class TestF7EnElReplay:
                 void_bull=(Decimal(1),),
                 void_bear=(Decimal(1),),
                 notrade_score=(Decimal(1),),
+                cvd=(Decimal(1),),
             )
 
     def test_el_replay_sigue_siendo_determinista_con_toxicidad(self) -> None:
@@ -316,6 +322,7 @@ class TestF7EnElReplay:
             # notrade.score en escala 0-100: creciente*100 recorre la misma proporcion
             # relativa que climax_top (0..1) tras dividir entre 100 en _toxicity_raw.
             notrade_score=tuple(v * Decimal(100) for v in creciente),
+            cvd=plana,
         )
         params = PivotParams()
         conf = default_params()
@@ -330,3 +337,114 @@ class TestF7EnElReplay:
         ]
         assert distintas
         assert all(limpia_c >= toxica_c for limpia_c, toxica_c in distintas)
+
+
+def _series_con_divergencia(n: int, *, cvd_acompana: bool) -> ReplaySeries:
+    """Serie con precio en dientes de sierra ascendente y CVD que ACOMPANA o DIVERGE.
+
+    cvd_acompana=True  -> el CVD sube con el precio: NO hay divergencia.
+    cvd_acompana=False -> el CVD baja mientras el precio sube: SI hay divergencia
+    bajista (el flujo acumulado no confirma la subida).
+
+    Solo cambia la serie de CVD entre los dos casos, asi que las fases de la FSM salen
+    IDENTICAS (cvd no entra en BarSignals) y la comparacion aisla F3.
+    """
+    # ONDA de ciclos de 5 barras con el pico en el CENTRO y maximos crecientes. La forma
+    # importa: una sierra con tendencia monotona NO confirma ningun pivote (symmetric_
+    # pivots exige `strength` barras estrictamente menores a CADA lado, y en una subida
+    # sostenida la barra siguiente siempre supera al candidato). Se comprobo: con sierra
+    # el test pasaba en falso porque no habia ni una divergencia que comparar.
+    precio: list[Decimal] = []
+    for ciclo in range((n // 5) + 1):
+        pico = Decimal(100 + ciclo * 10)
+        precio += [pico - 10, pico - 5, pico, pico - 5, pico - 10]
+    precio = precio[:n]
+    signo = Decimal(1) if cvd_acompana else Decimal(-1)
+    cvd = tuple(signo * p for p in precio)
+    plana = tuple(Decimal(0) for _ in range(n))
+    return ReplaySeries(
+        price=tuple(precio),
+        delta=tuple(Decimal(i % 7 + 1) for i in range(n)),
+        delta_momentum=plana,
+        price_range=tuple(Decimal(2) for _ in range(n)),
+        vp_poc=tuple(precio),
+        vp_vah=tuple(Decimal(500) for _ in range(n)),
+        vp_val=tuple(Decimal(50) for _ in range(n)),
+        vp_hvn=tuple(precio),
+        vp_lvn=tuple(Decimal(50) for _ in range(n)),
+        absorption_bid=plana,
+        absorption_ask=plana,
+        climax_top=plana,
+        climax_bottom=plana,
+        void_bull=plana,
+        void_bear=plana,
+        notrade_score=plana,
+        cvd=cvd,
+    )
+
+
+class TestF3EnElReplay:
+    """F3 vivo (P08c-CONF-03): la divergencia precio-vs-CVD entra en la confianza."""
+
+    def test_la_serie_de_cvd_es_obligatoria(self) -> None:
+        with pytest.raises(ValueError, match="misma longitud"):
+            ReplaySeries(
+                price=(Decimal(1),),
+                delta=(Decimal(1),),
+                delta_momentum=(Decimal(0),),
+                price_range=(Decimal(1),),
+                vp_poc=(Decimal(1),),
+                vp_vah=(Decimal(1),),
+                vp_val=(Decimal(1),),
+                vp_hvn=(Decimal(1),),
+                vp_lvn=(Decimal(1),),
+                absorption_bid=(Decimal(1),),
+                absorption_ask=(Decimal(1),),
+                climax_top=(Decimal(1),),
+                climax_bottom=(Decimal(1),),
+                void_bull=(Decimal(1),),
+                void_bear=(Decimal(1),),
+                notrade_score=(Decimal(1),),
+                cvd=(Decimal(1), Decimal(1)),
+            )
+
+    def test_el_replay_es_determinista_bit_a_bit_con_cvd(self) -> None:
+        # ADR-007: F3 se precomputa de una pasada, asi que hay que confirmar que dos
+        # replays de la misma serie coinciden digito a digito, no solo en valor.
+        series = _series_con_divergencia(40, cvd_acompana=False)
+        params = PivotParams()
+        conf = default_params()
+        una = replay_from_series(series, PivotState(), params, conf, 10, 10)
+        otra = replay_from_series(series, PivotState(), params, conf, 10, 10)
+        assert una == otra
+        assert [str(o.confidence) for o in una.outcomes] == [
+            str(o.confidence) for o in otra.outcomes
+        ]
+
+    def test_la_divergencia_cambia_la_confianza_sin_tocar_las_fases(self) -> None:
+        # cvd NO entra en BarSignals: las fases tienen que salir IDENTICAS entre las dos
+        # series, y lo unico que puede mover la confianza es F3.
+        params = PivotParams()
+        conf = default_params()
+        acompana = replay_from_series(
+            _series_con_divergencia(40, cvd_acompana=True),
+            PivotState(),
+            params,
+            conf,
+            10,
+            10,
+        )
+        diverge = replay_from_series(
+            _series_con_divergencia(40, cvd_acompana=False),
+            PivotState(),
+            params,
+            conf,
+            10,
+            10,
+        )
+        assert [o.phase for o in acompana.outcomes] == [
+            o.phase for o in diverge.outcomes
+        ]
+        assert [o.confidence for o in acompana.outcomes] != [
+            o.confidence for o in diverge.outcomes
+        ]

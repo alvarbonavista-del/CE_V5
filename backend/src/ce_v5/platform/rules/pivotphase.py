@@ -42,6 +42,7 @@ from ce_v5.platform.rules.climax import (
     CLIMAX_BOTTOM_STRENGTH_SOURCE_ID,
     CLIMAX_TOP_STRENGTH_SOURCE_ID,
 )
+from ce_v5.platform.rules.cvd import CVD_SOURCE_ID
 from ce_v5.platform.rules.footprint_range import FOOTPRINT_PRICE_RANGE_SOURCE_ID
 from ce_v5.platform.rules.notrade import NOTRADE_SCORE_SOURCE_ID
 from ce_v5.platform.rules.orderflow import (
@@ -402,6 +403,7 @@ _PIVOTPHASE_CONSUMES: tuple[str, ...] = (
     VOID_SNAP_BULLISH_SOURCE_ID,
     VOID_SNAP_BEARISH_SOURCE_ID,
     NOTRADE_SCORE_SOURCE_ID,
+    CVD_SOURCE_ID,
 )
 
 

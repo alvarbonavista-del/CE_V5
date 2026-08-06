@@ -26,6 +26,7 @@ from ce_v5.platform.rules.climax import (
     CLIMAX_BOTTOM_STRENGTH_SOURCE_ID,
     CLIMAX_TOP_STRENGTH_SOURCE_ID,
 )
+from ce_v5.platform.rules.cvd import CVD_SOURCE_ID
 from ce_v5.platform.rules.footprint_range import FOOTPRINT_PRICE_RANGE_SOURCE_ID
 from ce_v5.platform.rules.notrade import NOTRADE_SCORE_SOURCE_ID
 from ce_v5.platform.rules.orderflow import (
@@ -96,11 +97,11 @@ def replay_pivotphase(
     open_time: int,
     history_bars: int,
 ) -> ReplayResult:
-    """Materializa los 16 insumos, replaya el FSM desde IDLE y persiste el snapshot.
+    """Materializa los 17 insumos, replaya el FSM desde IDLE y persiste el snapshot.
 
     Emite las ultimas history_bars (las NORM_WINDOW primeras son lookback que avanza la
     FSM y ceba distribuciones). Escribe el snapshot de la barra vigente (as-of).
-    Las 16 series vienen ALINEADAS; ReplaySeries valida la misma longitud (fail-loud).
+    Las 17 series vienen ALINEADAS; ReplaySeries valida la misma longitud (fail-loud).
     """
     total = history_bars + NORM_WINDOW
     candles = read_ohlcv_window(session, exchange, symbol, timeframe, open_time, total)
@@ -142,6 +143,7 @@ def replay_pivotphase(
         void_bull=_mat(VOID_SNAP_BULLISH_SOURCE_ID),
         void_bear=_mat(VOID_SNAP_BEARISH_SOURCE_ID),
         notrade_score=_mat(NOTRADE_SCORE_SOURCE_ID),
+        cvd=_mat(CVD_SOURCE_ID),
     )
     params = PivotParams()
     conf_params = default_params()

@@ -3,7 +3,7 @@
 replay_from_series es la LOGICA PURA del replay (DICTAMEN P08c-PIVOT-07 Q1): dado el
 conjunto de series ya materializadas y el PivotState del snapshot ancla, recorre las
 barras oldest->newest manteniendo las ventanas trailing de NORM_WINDOW, arma BarSignals
-(gate de fase 1) y ConfidenceInputs (F1/F2/F4/F6/F7 con input vivo; F3/F5 = None),
+(gate de fase 1) y ConfidenceInputs (F1/F2/F3/F4/F6/F7 con input vivo; solo F5 = None),
 hila el estado por evaluate_bar (P3) y gradua por compute_confidence (P4), y emite
 (phase, confidence) por barra. Sin BD: el glue (replay_pivotphase) materializa y
 persiste.
@@ -40,6 +40,8 @@ from ce_v5.platform.rules.pivotphase_confidence import (
     compute_confidence,
 )
 from ce_v5.platform.rules.pivotphase_signals import (
+    cvd_divergence_feature,
+    cvd_divergence_magnitudes,
     effort_result_feature,
     exhaustion_feature,
     normalize_impulse_score,
@@ -66,6 +68,7 @@ class ReplaySeries:
     void_bull: tuple[Decimal, ...]
     void_bear: tuple[Decimal, ...]
     notrade_score: tuple[Decimal, ...]
+    cvd: tuple[Decimal, ...]
 
     def __post_init__(self) -> None:
         lengths = {
@@ -85,6 +88,7 @@ class ReplaySeries:
             len(self.void_bull),
             len(self.void_bear),
             len(self.notrade_score),
+            len(self.cvd),
         }
         if len(lengths) != 1:
             msg = "las series de ReplaySeries deben tener la misma longitud."
@@ -207,8 +211,16 @@ def replay_from_series(
     abs_delta: list[Decimal] = []
     f1_raws: list[Decimal] = []
     f2_raws: list[Decimal] = []
+    f3_raws: list[Decimal] = []
     f4_raws: list[Decimal] = []
     f7_raws: list[Decimal] = []
+    # F3 (P08c-CONF-03) se precomputa de UNA pasada sobre la ventana entera y no barra a
+    # barra: los pivotes de una divergencia necesitan `strength` barras a cada lado, asi
+    # que no son conocibles con solo el prefijo. Lo que SI se decide dentro del bucle es
+    # cual de las divergencias de esa barra SOPORTA el pivote, porque eso depende de la
+    # direccion vigente de la FSM. Precomputar no rompe el determinismo: la deteccion
+    # solo mira close y cvd, ninguno de los dos depende del estado.
+    divergencias = cvd_divergence_magnitudes(series.price, series.cvd)
     state = snapshot_state
     outcomes: list[BarOutcome] = []
     for i in range(len(series.delta)):
@@ -259,6 +271,10 @@ def replay_from_series(
             series.notrade_score[i],
         )
         f7_raws.append(f7_raw)
+        # F3, como F1, se orienta con la direccion VIGENTE (post evaluate_bar) y se
+        # acumula antes del corte de lookback para llegar cebado a la primera emitida.
+        f3_raw = cvd_divergence_feature(state.direction, divergencias.get(i, {}))
+        f3_raws.append(f3_raw)
         if i < lookback:
             continue
         inputs = ConfidenceInputs(
@@ -272,6 +288,7 @@ def replay_from_series(
                 if f2_raw is not None
                 else None
             ),
+            f3=FactorInput(raw=f3_raw, distribution=tuple(f3_raws[-norm_window:])),
             f4=(
                 FactorInput(raw=f4_raw, distribution=tuple(f4_raws[-norm_window:]))
                 if f4_raw is not None

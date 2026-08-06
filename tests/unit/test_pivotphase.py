@@ -494,6 +494,7 @@ def test_consumes_incluye_absorption() -> None:
             "void.snap_bullish",
             "void.snap_bearish",
             "notrade.score",
+            "cvd.value",
         )
         # ENMIENDA DE DAG HONESTO (3b): notrade.footprint_ineff/.flow_dislocation/.state
         # NO se listan -- F7 solo lee notrade.score, que ya suma los otros dos bloques.

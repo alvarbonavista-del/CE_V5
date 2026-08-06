@@ -253,23 +253,23 @@ class TestF1Absorcion:
         assert floja is not None
         assert fuerte > floja
 
-    def test_techo_efectivo_de_hoy_es_83_33(self) -> None:
-        # Tras 3b (F7 vivo): F3 sigue siendo el UNICO con peso y sin input (llega None,
-        # aporta 0). El maximo alcanzable con los cinco extractores vivos -- F1, F2, F4,
-        # F6, F7 -- es 5/6. Este candado se actualiza cuando F3 entre, y hasta entonces
-        # documenta el techo real.
+    def test_techo_efectivo_es_100_con_los_seis_vivos(self) -> None:
+        # Tras 3c (F3 vivo) YA NO hay factor con peso y sin extractor: los seis que
+        # pesan tienen input real, asi que el techo efectivo coincide por fin con el
+        # teorico. F5 sigue en peso 0 (espera celdas de footprint), asi que no resta.
         vivos = ConfidenceInputs(
             f1=_fin(100),
             f2=_fin(100),
+            f3=_fin(100),
             f4=_fin(100),
             f6=_F6_HVN,
             # raw=0 estrictamente POR DEBAJO de la distribucion estandar (1..5) ->
             # rank=0 -> normalized=1 (descending): cero toxicidad = soporte pleno.
             f7=_fin(0),
         )
-        assert compute_confidence(vivos, default_params()).confidence == Decimal(
-            "83.33"
-        )
+        resultado = compute_confidence(vivos, default_params())
+        assert resultado.confidence == Decimal("100.00")
+        assert len(resultado.used_factors) == 6
 
 
 class TestF7Toxicidad:
@@ -319,3 +319,35 @@ class TestF7Toxicidad:
         assert f7_toxico_extremo is not None
         assert f1_soporte_extremo is not None
         assert f7_toxico_extremo < f1_soporte_extremo
+
+
+class TestF3Divergencia:
+    """F3 activado en P08c-CONF-03: peso 1/6 e input vivo.
+
+    El input es la magnitud de la divergencia precio-vs-CVD.
+    """
+
+    def test_f3_con_input_aporta_al_score(self) -> None:
+        con = compute_confidence(ConfidenceInputs(f3=_fin(100)), default_params())
+        assert con.confidence == Decimal("16.67")
+        assert Factor.F3_CVD_DIVERGENCE in con.used_factors
+
+    def test_f3_es_soporte_no_penalizacion(self) -> None:
+        # F3 NO invierte (descending=False): mas magnitud de divergencia = mas soporte
+        # del pivote. F7 sigue siendo el unico que penaliza.
+        p = default_params()
+        floja = compute_confidence(ConfidenceInputs(f3=_fin(1)), p).confidence
+        fuerte = compute_confidence(ConfidenceInputs(f3=_fin(100)), p).confidence
+        assert floja is not None
+        assert fuerte is not None
+        assert fuerte > floja
+
+    def test_f3_ausente_aporta_cero_sin_renormalizar(self) -> None:
+        sin_f3 = compute_confidence(ConfidenceInputs(f2=_fin(100)), default_params())
+        assert sin_f3.confidence == Decimal("16.67")
+        assert Factor.F3_CVD_DIVERGENCE not in sin_f3.used_factors
+        f3c = next(
+            c for c in sin_f3.contributions if c.factor is Factor.F3_CVD_DIVERGENCE
+        )
+        assert f3c.evaluable is False
+        assert f3c.contribution == Decimal(0)
