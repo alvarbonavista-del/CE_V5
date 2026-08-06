@@ -38,12 +38,21 @@ from ce_v5.platform.rules.absorption import (
     ABSORPTION_ASK_STRENGTH_SOURCE_ID,
     ABSORPTION_BID_STRENGTH_SOURCE_ID,
 )
+from ce_v5.platform.rules.climax import (
+    CLIMAX_BOTTOM_STRENGTH_SOURCE_ID,
+    CLIMAX_TOP_STRENGTH_SOURCE_ID,
+)
 from ce_v5.platform.rules.footprint_range import FOOTPRINT_PRICE_RANGE_SOURCE_ID
+from ce_v5.platform.rules.notrade import NOTRADE_SCORE_SOURCE_ID
 from ce_v5.platform.rules.orderflow import (
     ORDERFLOW_DELTA_MOMENTUM_SOURCE_ID,
     ORDERFLOW_DELTA_SOURCE_ID,
 )
 from ce_v5.platform.rules.rawclose import MARKET_CLOSE_SOURCE_ID
+from ce_v5.platform.rules.void import (
+    VOID_SNAP_BEARISH_SOURCE_ID,
+    VOID_SNAP_BULLISH_SOURCE_ID,
+)
 from ce_v5.platform.rules.volume_profile import (
     VP_HVN_SOURCE_ID,
     VP_LVN_SOURCE_ID,
@@ -367,10 +376,15 @@ _PIVOTPHASE_CACHE_KEY_SCHEMA: tuple[str, ...] = (
 )
 
 # consumes: el DAG de insumos de la FSM (DICTAMEN PIVOT-10). absorption.bid/ask_strength
-# ENTRAN en P08c-CONF-01: dejaron de estar diferidas (P08b entrego candle.open y esta
-# pieza las cableo), y el replay las materializa de verdad para el factor F1 de la
-# confianza. Se declaran porque se LEEN -- mismo criterio de DAG honesto que en los
-# cuatro detectores.
+# entraron en 3a (F1). En 3b (P08c-CONF-01) entran las CINCO que alimentan F7:
+# climax.top/bottom_strength, void.snap_bullish/bearish y notrade.score.
+#
+# ENMIENDA DE DAG HONESTO (3b): notrade.footprint_ineff, notrade.flow_dislocation y
+# notrade.state NO se listan. F7 solo LEE notrade.score (ya es la suma de los otros
+# dos bloques, asi que no hace falta releerlos por separado) y nunca toca
+# notrade.state (el token STRING no participa en ningun computo de F7). Declararlas
+# seria arista muerta del DAG -- decir que se usa algo que no se lee --, el mismo
+# criterio que excluyo candle.open de climax.* en P08c-DET-01 paso b.
 _PIVOTPHASE_CONSUMES: tuple[str, ...] = (
     MARKET_CLOSE_SOURCE_ID,
     ORDERFLOW_DELTA_SOURCE_ID,
@@ -383,6 +397,11 @@ _PIVOTPHASE_CONSUMES: tuple[str, ...] = (
     VP_LVN_SOURCE_ID,
     ABSORPTION_BID_STRENGTH_SOURCE_ID,
     ABSORPTION_ASK_STRENGTH_SOURCE_ID,
+    CLIMAX_TOP_STRENGTH_SOURCE_ID,
+    CLIMAX_BOTTOM_STRENGTH_SOURCE_ID,
+    VOID_SNAP_BULLISH_SOURCE_ID,
+    VOID_SNAP_BEARISH_SOURCE_ID,
+    NOTRADE_SCORE_SOURCE_ID,
 )
 
 

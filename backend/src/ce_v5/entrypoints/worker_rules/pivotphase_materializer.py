@@ -22,7 +22,12 @@ from ce_v5.platform.rules.absorption import (
     ABSORPTION_ASK_STRENGTH_SOURCE_ID,
     ABSORPTION_BID_STRENGTH_SOURCE_ID,
 )
+from ce_v5.platform.rules.climax import (
+    CLIMAX_BOTTOM_STRENGTH_SOURCE_ID,
+    CLIMAX_TOP_STRENGTH_SOURCE_ID,
+)
 from ce_v5.platform.rules.footprint_range import FOOTPRINT_PRICE_RANGE_SOURCE_ID
+from ce_v5.platform.rules.notrade import NOTRADE_SCORE_SOURCE_ID
 from ce_v5.platform.rules.orderflow import (
     ORDERFLOW_DELTA_MOMENTUM_SOURCE_ID,
     ORDERFLOW_DELTA_SOURCE_ID,
@@ -35,6 +40,10 @@ from ce_v5.platform.rules.pivotphase_replay import (
     replay_from_series,
 )
 from ce_v5.platform.rules.pivotphase_state_codec import serialize_state
+from ce_v5.platform.rules.void import (
+    VOID_SNAP_BEARISH_SOURCE_ID,
+    VOID_SNAP_BULLISH_SOURCE_ID,
+)
 from ce_v5.platform.rules.volume_profile import (
     VP_HVN_SOURCE_ID,
     VP_LVN_SOURCE_ID,
@@ -87,11 +96,11 @@ def replay_pivotphase(
     open_time: int,
     history_bars: int,
 ) -> ReplayResult:
-    """Materializa los 9 insumos, replaya el FSM desde IDLE y persiste el snapshot.
+    """Materializa los 16 insumos, replaya el FSM desde IDLE y persiste el snapshot.
 
     Emite las ultimas history_bars (las NORM_WINDOW primeras son lookback que avanza la
     FSM y ceba distribuciones). Escribe el snapshot de la barra vigente (as-of).
-    Las 9 series vienen ALINEADAS; ReplaySeries valida la misma longitud (fail-loud).
+    Las 16 series vienen ALINEADAS; ReplaySeries valida la misma longitud (fail-loud).
     """
     total = history_bars + NORM_WINDOW
     candles = read_ohlcv_window(session, exchange, symbol, timeframe, open_time, total)
@@ -128,6 +137,11 @@ def replay_pivotphase(
         vp_lvn=_mat(VP_LVN_SOURCE_ID),
         absorption_bid=_mat(ABSORPTION_BID_STRENGTH_SOURCE_ID),
         absorption_ask=_mat(ABSORPTION_ASK_STRENGTH_SOURCE_ID),
+        climax_top=_mat(CLIMAX_TOP_STRENGTH_SOURCE_ID),
+        climax_bottom=_mat(CLIMAX_BOTTOM_STRENGTH_SOURCE_ID),
+        void_bull=_mat(VOID_SNAP_BULLISH_SOURCE_ID),
+        void_bear=_mat(VOID_SNAP_BEARISH_SOURCE_ID),
+        notrade_score=_mat(NOTRADE_SCORE_SOURCE_ID),
     )
     params = PivotParams()
     conf_params = default_params()

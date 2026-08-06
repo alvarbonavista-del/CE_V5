@@ -489,9 +489,17 @@ def test_consumes_incluye_absorption() -> None:
             "vp.lvn",
             "absorption.bid_strength",
             "absorption.ask_strength",
+            "climax.top_strength",
+            "climax.bottom_strength",
+            "void.snap_bullish",
+            "void.snap_bearish",
+            "notrade.score",
         )
-        # notrade.score sigue FUERA: F7 tiene peso pero aun no tiene extractor (3c).
-        assert not any(c.startswith("notrade.") for c in declaration.consumes)
+        # ENMIENDA DE DAG HONESTO (3b): notrade.footprint_ineff/.flow_dislocation/.state
+        # NO se listan -- F7 solo lee notrade.score, que ya suma los otros dos bloques.
+        assert "notrade.footprint_ineff" not in declaration.consumes
+        assert "notrade.flow_dislocation" not in declaration.consumes
+        assert "notrade.state" not in declaration.consumes
 
 
 def test_declaracion_esta_cableada_en_el_discovery_vivo() -> None:

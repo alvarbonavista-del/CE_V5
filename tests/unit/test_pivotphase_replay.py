@@ -32,6 +32,11 @@ def _series(n: int) -> ReplaySeries:
         vp_lvn=tuple(Decimal(50) for _ in range(n)),
         absorption_bid=tuple(Decimal(0) for _ in range(n)),
         absorption_ask=tuple(Decimal(0) for _ in range(n)),
+        climax_top=tuple(Decimal(0) for _ in range(n)),
+        climax_bottom=tuple(Decimal(0) for _ in range(n)),
+        void_bull=tuple(Decimal(0) for _ in range(n)),
+        void_bear=tuple(Decimal(0) for _ in range(n)),
+        notrade_score=tuple(Decimal(0) for _ in range(n)),
     )
 
 
@@ -105,6 +110,11 @@ def test_series_length_mismatch_raises() -> None:
             vp_lvn=(Decimal(1),),
             absorption_bid=(Decimal(1),),
             absorption_ask=(Decimal(1),),
+            climax_top=(Decimal(1),),
+            climax_bottom=(Decimal(1),),
+            void_bull=(Decimal(1),),
+            void_bear=(Decimal(1),),
+            notrade_score=(Decimal(1),),
         )
 
 
@@ -131,6 +141,11 @@ def _series_absorcion_en(n: int, lado: str) -> ReplaySeries:
         vp_lvn=tuple(Decimal(50) for _ in range(n)),
         absorption_bid=creciente if lado == "bid" else plana,
         absorption_ask=creciente if lado == "ask" else plana,
+        climax_top=plana,
+        climax_bottom=plana,
+        void_bull=plana,
+        void_bear=plana,
+        notrade_score=plana,
     )
 
 
@@ -154,6 +169,11 @@ class TestF1EnElReplay:
                 vp_lvn=(Decimal(1),),
                 absorption_bid=(Decimal(1), Decimal(1)),
                 absorption_ask=(Decimal(1),),
+                climax_top=(Decimal(1),),
+                climax_bottom=(Decimal(1),),
+                void_bull=(Decimal(1),),
+                void_bear=(Decimal(1),),
+                notrade_score=(Decimal(1),),
             )
 
     def test_el_replay_sigue_siendo_determinista_con_absorcion(self) -> None:
@@ -180,3 +200,133 @@ class TestF1EnElReplay:
         assert [o.confidence for o in solo_bid.outcomes] != [
             o.confidence for o in solo_ask.outcomes
         ]
+
+
+def _series_climax_top_creciente(n: int) -> ReplaySeries:
+    """Como _series pero con climax_top CRECIENTE (0 a casi 1) y el resto de F7 en 0.
+
+    Igual que en TestF1EnElReplay: F7 se normaliza por PERCENTIL, y el percentil de un
+    valor CONSTANTE dentro de su propia distribucion constante es siempre 0,5 -- se
+    comprobo (fallaba en falso). Con una serie CRECIENTE, la ultima barra es siempre el
+    MAXIMO de su propia ventana trailing -> percentil 1.0 -> maxima toxicidad relativa.
+    """
+    creciente = tuple(Decimal(i) / Decimal(n) for i in range(n))
+    plana = tuple(Decimal(0) for _ in range(n))
+    return ReplaySeries(
+        price=tuple(Decimal(100 + i) for i in range(n)),
+        delta=tuple(Decimal(i % 7 + 1) for i in range(n)),
+        delta_momentum=tuple(Decimal(0) for _ in range(n)),
+        price_range=tuple(Decimal(2) for _ in range(n)),
+        vp_poc=tuple(Decimal(100 + i) for i in range(n)),
+        vp_vah=tuple(Decimal(200) for _ in range(n)),
+        vp_val=tuple(Decimal(50) for _ in range(n)),
+        vp_hvn=tuple(Decimal(100 + i) for i in range(n)),
+        vp_lvn=tuple(Decimal(50) for _ in range(n)),
+        absorption_bid=tuple(Decimal(0) for _ in range(n)),
+        absorption_ask=tuple(Decimal(0) for _ in range(n)),
+        climax_top=creciente,
+        climax_bottom=plana,
+        void_bull=plana,
+        void_bear=plana,
+        notrade_score=plana,
+    )
+
+
+def _series_plana(n: int) -> ReplaySeries:
+    """Como _series: las cinco series de F7 en 0 constante (sin toxicidad nunca)."""
+    return _series(n)
+
+
+class TestF7EnElReplay:
+    """F7 vivo (P08c-CONF-01 paso 3b): max(climax, void, notrade/100) penaliza."""
+
+    def test_la_serie_de_toxicidad_es_obligatoria(self) -> None:
+        with pytest.raises(ValueError, match="misma longitud"):
+            ReplaySeries(
+                price=(Decimal(1),),
+                delta=(Decimal(1),),
+                delta_momentum=(Decimal(0),),
+                price_range=(Decimal(1),),
+                vp_poc=(Decimal(1),),
+                vp_vah=(Decimal(1),),
+                vp_val=(Decimal(1),),
+                vp_hvn=(Decimal(1),),
+                vp_lvn=(Decimal(1),),
+                absorption_bid=(Decimal(1),),
+                absorption_ask=(Decimal(1),),
+                climax_top=(Decimal(1), Decimal(1)),
+                climax_bottom=(Decimal(1),),
+                void_bull=(Decimal(1),),
+                void_bear=(Decimal(1),),
+                notrade_score=(Decimal(1),),
+            )
+
+    def test_el_replay_sigue_siendo_determinista_con_toxicidad(self) -> None:
+        series = _series_climax_top_creciente(40)
+        params = PivotParams()
+        conf = default_params()
+        una = replay_from_series(series, PivotState(), params, conf, 10, 10)
+        otra = replay_from_series(series, PivotState(), params, conf, 10, 10)
+        assert una == otra
+
+    def test_mas_toxicidad_da_menos_confianza_barra_a_barra(self) -> None:
+        # climax_top NO entra en BarSignals (F7 solo afecta a la confianza, no a la
+        # FSM), asi que las fases salen IDENTICAS entre la serie plana y la creciente,
+        # y la comparacion barra a barra es limpia: solo cambia F7.
+        params = PivotParams()
+        conf = default_params()
+        limpia = replay_from_series(
+            _series_plana(40), PivotState(), params, conf, 10, 10
+        )
+        toxica = replay_from_series(
+            _series_climax_top_creciente(40), PivotState(), params, conf, 10, 10
+        )
+        assert [o.phase for o in limpia.outcomes] == [o.phase for o in toxica.outcomes]
+        distintas = [
+            (a.confidence, b.confidence)
+            for a, b in zip(limpia.outcomes, toxica.outcomes, strict=True)
+            if a.confidence != b.confidence
+        ]
+        assert distintas  # F7 mueve al menos una barra
+        assert all(limpia_c >= toxica_c for limpia_c, toxica_c in distintas)
+
+    def test_void_y_notrade_tambien_alimentan_el_max(self) -> None:
+        # void_bull/void_bear/notrade_score son los otros insumos del max(): una serie
+        # con SOLO notrade_score creciente (climax y void en 0) tiene que penalizar
+        # igual que climax_top creciente -- prueba que el max() los lee a los cinco, no
+        # solo al primero.
+        creciente = tuple(Decimal(i) / Decimal(40) for i in range(40))
+        plana = tuple(Decimal(0) for _ in range(40))
+        solo_notrade = ReplaySeries(
+            price=tuple(Decimal(100 + i) for i in range(40)),
+            delta=tuple(Decimal(i % 7 + 1) for i in range(40)),
+            delta_momentum=plana,
+            price_range=tuple(Decimal(2) for _ in range(40)),
+            vp_poc=tuple(Decimal(100 + i) for i in range(40)),
+            vp_vah=tuple(Decimal(200) for _ in range(40)),
+            vp_val=tuple(Decimal(50) for _ in range(40)),
+            vp_hvn=tuple(Decimal(100 + i) for i in range(40)),
+            vp_lvn=tuple(Decimal(50) for _ in range(40)),
+            absorption_bid=plana,
+            absorption_ask=plana,
+            climax_top=plana,
+            climax_bottom=plana,
+            void_bull=plana,
+            void_bear=plana,
+            # notrade.score en escala 0-100: creciente*100 recorre la misma proporcion
+            # relativa que climax_top (0..1) tras dividir entre 100 en _toxicity_raw.
+            notrade_score=tuple(v * Decimal(100) for v in creciente),
+        )
+        params = PivotParams()
+        conf = default_params()
+        limpia = replay_from_series(
+            _series_plana(40), PivotState(), params, conf, 10, 10
+        )
+        toxica = replay_from_series(solo_notrade, PivotState(), params, conf, 10, 10)
+        distintas = [
+            (a.confidence, b.confidence)
+            for a, b in zip(limpia.outcomes, toxica.outcomes, strict=True)
+            if a.confidence != b.confidence
+        ]
+        assert distintas
+        assert all(limpia_c >= toxica_c for limpia_c, toxica_c in distintas)

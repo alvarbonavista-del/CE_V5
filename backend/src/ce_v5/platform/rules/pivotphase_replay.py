@@ -3,7 +3,7 @@
 replay_from_series es la LOGICA PURA del replay (DICTAMEN P08c-PIVOT-07 Q1): dado el
 conjunto de series ya materializadas y el PivotState del snapshot ancla, recorre las
 barras oldest->newest manteniendo las ventanas trailing de NORM_WINDOW, arma BarSignals
-(gate de fase 1) y ConfidenceInputs (F1/F2/F4/F6 con input vivo; F3/F5/F7 = None),
+(gate de fase 1) y ConfidenceInputs (F1/F2/F4/F6/F7 con input vivo; F3/F5 = None),
 hila el estado por evaluate_bar (P3) y gradua por compute_confidence (P4), y emite
 (phase, confidence) por barra. Sin BD: el glue (replay_pivotphase) materializa y
 persiste.
@@ -61,6 +61,11 @@ class ReplaySeries:
     vp_lvn: tuple[Decimal, ...]
     absorption_bid: tuple[Decimal, ...]
     absorption_ask: tuple[Decimal, ...]
+    climax_top: tuple[Decimal, ...]
+    climax_bottom: tuple[Decimal, ...]
+    void_bull: tuple[Decimal, ...]
+    void_bear: tuple[Decimal, ...]
+    notrade_score: tuple[Decimal, ...]
 
     def __post_init__(self) -> None:
         lengths = {
@@ -75,6 +80,11 @@ class ReplaySeries:
             len(self.vp_lvn),
             len(self.absorption_bid),
             len(self.absorption_ask),
+            len(self.climax_top),
+            len(self.climax_bottom),
+            len(self.void_bull),
+            len(self.void_bear),
+            len(self.notrade_score),
         }
         if len(lengths) != 1:
             msg = "las series de ReplaySeries deben tener la misma longitud."
@@ -139,6 +149,39 @@ def _absorption_raw(
     return None
 
 
+def _toxicity_raw(
+    climax_top: Decimal,
+    climax_bottom: Decimal,
+    void_bull: Decimal,
+    void_bear: Decimal,
+    notrade_score: Decimal,
+) -> Decimal:
+    """El raw de F7: la intensidad de "algo va mal" en la barra, en [0,1].
+
+    max(climax, void, notrade) -- reduccion RATIFICADA (P08c-CONF-01), semilla [A
+    CALIBRAR AHP] como todo lo demas del modelo. Los tres insumos ya escalan distinto y
+    se homogeneizan ANTES del max, no despues:
+
+      climax = max(climax_top_strength, climax_bottom_strength)   -- ya en [0,1]
+      void   = max(void_snap_bullish, void_snap_bearish)          -- ya en {0,1}
+      notrade = notrade.score / 100  -- 0-100 (tope 65 sin L2) -> [0,0.65]
+
+    RAW ORIENTADO A TOXICIDAD, NO A SOPORTE: mayor raw = mas evidencia de que la barra
+    es ruidosa (climax de agotamiento, snap de void, entorno no-trade). El modelo (P4)
+    es quien invierte esto a confianza -- descending=True en compute_confidence --,
+    aqui NO se resta ni se invierte nada: seria una segunda inversion.
+
+    max() y no promedio ni suma: basta con que UN detector dispare fuerte para que la
+    barra sea sospechosa; promediar diluiria una senal fuerte con dos flojas, y sumar
+    podria superar 1 sin razon (los tres pueden coincidir en la misma barra, como probo
+    P08c-DET-01 paso b con absorcion+climax en la misma ventana).
+    """
+    climax = max(climax_top, climax_bottom)
+    void = max(void_bull, void_bear)
+    notrade = notrade_score / Decimal(100)
+    return max(climax, void, notrade)
+
+
 def _project_confidence(phase: int, confidence: Decimal | None) -> Decimal:
     """Proyeccion Q2 opcion (d): IDLE o NOT_EVALUABLE -> 0; en otro caso, el valor."""
     if phase == int(Phase.IDLE) or confidence is None:
@@ -165,6 +208,7 @@ def replay_from_series(
     f1_raws: list[Decimal] = []
     f2_raws: list[Decimal] = []
     f4_raws: list[Decimal] = []
+    f7_raws: list[Decimal] = []
     state = snapshot_state
     outcomes: list[BarOutcome] = []
     for i in range(len(series.delta)):
@@ -202,6 +246,19 @@ def replay_from_series(
         )
         if f1_raw is not None:
             f1_raws.append(f1_raw)
+        # F7 (P08c-CONF-01 paso 3b): a diferencia de F1/F2/F4, _toxicity_raw es TOTAL --
+        # un max() sobre cinco Decimal ya materializados, sin division ni rango
+        # degenerado que pueda devolver None. Los detectores de P08c-DET-01 sirven 0
+        # como HECHO ("no paso nada"), no como hueco, asi que aqui no hay insumo
+        # ausente que envolver en Optional: se acumula y se usa sin condicional.
+        f7_raw = _toxicity_raw(
+            series.climax_top[i],
+            series.climax_bottom[i],
+            series.void_bull[i],
+            series.void_bear[i],
+            series.notrade_score[i],
+        )
+        f7_raws.append(f7_raw)
         if i < lookback:
             continue
         inputs = ConfidenceInputs(
@@ -225,6 +282,7 @@ def replay_from_series(
                 hvn_price=series.vp_hvn[i],
                 lvn_price=series.vp_lvn[i],
             ),
+            f7=FactorInput(raw=f7_raw, distribution=tuple(f7_raws[-norm_window:])),
         )
         result = compute_confidence(inputs, conf_params)
         outcomes.append(

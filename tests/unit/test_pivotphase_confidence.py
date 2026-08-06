@@ -253,11 +253,69 @@ class TestF1Absorcion:
         assert floja is not None
         assert fuerte > floja
 
-    def test_techo_efectivo_de_hoy_es_66_67(self) -> None:
-        # F3 y F7 tienen PESO pero aun no tienen INPUT (llegan None hasta 3b/3c): el
-        # maximo alcanzable con los cuatro extractores vivos es 4/6. Este candado se
-        # actualiza cuando entren, y hasta entonces documenta el techo real.
-        vivos = ConfidenceInputs(f1=_fin(100), f2=_fin(100), f4=_fin(100), f6=_F6_HVN)
-        assert compute_confidence(vivos, default_params()).confidence == Decimal(
-            "66.67"
+    def test_techo_efectivo_de_hoy_es_83_33(self) -> None:
+        # Tras 3b (F7 vivo): F3 sigue siendo el UNICO con peso y sin input (llega None,
+        # aporta 0). El maximo alcanzable con los cinco extractores vivos -- F1, F2, F4,
+        # F6, F7 -- es 5/6. Este candado se actualiza cuando F3 entre, y hasta entonces
+        # documenta el techo real.
+        vivos = ConfidenceInputs(
+            f1=_fin(100),
+            f2=_fin(100),
+            f4=_fin(100),
+            f6=_F6_HVN,
+            # raw=0 estrictamente POR DEBAJO de la distribucion estandar (1..5) ->
+            # rank=0 -> normalized=1 (descending): cero toxicidad = soporte pleno.
+            f7=_fin(0),
         )
+        assert compute_confidence(vivos, default_params()).confidence == Decimal(
+            "83.33"
+        )
+
+
+class TestF7Toxicidad:
+    """F7 activado en P08c-CONF-01 paso 3b: peso 1/6, input vivo, y es el UNICO factor
+    que PENALIZA (mas toxicidad -> menos confianza, descending=True)."""
+
+    def test_f7_alto_penaliza_mas_que_f7_bajo(self) -> None:
+        # Orientacion, la parte que hay que clavar: MAS toxicidad tiene que dar MENOS
+        # confianza. Si el extractor no invirtiera, esto saldria al reves.
+        p = default_params()
+        poca = compute_confidence(ConfidenceInputs(f7=_fin(1)), p).confidence
+        mucha = compute_confidence(ConfidenceInputs(f7=_fin(5)), p).confidence
+        assert poca is not None
+        assert mucha is not None
+        assert poca > mucha
+
+    def test_f7_con_input_aporta_al_score(self) -> None:
+        con = compute_confidence(ConfidenceInputs(f7=_fin(0)), default_params())
+        assert con.confidence == Decimal("16.67")
+        assert Factor.F7_VOID_NOTRADE in con.used_factors
+
+    def test_f7_ausente_aporta_cero_sin_renormalizar(self) -> None:
+        sin_f7 = compute_confidence(ConfidenceInputs(f2=_fin(100)), default_params())
+        assert sin_f7.confidence == Decimal("16.67")
+        assert Factor.F7_VOID_NOTRADE not in sin_f7.used_factors
+        f7c = next(
+            c for c in sin_f7.contributions if c.factor is Factor.F7_VOID_NOTRADE
+        )
+        assert f7c.evaluable is False
+        assert f7c.contribution == Decimal(0)
+
+    def test_f7_de_maxima_toxicidad_aporta_menos_que_f1_de_maximo_soporte(self) -> None:
+        # LA PENALIZACION NO ES RESTA, ES UN TECHO MAS BAJO: contribution = weight *
+        # normalized, y normalized cae en [0,1] para CUALQUIER factor -- nunca negativo.
+        # Anadir F7 (evaluable) nunca puede bajar la confianza por DEBAJO de omitirlo;
+        # lo que demuestra la inversion es que, a MAXIMA toxicidad, F7 aporta el
+        # MINIMO de su rango (~0), mientras que F1 a maximo soporte aporta el MAXIMO
+        # (peso entero). Comparar "con F7 toxico" contra "sin F7" no cazaria la
+        # inversion (ambas dan con >= sin siempre); comparar los DOS EXTREMOS si.
+        p = default_params()
+        f7_toxico_extremo = compute_confidence(
+            ConfidenceInputs(f7=_fin(6, dist=(Decimal(1), Decimal(2), Decimal(6)))), p
+        ).confidence
+        f1_soporte_extremo = compute_confidence(
+            ConfidenceInputs(f1=_fin(6, dist=(Decimal(1), Decimal(2), Decimal(6)))), p
+        ).confidence
+        assert f7_toxico_extremo is not None
+        assert f1_soporte_extremo is not None
+        assert f7_toxico_extremo < f1_soporte_extremo

@@ -16,18 +16,21 @@ FRONTERA P4/P5 (ELEVACION P08c-PIVOT-02, OPCION R1 ratificada por Central):
 
 FACTORES (I-04 2.3; AHP REV 2). Con peso en v5.0 (1/6 cada uno tras P08c-CONF-01):
   F1 absorcion, F2 exhaustion de delta, F3 divergencia de CVD, F4 esfuerzo vs resultado,
-  F6 contexto de volume profile, F7 void/notrade (penaliza).
+  F6 contexto de volume profile, F7 void/notrade/climax (penaliza).
 Diferido (peso 0): F5 imbalance apilado (espera fuente de celdas de footprint).
 
-PESO NO ES LO MISMO QUE INPUT VIVO. F1 se activo en P08c-CONF-01 con su extractor
-real (absorption.bid/ask_strength, orientado por la direccion del pivote). F3 y F7
-tienen peso pero su input aun se construye -- llegan como None y aportan 0 --, asi
-que el techo
-efectivo de hoy es 4/6 = 66,67 y no 100. Se cierran en 3b (F3) y 3c (F7).
+PESO NO ES LO MISMO QUE INPUT VIVO. F1 (paso 3a) y F7 (paso 3b) ya tienen extractor
+real: F1 lee absorption.bid/ask_strength orientado por la direccion del pivote; F7 lee
+max(climax.top/bottom_strength, void.snap_bullish/bearish, notrade.score/100) -- basta
+que UN detector dispare fuerte para que la barra sea sospechosa. F3 sigue con peso pero
+sin input (llega None y aporta 0): el techo efectivo de hoy es 5/6 = 83,33 y no 100. Se
+cierra cuando exista el nucleo de divergencia de CVD (fuera del alcance de P08c-DET-01).
 
-F1/F2/F3/F4/F7 se normalizan por PERCENTIL (raw + distribucion reciente). F6 se
-normaliza por DISTANCIA a niveles VP servibles (ELEVACION P08c-PIVOT-05: corrige
-el vol_ratio inicial; los vp.* exponen PRECIOS, no ratios de volumen).
+F1/F2/F3/F4/F7 se normalizan por PERCENTIL (raw + distribucion reciente); F7 con
+descending=True: MAYOR toxicidad -> MENOR rank -> MENOS confianza (es el UNICO factor
+que invierte). F6 se normaliza por DISTANCIA a niveles VP servibles (ELEVACION
+P08c-PIVOT-05: corrige el vol_ratio inicial; los vp.* exponen PRECIOS, no ratios de
+volumen).
 
 EVIDENCIA AUSENTE NO INFLA: un factor ausente o no evaluable aporta 0 (no se renormaliza
 el denominador); la confianza sube conforme se acumula evidencia en cada cierre
