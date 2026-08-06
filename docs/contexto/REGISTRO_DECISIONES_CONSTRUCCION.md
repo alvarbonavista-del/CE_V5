@@ -2292,6 +2292,16 @@ DIFERIDO GATEADO (MAT-05 Q2): constructor de cache_key-VALOR + tests 5/6
  anti-colision son OBLIGATORIOS. Hoy el esquema ya declara los params como
  dimensiones (cache_key_validator lo exige); la cache futura hereda el requisito.
 
+ADENDA R1-CACHE-FV (P08c reapertura, 2026-08-06): ademas de los
+params EFECTIVOS, el constructor de cache_key-VALOR DEBE incluir
+formula_version en el cache_key_schema de TODA fuente que lo declare.
+Evidencia: notrade.* subio v1 -> v2 pero esa version NO esta en su
+clave hoy; si el cache de valor existiera, la misma clave devolveria
+resultados de dos formulas distintas. Aplica a TODOS los detectores
+y fuentes RECURSIVE que declaren formula_version (no solo notrade).
+Gate UNICO: se resuelve en la pieza de cache de evaluacion, junto con
+el codificador de params. Un solo sitio, sistematico.
+
 NO se construye el codificador ahora: sin consumidor seria codigo muerto (regla 5.11).
 
 QUE SE CONSTRUYE:
@@ -2628,4 +2638,46 @@ DICTAMEN CENTRAL (firmado por Alvaro):
 INVENTARIO DE CALIBRACION (7 bloques, ~35 parametros; titularidad P08d): (1) confianza pivotphase F1-F7 (pesos w_i, ventanas L/k/R, W_norm, tasa base; los 10 params de la FSM se FIJAN en paridad v4); (2) absorcion F1; (3) climax F7-1; (4) void F7-2; (5) notrade F7-3 (mas definir "edge realizado"); (6) contexto VP HVN/LVN F6; (7) imbalance apilado F5 mas F3 divergencia CVD.
 NOTA REGLA DE ORO: DOC_ROADMAP_V5 (doc prescriptivo cerrado) NO se reescribe en esta tanda; el alta formal de P08d y T-CORPUS en el roadmap, si procede, es orquestacion de Central. Aqui se registra la DECISION y su estado.
 FIN SECCION 40.
+=====================================================================
+
+=====================================================================
+41. REGLA 5.38 + P08c-COM-01: GATE DE LECTURA DE REGLAS DE COMUNICACION
+=====================================================================
+Fecha: 2026-08-06. Origen: elevacion P08c-COM-01 (periferico P08c)
+-> dictamen Central -> firma Alvaro.
+
+PROBLEMA: deriva recurrente en bloques de salida (tandas, elevaciones,
+informes) por incumplimiento de 5.33 (cabecera modelo), 5.35
+(identidad/worktree), 5.25/5.10 (bloque unico), 5.29 (add explicito),
+5.30 (ci_local). Causa mecanica: REGLAS_COMUNICACION_CE_V5.md NO esta
+en la capa siempre cargada; solo entra si el periferico lo lee.
+
+OPCIONES EVALUADAS:
+  A. Gate corto en las instrucciones del proyecto que obliga a leer
+     las reglas ANTES de redactar. Determinista, economico. APROBADA.
+  B. Dejar las reglas solo en el knowledge (status quo). DESCARTADA:
+     la deriva ya la demostro insuficiente.
+  C. Repetir el esqueleto entero en las instrucciones. DESCARTADA:
+     infla tokens en cada turno.
+
+REGLA 5.38 (nueva):
+  Todo periferico DEBE ejecutar project_read de
+  REGLAS_COMUNICACION_CE_V5.md secciones 2, 3 y 4 ANTES de redactar
+  cualquier bloque de salida (tanda, elevacion, informe, orden). Sin
+  esa lectura, el bloque NO se redacta. Gate siempre-cargado en las
+  instrucciones del proyecto.
+  LECTURA MINIMA: secciones 2 (forma general), 3 (tanda a Claude Code)
+  y 4 (elevacion a Central).
+  LISTA DE REGLAS CUBIERTAS POR EL GATE:
+    Forma (todo prompt): 5.25, 5.10, 5.28, ASCII-safe, DOC_ENTREGABLES sec.3.
+    Tanda a Claude Code: 5.24, 5.27, 5.26, 5.23, 5.33, 5.35, 5.29, 5.30, 5.31, 5.32.
+    Elevacion a Central: REGLA DE ORO, 5.4 inverso, 5.28.
+
+IMPLEMENTACION: anadir el gate al bloque de instrucciones del proyecto
+de CADA periferico (un parrafo, no el doc entero). Texto:
+  "GATE OBLIGATORIO: antes de redactar CUALQUIER bloque de salida
+  (tanda, elevacion, informe, orden), LEER
+  REGLAS_COMUNICACION_CE_V5.md secciones 2, 3 y 4 (project_read).
+  Sin esa lectura el bloque NO se escribe. Regla 5.38."
+FIN SECCION 41.
 =====================================================================

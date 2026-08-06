@@ -376,3 +376,6 @@ Hash del commit de cierre de contexto "docs(contexto): cierre T-03": ee40df620b2
   repositorio directamente. La edicion es labor EXCLUSIVA de perifericos. Metodo Cowork
   (Read/Edit/Write) disponible como alternativa a Claude Code para perifericos cuando la
   tarea es sencilla y no requiere git/tests/compilacion. Ver REGISTRO_DECISIONES sec.36.
+- REGLA 5.38 (nace en el cierre de P08c reapertura): todo periferico DEBE leer
+  REGLAS_COMUNICACION_CE_V5.md secciones 2/3/4 ANTES de redactar cualquier bloque
+  de salida. Gate siempre-cargado. Ver REGISTRO_DECISIONES sec.41.
