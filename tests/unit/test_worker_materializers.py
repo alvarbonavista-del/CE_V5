@@ -110,6 +110,10 @@ from ce_v5.platform.rules.pivotphase import (
     PIVOTPHASE_CONFIDENCE_SOURCE_ID,
     PIVOTPHASE_PHASE_SOURCE_ID,
 )
+from ce_v5.platform.rules.void import (
+    VOID_SNAP_BEARISH_SOURCE_ID,
+    VOID_SNAP_BULLISH_SOURCE_ID,
+)
 from ce_v5.platform.rules.volume_profile import (
     DEFAULT_BIN_COUNT,
     VP_HVN_SOURCE_ID,
@@ -225,6 +229,8 @@ class TestRegistroPorSourceId:
             ABSORPTION_ASK_STRENGTH_SOURCE_ID,
             CLIMAX_TOP_STRENGTH_SOURCE_ID,
             CLIMAX_BOTTOM_STRENGTH_SOURCE_ID,
+            VOID_SNAP_BULLISH_SOURCE_ID,
+            VOID_SNAP_BEARISH_SOURCE_ID,
             VOLUME_RATIO_VS_AVG_SOURCE_ID,
             VWAP_VALUE_SOURCE_ID,
             VWAP_DISTANCE_PCT_SOURCE_ID,

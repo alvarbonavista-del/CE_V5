@@ -19,6 +19,7 @@ from ce_v5.entrypoints.worker_rules.materializers import (
     DetectorWindowedSpec,
     _absorption_signal,
     _climax_signal,
+    _void_signal,
 )
 from ce_v5.infra.db.market_candles import CandleOHLCV
 from ce_v5.platform.rules.absorption import (
@@ -30,6 +31,10 @@ from ce_v5.platform.rules.climax import (
     CLIMAX_BOTTOM_STRENGTH_SOURCE_ID,
     CLIMAX_TOP_STRENGTH_SOURCE_ID,
     ClimaxSide,
+)
+from ce_v5.platform.rules.void import (
+    VOID_SNAP_BEARISH_SOURCE_ID,
+    VOID_SNAP_BULLISH_SOURCE_ID,
 )
 from source.families.footprint import FootprintCell, FootprintClosedPayload
 from source.families.market import MarketType, Timeframe
@@ -299,3 +304,55 @@ class TestClimaxTransform:
             for bar in ventana
         ]
         assert _climax_signal(plana).detected is True
+
+
+class TestVoidTransform:
+    """La transform de void: el LVN sale del footprint de la propia ventana."""
+
+    def _ventana_con_snap(self) -> list[DetectorBar]:
+        # El perfil de la ventana concentra volumen en 100 y 110 (los extremos de las
+        # celdas), asi que el LVN cae en algun bin intermedio poco visitado. El precio
+        # cruza ese nivel al alza y VUELVE en la siguiente barra -> snap BEARISH.
+        #
+        # Para que el cruce sea inequivoco se mueven los CIERRES por encima y por debajo
+        # del centro del rango, dejando el footprint constante.
+        ventana = [_bar(i, close_price="101") for i in range(28)]
+        ventana.append(_bar(28, close_price="109"))  # cruza hacia arriba
+        ventana.append(_bar(29, close_price="101"))  # y vuelve
+        return ventana
+
+    def test_las_dos_salidas_son_indicadoras_cero_o_uno(self) -> None:
+        ventana = self._ventana_con_snap()
+        for source_id in (VOID_SNAP_BULLISH_SOURCE_ID, VOID_SNAP_BEARISH_SOURCE_ID):
+            spec = SOURCE_MATERIALIZERS[source_id]
+            assert isinstance(spec, DetectorWindowedSpec)
+            valor = spec.transform(ventana)
+            assert valor.scalar_type is ScalarType.DECIMAL
+            assert valor.decimal_value in {Decimal(0), Decimal(1)}
+
+    def test_una_ventana_sin_cruces_no_dispara_ninguna(self) -> None:
+        # Cierres constantes: nadie cruza el LVN, asi que no hay snap por ningun lado.
+        ventana = [_bar(i, close_price="105") for i in range(30)]
+        for source_id in (VOID_SNAP_BULLISH_SOURCE_ID, VOID_SNAP_BEARISH_SOURCE_ID):
+            spec = SOURCE_MATERIALIZERS[source_id]
+            assert isinstance(spec, DetectorWindowedSpec)
+            assert spec.transform(ventana).decimal_value == Decimal(0)
+
+    def test_las_dos_direcciones_nunca_son_uno_a_la_vez(self) -> None:
+        # Un snap tiene UNA direccion: la contraria al cruce que lo origino.
+        ventana = self._ventana_con_snap()
+        bullish = SOURCE_MATERIALIZERS[VOID_SNAP_BULLISH_SOURCE_ID]
+        bearish = SOURCE_MATERIALIZERS[VOID_SNAP_BEARISH_SOURCE_ID]
+        assert isinstance(bullish, DetectorWindowedSpec)
+        assert isinstance(bearish, DetectorWindowedSpec)
+        valores = {
+            bullish.transform(ventana).decimal_value,
+            bearish.transform(ventana).decimal_value,
+        }
+        assert valores != {Decimal(1)}
+
+    def test_el_lvn_sale_del_footprint_de_la_ventana_no_de_un_parametro(self) -> None:
+        # El veredicto se computa sin que nadie pase un LVN: si el materializador no lo
+        # derivase del footprint, esto reventaria por falta de nivel.
+        senal = _void_signal(self._ventana_con_snap())
+        assert senal.detected in {True, False}

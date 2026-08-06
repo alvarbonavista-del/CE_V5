@@ -181,6 +181,14 @@ from ce_v5.platform.rules.pivotphase import (
     PIVOTPHASE_CONFIDENCE_SOURCE_ID,
     PIVOTPHASE_PHASE_SOURCE_ID,
 )
+from ce_v5.platform.rules.void import (
+    VOID_SNAP_BEARISH_SOURCE_ID,
+    VOID_SNAP_BULLISH_SOURCE_ID,
+    VoidOutput,
+    VoidSignal,
+    evaluate_void,
+    void_output,
+)
 from ce_v5.platform.rules.volume_profile import (
     DEFAULT_BIN_COUNT,
     VP_HVN_SOURCE_ID,
@@ -1340,6 +1348,34 @@ def _climax_bottom_strength(window: Sequence[DetectorBar]) -> ScalarValue:
     )
 
 
+def _void_signal(window: Sequence[DetectorBar]) -> VoidSignal:
+    """El veredicto de void de la ULTIMA barra de la ventana.
+
+    El nivel LVN se computa AQUI con select_lvn_price sobre la ventana de footprint, no
+    se pide a vp.lvn: esa fuente es NON_SERVIBLE (un CONJUNTO de niveles, no un escalar)
+    y no se puede pedir por dispatch. Es el patron con el que MACD calcula sus EMAs sin
+    consumir ema.value.
+    """
+    return evaluate_void(
+        [bar.candle.close for bar in window],
+        select_lvn_price([bar.footprint for bar in window]),
+    )
+
+
+def _void_snap_bullish(window: Sequence[DetectorBar]) -> ScalarValue:
+    return ScalarValue(
+        scalar_type=ScalarType.DECIMAL,
+        decimal_value=void_output(_void_signal(window), VoidOutput.SNAP_BULLISH),
+    )
+
+
+def _void_snap_bearish(window: Sequence[DetectorBar]) -> ScalarValue:
+    return ScalarValue(
+        scalar_type=ScalarType.DECIMAL,
+        decimal_value=void_output(_void_signal(window), VoidOutput.SNAP_BEARISH),
+    )
+
+
 def _candle_open(candle: CandleOHLCV) -> Decimal:
     return candle.open
 
@@ -1445,6 +1481,8 @@ SOURCE_MATERIALIZERS: dict[str, SourceMaterializer] = {
     CLIMAX_BOTTOM_STRENGTH_SOURCE_ID: DetectorWindowedSpec(
         transform=_climax_bottom_strength
     ),
+    VOID_SNAP_BULLISH_SOURCE_ID: DetectorWindowedSpec(transform=_void_snap_bullish),
+    VOID_SNAP_BEARISH_SOURCE_ID: DetectorWindowedSpec(transform=_void_snap_bearish),
     VOLUME_RATIO_VS_AVG_SOURCE_ID: CandleWindowedSpec(
         transform=_volume_ratio_vs_avg, window_bars=LOOKBACK_DEFAULT + 1
     ),

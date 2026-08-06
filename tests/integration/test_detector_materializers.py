@@ -33,6 +33,10 @@ from ce_v5.platform.rules.climax import (
     CLIMAX_BOTTOM_STRENGTH_SOURCE_ID,
     CLIMAX_TOP_STRENGTH_SOURCE_ID,
 )
+from ce_v5.platform.rules.void import (
+    VOID_SNAP_BEARISH_SOURCE_ID,
+    VOID_SNAP_BULLISH_SOURCE_ID,
+)
 from source.families.footprint import (
     FootprintCell,
     FootprintClosedPayload,
@@ -63,7 +67,8 @@ _BARRAS = 130
 
 _ABSORPTION = (ABSORPTION_BID_STRENGTH_SOURCE_ID, ABSORPTION_ASK_STRENGTH_SOURCE_ID)
 _CLIMAX = (CLIMAX_TOP_STRENGTH_SOURCE_ID, CLIMAX_BOTTOM_STRENGTH_SOURCE_ID)
-_TODAS = (*_ABSORPTION, *_CLIMAX)
+_VOID = (VOID_SNAP_BULLISH_SOURCE_ID, VOID_SNAP_BEARISH_SOURCE_ID)
+_TODAS = (*_ABSORPTION, *_CLIMAX, *_VOID)
 
 PersistirVela = Callable[[CandlePayload, MarketCandleEventType, int], bool]
 PersistirFootprint = Callable[[FootprintPayload, MarketFootprintEventType, int], bool]
@@ -430,3 +435,55 @@ class TestClimaxServido:
         # Y ninguno se cuela en la barra del otro.
         assert bid_en_climax[0].decimal_value == Decimal(0)
         assert top_en_absorcion[0].decimal_value == Decimal(0)
+
+
+class TestVoidServido:
+    def test_las_dos_salidas_son_indicadoras_cero_o_uno(
+        self,
+        rules_db: PsycopgDatabase,
+        persistir_footprint: PersistirFootprint,
+        persistir_vela: PersistirVela,
+        limpiar_detectores: None,
+    ) -> None:
+        _sembrar(persistir_footprint, persistir_vela)
+
+        for source_id in _VOID:
+            serie = _materializar(rules_db, source_id, _open_time(_ULTIMA), 5)
+            assert len(serie) == 5
+            for valor in serie:
+                assert valor.scalar_type is ScalarType.DECIMAL
+                assert valor.decimal_value in {Decimal(0), Decimal(1)}
+
+    def test_no_dispara_sin_cruces_del_nivel(
+        self,
+        rules_db: PsycopgDatabase,
+        persistir_footprint: PersistirFootprint,
+        persistir_vela: PersistirVela,
+        limpiar_detectores: None,
+    ) -> None:
+        # El fixture tiene cierres constantes salvo en las dos barras excepcionales:
+        # nadie cruza el LVN y vuelve, asi que no hay snap en la cola plana.
+        _sembrar(persistir_footprint, persistir_vela)
+
+        for source_id in _VOID:
+            serie = _materializar(rules_db, source_id, _open_time(_ULTIMA - 2), 3)
+            assert all(valor.decimal_value == Decimal(0) for valor in serie)
+
+    def test_el_nivel_lvn_se_computa_sin_pasar_por_dispatch(
+        self,
+        rules_db: PsycopgDatabase,
+        persistir_footprint: PersistirFootprint,
+        persistir_vela: PersistirVela,
+        limpiar_detectores: None,
+    ) -> None:
+        # vp.lvn es NON_SERVIBLE: si el materializador intentase pedirla por source_id,
+        # el compilador la rechazaria. Que la serie salga demuestra que el nivel se
+        # deriva DENTRO del spec (patron MACD).
+        _sembrar(persistir_footprint, persistir_vela)
+
+        serie = _materializar(
+            rules_db, VOID_SNAP_BULLISH_SOURCE_ID, _open_time(_ULTIMA), 1
+        )
+
+        assert len(serie) == 1
+        assert serie[0].decimal_value is not None

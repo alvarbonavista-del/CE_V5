@@ -19,6 +19,7 @@ from ce_v5.platform.rules import (
     pivotphase,
     rawclose,
     rawfootprint,
+    void,
     volume_profile,
 )
 from ce_v5.platform.rules.indicators import (
@@ -40,6 +41,7 @@ def discover_declarations() -> tuple[DataSourceDeclaration, ...]:
     return (
         *absorption.declarations(),
         *climax.declarations(),
+        *void.declarations(),
         *rawclose.declarations(),
         *rawfootprint.declarations(),
         *volume_profile.declarations(),

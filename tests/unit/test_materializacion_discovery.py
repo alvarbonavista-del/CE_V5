@@ -10,6 +10,8 @@ _EXPECTED = {
     "absorption.ask_strength",
     "climax.top_strength",
     "climax.bottom_strength",
+    "void.snap_bullish",
+    "void.snap_bearish",
     "market.close",
     "market.footprint",
     "vp.poc",
@@ -62,11 +64,10 @@ def test_discovery_incluye_market_close_aditividad() -> None:
 
 
 def test_discovery_no_incluye_diferidas() -> None:
-    # absorption.* y climax.* SALEN de esta lista en P08c-DET-01: dejaron de ser
-    # diferidas cuando P08b entrego candle.open/high/low (su dependencia real). Las
-    # otras dos siguen diferidas hasta que se cablean en esta misma pieza.
+    # absorption.*, climax.* y void.* SALEN de esta lista en P08c-DET-01 conforme se
+    # cablean. notrade.* es la ultima que queda diferida en esta pieza.
     ids = {d.source_id for d in discover_declarations()}
-    for prefix in ("void.", "notrade."):
+    for prefix in ("notrade.",):
         assert not any(i.startswith(prefix) for i in ids)
 
 
@@ -102,6 +103,13 @@ def test_discovery_incluye_climax_ya_no_diferida() -> None:
     # incluye candle.open a proposito (rev 3 H2: el nucleo no lo lee).
     ids = {d.source_id for d in discover_declarations()}
     assert {"climax.top_strength", "climax.bottom_strength"} <= ids
+
+
+def test_discovery_incluye_void_ya_no_diferida() -> None:
+    # P08c-DET-01: dos indicadoras {0,1} por direccion del snap. Su consumes NO incluye
+    # vp.lvn (es NON_SERVIBLE): el nivel se computa dentro del materializador.
+    ids = {d.source_id for d in discover_declarations()}
+    assert {"void.snap_bullish", "void.snap_bearish"} <= ids
 
 
 def test_discovery_incluye_las_cinco_divergence() -> None:
