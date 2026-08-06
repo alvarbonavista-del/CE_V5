@@ -8,6 +8,8 @@ from ce_v5.platform.rules.discovery import discover_declarations
 _EXPECTED = {
     "absorption.bid_strength",
     "absorption.ask_strength",
+    "climax.top_strength",
+    "climax.bottom_strength",
     "market.close",
     "market.footprint",
     "vp.poc",
@@ -60,11 +62,11 @@ def test_discovery_incluye_market_close_aditividad() -> None:
 
 
 def test_discovery_no_incluye_diferidas() -> None:
-    # absorption.* SALE de esta lista en P08c-DET-01: dejo de ser diferida cuando P08b
-    # entrego candle.open (su dependencia real). Las otras tres siguen diferidas hasta
-    # que se cablean en esta misma pieza; cuando entren, salen de aqui igual.
+    # absorption.* y climax.* SALEN de esta lista en P08c-DET-01: dejaron de ser
+    # diferidas cuando P08b entrego candle.open/high/low (su dependencia real). Las
+    # otras dos siguen diferidas hasta que se cablean en esta misma pieza.
     ids = {d.source_id for d in discover_declarations()}
-    for prefix in ("climax.", "void.", "notrade."):
+    for prefix in ("void.", "notrade."):
         assert not any(i.startswith(prefix) for i in ids)
 
 
@@ -93,6 +95,13 @@ def test_discovery_incluye_candle_high_low() -> None:
     # desbloqueo absorption.*).
     ids = {d.source_id for d in discover_declarations()}
     assert {"candle.high", "candle.low"} <= ids
+
+
+def test_discovery_incluye_climax_ya_no_diferida() -> None:
+    # P08c-DET-01: dos fuentes DECIMAL por lado, como absorption.*. Su consumes NO
+    # incluye candle.open a proposito (rev 3 H2: el nucleo no lo lee).
+    ids = {d.source_id for d in discover_declarations()}
+    assert {"climax.top_strength", "climax.bottom_strength"} <= ids
 
 
 def test_discovery_incluye_las_cinco_divergence() -> None:

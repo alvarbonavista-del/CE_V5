@@ -29,6 +29,10 @@ from ce_v5.platform.rules.absorption import (
     ABSORPTION_ASK_STRENGTH_SOURCE_ID,
     ABSORPTION_BID_STRENGTH_SOURCE_ID,
 )
+from ce_v5.platform.rules.climax import (
+    CLIMAX_BOTTOM_STRENGTH_SOURCE_ID,
+    CLIMAX_TOP_STRENGTH_SOURCE_ID,
+)
 from source.families.footprint import (
     FootprintCell,
     FootprintClosedPayload,
@@ -57,7 +61,9 @@ _OPEN = 1_784_073_600_000
 # para pedir varias barras de salida.
 _BARRAS = 130
 
-_TODAS = (ABSORPTION_BID_STRENGTH_SOURCE_ID, ABSORPTION_ASK_STRENGTH_SOURCE_ID)
+_ABSORPTION = (ABSORPTION_BID_STRENGTH_SOURCE_ID, ABSORPTION_ASK_STRENGTH_SOURCE_ID)
+_CLIMAX = (CLIMAX_TOP_STRENGTH_SOURCE_ID, CLIMAX_BOTTOM_STRENGTH_SOURCE_ID)
+_TODAS = (*_ABSORPTION, *_CLIMAX)
 
 PersistirVela = Callable[[CandlePayload, MarketCandleEventType, int], bool]
 PersistirFootprint = Callable[[FootprintPayload, MarketFootprintEventType, int], bool]
@@ -123,26 +129,45 @@ def _vela(
     )
 
 
-# La ULTIMA barra lleva absorcion de VENDEDORES (BID): ratio altisimo (1000/10),
-# agresion vendedora (delta<0) y precio CONTENIDO que sube (displacement>0). Las 129
-# previas son planas (ratio 1), asi que el umbral adaptativo se queda en su piso.
+# DOS barras excepcionales, en sitios DISTINTOS y a proposito.
+#
+# La ULTIMA lleva absorcion de VENDEDORES (BID): ratio altisimo (1000/10), agresion
+# vendedora (delta<0) y precio CONTENIDO que SUBE (displacement>0).
+#
+# La barra _CLIMAX_BAR lleva climax de TECHO: volumen y rango excepcionales con el
+# cierre
+# en el tercio INFERIOR del rango.
+#
+# NO pueden ser la misma barra, y eso es geometria del detector, no comodidad del test:
+# el climax de TECHO exige que el cierre caiga abajo del rango, mientras que la
+# absorcion
+# de VENDEDORES exige que el precio SUBA dentro de la vela (delta y displacement en
+# direcciones opuestas). Un cierre no puede estar arriba y abajo a la vez.
 _ULTIMA = _BARRAS - 1
+_CLIMAX_BAR = 120
 
 
 def _sembrar(
     persistir_footprint: PersistirFootprint, persistir_vela: PersistirVela
 ) -> None:
     for indice in range(_BARRAS):
-        con_absorcion = indice == _ULTIMA
-        buy, sell = ("100", "900") if con_absorcion else ("5", "5")
-        apertura, cierre = ("104", "105") if con_absorcion else ("105", "105")
+        buy, sell = ("5", "5")
+        low, high = ("100", "110")
+        apertura, cierre = ("105", "105")
+        if indice == _ULTIMA:  # absorcion BID: ratio alto, delta<0, precio sube poco
+            buy, sell = ("100", "900")
+            apertura, cierre = ("104", "105")
+        elif indice == _CLIMAX_BAR:  # climax TOP: volumen y rango altos, cierre abajo
+            buy, sell = ("5000", "5000")
+            low, high = ("50", "200")
+            apertura, cierre = ("190", "60")
         assert persistir_footprint(
-            _footprint(indice, buy=buy, sell=sell, low="100", high="110"),
+            _footprint(indice, buy=buy, sell=sell, low=low, high=high),
             MarketFootprintEventType.FOOTPRINT_CLOSED,
             _OPEN + indice,
         )
         assert persistir_vela(
-            _vela(indice, low="100", high="110", apertura=apertura, cierre=cierre),
+            _vela(indice, low=low, high=high, apertura=apertura, cierre=cierre),
             MarketCandleEventType.CANDLE_CLOSED,
             _OPEN + indice,
         )
@@ -335,3 +360,73 @@ class TestAlineacionFailLoud:
             _materializar(
                 rules_db, ABSORPTION_BID_STRENGTH_SOURCE_ID, _open_time(_ULTIMA), 3
             )
+
+
+class TestClimaxServido:
+    def test_la_barra_excepcional_publica_climax_top_y_bottom_cero(
+        self,
+        rules_db: PsycopgDatabase,
+        persistir_footprint: PersistirFootprint,
+        persistir_vela: PersistirVela,
+        limpiar_detectores: None,
+    ) -> None:
+        _sembrar(persistir_footprint, persistir_vela)
+
+        top = _materializar(
+            rules_db, CLIMAX_TOP_STRENGTH_SOURCE_ID, _open_time(_CLIMAX_BAR), 1
+        )
+        bottom = _materializar(
+            rules_db, CLIMAX_BOTTOM_STRENGTH_SOURCE_ID, _open_time(_CLIMAX_BAR), 1
+        )
+
+        assert top[0].decimal_value is not None
+        assert top[0].decimal_value > 0
+        assert bottom[0].decimal_value == Decimal(0)
+
+    def test_las_barras_planas_publican_cero_en_los_dos_lados(
+        self,
+        rules_db: PsycopgDatabase,
+        persistir_footprint: PersistirFootprint,
+        persistir_vela: PersistirVela,
+        limpiar_detectores: None,
+    ) -> None:
+        _sembrar(persistir_footprint, persistir_vela)
+
+        for source_id in _CLIMAX:
+            serie = _materializar(rules_db, source_id, _open_time(_ULTIMA - 1), 3)
+            assert len(serie) == 3
+            assert all(valor.decimal_value == Decimal(0) for valor in serie)
+
+    def test_cada_detector_dispara_en_SU_barra_y_no_en_la_del_otro(
+        self,
+        rules_db: PsycopgDatabase,
+        persistir_footprint: PersistirFootprint,
+        persistir_vela: PersistirVela,
+        limpiar_detectores: None,
+    ) -> None:
+        # absorption y climax leen la MISMA ventana compuesta pero miran cosas
+        # distintas. Cada uno tiene su barra: si alguno estuviera leyendo la cara
+        # equivocada (candle.volume en vez del agresor, o el rango de la vela en vez del
+        # span del footprint), dispararia donde no toca o no dispararia donde toca.
+        _sembrar(persistir_footprint, persistir_vela)
+
+        bid_en_absorcion = _materializar(
+            rules_db, ABSORPTION_BID_STRENGTH_SOURCE_ID, _open_time(_ULTIMA), 1
+        )
+        top_en_climax = _materializar(
+            rules_db, CLIMAX_TOP_STRENGTH_SOURCE_ID, _open_time(_CLIMAX_BAR), 1
+        )
+        bid_en_climax = _materializar(
+            rules_db, ABSORPTION_BID_STRENGTH_SOURCE_ID, _open_time(_CLIMAX_BAR), 1
+        )
+        top_en_absorcion = _materializar(
+            rules_db, CLIMAX_TOP_STRENGTH_SOURCE_ID, _open_time(_ULTIMA), 1
+        )
+
+        assert bid_en_absorcion[0].decimal_value is not None
+        assert top_en_climax[0].decimal_value is not None
+        assert bid_en_absorcion[0].decimal_value > 0
+        assert top_en_climax[0].decimal_value > 0
+        # Y ninguno se cuela en la barra del otro.
+        assert bid_en_climax[0].decimal_value == Decimal(0)
+        assert top_en_absorcion[0].decimal_value == Decimal(0)

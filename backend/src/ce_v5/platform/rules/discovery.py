@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from ce_v5.platform.rules import (
     absorption,
+    climax,
     cvd,
     footprint_range,
     orderflow,
@@ -38,6 +39,7 @@ def discover_declarations() -> tuple[DataSourceDeclaration, ...]:
     """Agrega las declaraciones de todos los modulos productores (lista explicita)."""
     return (
         *absorption.declarations(),
+        *climax.declarations(),
         *rawclose.declarations(),
         *rawfootprint.declarations(),
         *volume_profile.declarations(),

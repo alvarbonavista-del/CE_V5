@@ -18,12 +18,18 @@ from ce_v5.entrypoints.worker_rules.materializers import (
     DetectorBar,
     DetectorWindowedSpec,
     _absorption_signal,
+    _climax_signal,
 )
 from ce_v5.infra.db.market_candles import CandleOHLCV
 from ce_v5.platform.rules.absorption import (
     ABSORPTION_ASK_STRENGTH_SOURCE_ID,
     ABSORPTION_BID_STRENGTH_SOURCE_ID,
     AbsorptionSide,
+)
+from ce_v5.platform.rules.climax import (
+    CLIMAX_BOTTOM_STRENGTH_SOURCE_ID,
+    CLIMAX_TOP_STRENGTH_SOURCE_ID,
+    ClimaxSide,
 )
 from source.families.footprint import FootprintCell, FootprintClosedPayload
 from source.families.market import MarketType, Timeframe
@@ -218,3 +224,78 @@ class TestBindingEnElRegistro:
         assert isinstance(bid, DetectorWindowedSpec)
         assert isinstance(ask, DetectorWindowedSpec)
         assert bid.transform is not ask.transform
+
+
+class TestClimaxTransform:
+    """La transform de climax: volumen AGRESOR del footprint + high/low/close de
+    vela."""
+
+    def _ventana_con_climax_top(self) -> list[DetectorBar]:
+        # 30 barras normales (volumen 10, rango 100-110) y una ultima EXCEPCIONAL en
+        # volumen y rango cuyo cierre queda en el tercio INFERIOR -> climax de TECHO.
+        previas = [_bar(i, buy="5", sell="5") for i in range(30)]
+        ultima = _bar(
+            30,
+            buy="5000",
+            sell="5000",
+            low_price="50",
+            high_price="200",
+            close_price="60",
+        )
+        return [*previas, ultima]
+
+    def test_detecta_climax_top_sobre_la_ultima_barra(self) -> None:
+        senal = _climax_signal(self._ventana_con_climax_top())
+        assert senal.detected is True
+        assert senal.side is ClimaxSide.TOP
+
+    def test_top_publica_la_fuerza_y_bottom_publica_cero(self) -> None:
+        ventana = self._ventana_con_climax_top()
+        top = SOURCE_MATERIALIZERS[CLIMAX_TOP_STRENGTH_SOURCE_ID]
+        bottom = SOURCE_MATERIALIZERS[CLIMAX_BOTTOM_STRENGTH_SOURCE_ID]
+        assert isinstance(top, DetectorWindowedSpec)
+        assert isinstance(bottom, DetectorWindowedSpec)
+
+        valor_top = top.transform(ventana)
+        assert valor_top.scalar_type is ScalarType.DECIMAL
+        assert valor_top.decimal_value is not None
+        assert valor_top.decimal_value > 0
+        assert bottom.transform(ventana).decimal_value == Decimal(0)
+
+    def test_una_ventana_plana_no_dispara_ningun_lado(self) -> None:
+        ventana = [_bar(i) for i in range(31)]
+        for source_id in (
+            CLIMAX_TOP_STRENGTH_SOURCE_ID,
+            CLIMAX_BOTTOM_STRENGTH_SOURCE_ID,
+        ):
+            spec = SOURCE_MATERIALIZERS[source_id]
+            assert isinstance(spec, DetectorWindowedSpec)
+            assert spec.transform(ventana).decimal_value == Decimal(0)
+
+    def test_por_debajo_de_min_candles_no_hay_veredicto(self) -> None:
+        # MIN_CANDLES=20: con menos, el nucleo devuelve "sin senal" (0 legitimo), no un
+        # hueco. El warm-up de la SERIE lo resuelve aparte materialize_windowed.
+        ventana = [_bar(i) for i in range(5)]
+        assert _climax_signal(ventana).detected is False
+
+    def test_usa_el_volumen_agresor_del_footprint_no_el_de_la_vela(self) -> None:
+        # Las velas llevan volume = buy+sell del footprint en el helper, asi que para
+        # aislar esto se construye una ventana donde candle.volume es constante y solo
+        # cambia el footprint: si el detector leyera candle.volume, la ultima barra no
+        # destacaria en volumen y no habria climax.
+        ventana = self._ventana_con_climax_top()
+        plana = [
+            DetectorBar(
+                footprint=bar.footprint,
+                candle=CandleOHLCV(
+                    open_time=bar.candle.open_time,
+                    open=bar.candle.open,
+                    high=bar.candle.high,
+                    low=bar.candle.low,
+                    close=bar.candle.close,
+                    volume=Decimal(1),
+                ),
+            )
+            for bar in ventana
+        ]
+        assert _climax_signal(plana).detected is True

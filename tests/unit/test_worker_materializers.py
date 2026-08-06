@@ -40,6 +40,10 @@ from ce_v5.platform.rules.absorption import (
     ABSORPTION_ASK_STRENGTH_SOURCE_ID,
     ABSORPTION_BID_STRENGTH_SOURCE_ID,
 )
+from ce_v5.platform.rules.climax import (
+    CLIMAX_BOTTOM_STRENGTH_SOURCE_ID,
+    CLIMAX_TOP_STRENGTH_SOURCE_ID,
+)
 from ce_v5.platform.rules.compiler import ExecutionPlan, ResolvedSource
 from ce_v5.platform.rules.cvd import CVD_SOURCE_ID, ResetPolicy
 from ce_v5.platform.rules.indicators.candle import (
@@ -219,6 +223,8 @@ class TestRegistroPorSourceId:
             CANDLE_LOW_SOURCE_ID,
             ABSORPTION_BID_STRENGTH_SOURCE_ID,
             ABSORPTION_ASK_STRENGTH_SOURCE_ID,
+            CLIMAX_TOP_STRENGTH_SOURCE_ID,
+            CLIMAX_BOTTOM_STRENGTH_SOURCE_ID,
             VOLUME_RATIO_VS_AVG_SOURCE_ID,
             VWAP_VALUE_SOURCE_ID,
             VWAP_DISTANCE_PCT_SOURCE_ID,

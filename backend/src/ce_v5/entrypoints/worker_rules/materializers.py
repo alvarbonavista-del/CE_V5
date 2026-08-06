@@ -86,6 +86,15 @@ from ce_v5.platform.rules.absorption import (
     adaptive_threshold,
     detect_absorption,
 )
+from ce_v5.platform.rules.climax import (
+    CLIMAX_BOTTOM_STRENGTH_SOURCE_ID,
+    CLIMAX_TOP_STRENGTH_SOURCE_ID,
+    ClimaxCandle,
+    ClimaxOutput,
+    ClimaxSignal,
+    climax_output,
+    evaluate_climax,
+)
 from ce_v5.platform.rules.cvd import CVD_SOURCE_ID, ResetPolicy, session_starts
 from ce_v5.platform.rules.footprint_range import (
     FOOTPRINT_PRICE_RANGE_SOURCE_ID,
@@ -1294,6 +1303,43 @@ def _absorption_ask_strength(window: Sequence[DetectorBar]) -> ScalarValue:
     )
 
 
+def _climax_signal(window: Sequence[DetectorBar]) -> ClimaxSignal:
+    """El veredicto de climax de la ULTIMA barra de la ventana.
+
+    La vela de entrada mezcla las dos caras a proposito: el VOLUMEN es el agresor del
+    footprint (no candle.volume) y high/low/close salen de la vela. open NO se pasa
+    porque ClimaxCandle no lo tiene: la direccion sale solo de la posicion del cierre en
+    el rango (rev 3, H2).
+    """
+    return evaluate_climax(
+        [
+            ClimaxCandle(
+                volume=bar.aggressor_volume,
+                high=bar.candle.high,
+                low=bar.candle.low,
+                close=bar.candle.close,
+            )
+            for bar in window
+        ]
+    )
+
+
+def _climax_top_strength(window: Sequence[DetectorBar]) -> ScalarValue:
+    return ScalarValue(
+        scalar_type=ScalarType.DECIMAL,
+        decimal_value=climax_output(_climax_signal(window), ClimaxOutput.TOP_STRENGTH),
+    )
+
+
+def _climax_bottom_strength(window: Sequence[DetectorBar]) -> ScalarValue:
+    return ScalarValue(
+        scalar_type=ScalarType.DECIMAL,
+        decimal_value=climax_output(
+            _climax_signal(window), ClimaxOutput.BOTTOM_STRENGTH
+        ),
+    )
+
+
 def _candle_open(candle: CandleOHLCV) -> Decimal:
     return candle.open
 
@@ -1394,6 +1440,10 @@ SOURCE_MATERIALIZERS: dict[str, SourceMaterializer] = {
     ),
     ABSORPTION_ASK_STRENGTH_SOURCE_ID: DetectorWindowedSpec(
         transform=_absorption_ask_strength
+    ),
+    CLIMAX_TOP_STRENGTH_SOURCE_ID: DetectorWindowedSpec(transform=_climax_top_strength),
+    CLIMAX_BOTTOM_STRENGTH_SOURCE_ID: DetectorWindowedSpec(
+        transform=_climax_bottom_strength
     ),
     VOLUME_RATIO_VS_AVG_SOURCE_ID: CandleWindowedSpec(
         transform=_volume_ratio_vs_avg, window_bars=LOOKBACK_DEFAULT + 1
