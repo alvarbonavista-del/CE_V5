@@ -289,6 +289,8 @@ CANDLE_BODY_PCT_SOURCE_ID = "candle.body_pct"
 CANDLE_UPPER_SHADOW_PCT_SOURCE_ID = "candle.upper_shadow_pct"
 CANDLE_LOWER_SHADOW_PCT_SOURCE_ID = "candle.lower_shadow_pct"
 CANDLE_OPEN_SOURCE_ID = "candle.open"
+CANDLE_HIGH_SOURCE_ID = "candle.high"
+CANDLE_LOW_SOURCE_ID = "candle.low"
 
 
 def _anatomy_declaration(source_id: str) -> DataSourceDeclaration:
@@ -322,13 +324,37 @@ def candle_open_declaration() -> DataSourceDeclaration:
     return _anatomy_declaration(CANDLE_OPEN_SOURCE_ID)
 
 
+def candle_high_declaration() -> DataSourceDeclaration:
+    """candle.high: el precio maximo crudo de la barra (POINT_LOCAL).
+
+    ESPEJO EXACTO de candle_open_declaration: misma forma (_anatomy_declaration),
+    misma identidad sobre el campo high de la vela, sin funcion pura de computo.
+
+    Desbloquea climax.* y notrade.* (P08c-DET-01): sus nucleos puros (ClimaxCandle,
+    NoTradeCandle) ya consumen high/low, pero hasta ahora ningun source_id serviable
+    los proyectaba desde el historico.
+    """
+    return _anatomy_declaration(CANDLE_HIGH_SOURCE_ID)
+
+
+def candle_low_declaration() -> DataSourceDeclaration:
+    """candle.low: el precio minimo crudo de la barra (POINT_LOCAL).
+
+    ESPEJO EXACTO de candle_open_declaration/candle_high_declaration: misma forma,
+    misma identidad sobre el campo low de la vela.
+    """
+    return _anatomy_declaration(CANDLE_LOW_SOURCE_ID)
+
+
 def declarations() -> tuple[DataSourceDeclaration, ...]:
-    """Fuentes de anatomia SIEMPRE-Decimal (LOTE 1a) + candle.open (PASO 5
-    reactivacion). Las categoricas/booleanas de candle.* quedan DIFERIDAS (D1) y NO se
+    """Fuentes de anatomia SIEMPRE-Decimal (LOTE 1a) + candle.open/high/low (P08c-DET-01
+    paso a). Las categoricas/booleanas de candle.* quedan DIFERIDAS (D1) y NO se
     declaran aun."""
     return (
         _anatomy_declaration(CANDLE_BODY_PCT_SOURCE_ID),
         _anatomy_declaration(CANDLE_UPPER_SHADOW_PCT_SOURCE_ID),
         _anatomy_declaration(CANDLE_LOWER_SHADOW_PCT_SOURCE_ID),
         candle_open_declaration(),
+        candle_high_declaration(),
+        candle_low_declaration(),
     )

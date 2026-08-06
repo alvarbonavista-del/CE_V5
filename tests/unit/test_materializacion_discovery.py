@@ -23,6 +23,8 @@ _EXPECTED = {
     "candle.upper_shadow_pct",
     "candle.lower_shadow_pct",
     "candle.open",
+    "candle.high",
+    "candle.low",
     "ema.value",
     "rsi.value",
     "macd.line",
@@ -70,6 +72,14 @@ def test_discovery_incluye_fib_levels_non_servible() -> None:
     ids = {d.source_id for d in discover_declarations()}
     assert "fib.levels" in ids
     assert "fib.direction" in ids
+
+
+def test_discovery_incluye_candle_high_low() -> None:
+    # P08c-DET-01 paso (a): candle.high/candle.low ESPEJO EXACTO de candle.open.
+    # Desbloquean climax.*/notrade.* (necesitan high/low ademas del open que ya
+    # desbloqueo absorption.*).
+    ids = {d.source_id for d in discover_declarations()}
+    assert {"candle.high", "candle.low"} <= ids
 
 
 def test_discovery_incluye_las_cinco_divergence() -> None:
