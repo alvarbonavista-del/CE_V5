@@ -23,6 +23,7 @@ from ce_v5.platform.rules.pivotphase_replay import (
     ReplayResult,
     ReplaySeries,
     _absorption_zone,
+    _imbalance_raw,
     _nearest_vp_touch,
     _project_confidence,
     replay_from_series,
@@ -42,6 +43,8 @@ def _series(n: int) -> ReplaySeries:
         vp_lvn=tuple(Decimal(50) for _ in range(n)),
         absorption_bid=tuple(Decimal(0) for _ in range(n)),
         absorption_ask=tuple(Decimal(0) for _ in range(n)),
+        imbalance_buy_stack=tuple(Decimal(0) for _ in range(n)),
+        imbalance_sell_stack=tuple(Decimal(0) for _ in range(n)),
         climax_top=tuple(Decimal(0) for _ in range(n)),
         climax_bottom=tuple(Decimal(0) for _ in range(n)),
         void_bull=tuple(Decimal(0) for _ in range(n)),
@@ -121,6 +124,8 @@ def test_series_length_mismatch_raises() -> None:
             vp_lvn=(Decimal(1),),
             absorption_bid=(Decimal(1),),
             absorption_ask=(Decimal(1),),
+            imbalance_buy_stack=(Decimal(1),),
+            imbalance_sell_stack=(Decimal(1),),
             climax_top=(Decimal(1),),
             climax_bottom=(Decimal(1),),
             void_bull=(Decimal(1),),
@@ -153,6 +158,8 @@ def _series_absorcion_en(n: int, lado: str) -> ReplaySeries:
         vp_lvn=tuple(Decimal(50) for _ in range(n)),
         absorption_bid=creciente if lado == "bid" else plana,
         absorption_ask=creciente if lado == "ask" else plana,
+        imbalance_buy_stack=plana,
+        imbalance_sell_stack=plana,
         climax_top=plana,
         climax_bottom=plana,
         void_bull=plana,
@@ -182,6 +189,8 @@ class TestF1EnElReplay:
                 vp_lvn=(Decimal(1),),
                 absorption_bid=(Decimal(1), Decimal(1)),
                 absorption_ask=(Decimal(1),),
+                imbalance_buy_stack=(Decimal(1),),
+                imbalance_sell_stack=(Decimal(1),),
                 climax_top=(Decimal(1),),
                 climax_bottom=(Decimal(1),),
                 void_bull=(Decimal(1),),
@@ -238,6 +247,8 @@ def _series_climax_top_creciente(n: int) -> ReplaySeries:
         vp_lvn=tuple(Decimal(50) for _ in range(n)),
         absorption_bid=tuple(Decimal(0) for _ in range(n)),
         absorption_ask=tuple(Decimal(0) for _ in range(n)),
+        imbalance_buy_stack=tuple(Decimal(0) for _ in range(n)),
+        imbalance_sell_stack=tuple(Decimal(0) for _ in range(n)),
         climax_top=creciente,
         climax_bottom=plana,
         void_bull=plana,
@@ -269,6 +280,8 @@ class TestF7EnElReplay:
                 vp_lvn=(Decimal(1),),
                 absorption_bid=(Decimal(1),),
                 absorption_ask=(Decimal(1),),
+                imbalance_buy_stack=(Decimal(1),),
+                imbalance_sell_stack=(Decimal(1),),
                 climax_top=(Decimal(1), Decimal(1)),
                 climax_bottom=(Decimal(1),),
                 void_bull=(Decimal(1),),
@@ -325,6 +338,8 @@ class TestF7EnElReplay:
             vp_lvn=tuple(Decimal(50) for _ in range(40)),
             absorption_bid=plana,
             absorption_ask=plana,
+            imbalance_buy_stack=plana,
+            imbalance_sell_stack=plana,
             climax_top=plana,
             climax_bottom=plana,
             void_bull=plana,
@@ -384,6 +399,8 @@ def _series_con_divergencia(n: int, *, cvd_acompana: bool) -> ReplaySeries:
         vp_lvn=tuple(Decimal(50) for _ in range(n)),
         absorption_bid=plana,
         absorption_ask=plana,
+        imbalance_buy_stack=plana,
+        imbalance_sell_stack=plana,
         climax_top=plana,
         climax_bottom=plana,
         void_bull=plana,
@@ -410,6 +427,8 @@ class TestF3EnElReplay:
                 vp_lvn=(Decimal(1),),
                 absorption_bid=(Decimal(1),),
                 absorption_ask=(Decimal(1),),
+                imbalance_buy_stack=(Decimal(1),),
+                imbalance_sell_stack=(Decimal(1),),
                 climax_top=(Decimal(1),),
                 climax_bottom=(Decimal(1),),
                 void_bull=(Decimal(1),),
@@ -514,6 +533,8 @@ def _series_hacia_fase_3(
         vp_lvn=tuple(Decimal(50) for _ in range(n)),
         absorption_bid=tuple(bid),
         absorption_ask=tuple(ask),
+        imbalance_buy_stack=plana,
+        imbalance_sell_stack=plana,
         climax_top=plana,
         climax_bottom=plana,
         void_bull=plana,
@@ -591,6 +612,82 @@ class TestGateDeFase3EnElReplay:
     def test_sigue_siendo_determinista_bit_a_bit_con_la_zona_viva(self) -> None:
         # ADR-007: la zona entra en el estado (phase3_zone_price/strength), asi que el
         # determinismo hay que reafirmarlo con el gate abierto.
+        series = _series_hacia_fase_3()
+        una, otra = _replay(series), _replay(series)
+        assert una == otra
+        assert [str(o.confidence) for o in una.outcomes] == [
+            str(o.confidence) for o in otra.outcomes
+        ]
+
+
+class TestF5EnElReplay:
+    """F5 vivo (P08c-CONF-05): la pila de imbalance entra en la confianza."""
+
+    def test_la_orientacion_es_la_INVERSA_del_nombre_del_lado(self) -> None:
+        # TERCERA VEZ la misma trampa (F1, F3 y ahora F5): direction es la del IMPULSO.
+        # Impulso BULLISH espera un TECHO, y un techo lo sostiene la pila VENDEDORA.
+        # Si se tomara el lado homonimo, F5 puntuaria como soporte justo la presion que
+        # empuja el precio en la direccion del impulso.
+        assert _imbalance_raw(BULLISH, Decimal("0.2"), Decimal("0.9")) == Decimal("0.9")
+        assert _imbalance_raw(BEARISH, Decimal("0.2"), Decimal("0.9")) == Decimal("0.2")
+
+    def test_sin_direccion_no_hay_pivote_que_soportar(self) -> None:
+        assert _imbalance_raw("", Decimal("0.9"), Decimal("0.9")) is None
+
+    def test_las_series_de_imbalance_son_obligatorias(self) -> None:
+        with pytest.raises(ValueError, match="misma longitud"):
+            ReplaySeries(
+                price=(Decimal(1),),
+                delta=(Decimal(1),),
+                delta_momentum=(Decimal(0),),
+                price_range=(Decimal(1),),
+                vp_poc=(Decimal(1),),
+                vp_vah=(Decimal(1),),
+                vp_val=(Decimal(1),),
+                vp_hvn=(Decimal(1),),
+                vp_lvn=(Decimal(1),),
+                absorption_bid=(Decimal(1),),
+                absorption_ask=(Decimal(1),),
+                imbalance_buy_stack=(Decimal(1), Decimal(1)),
+                imbalance_sell_stack=(Decimal(1),),
+                climax_top=(Decimal(1),),
+                climax_bottom=(Decimal(1),),
+                void_bull=(Decimal(1),),
+                void_bear=(Decimal(1),),
+                notrade_score=(Decimal(1),),
+                cvd=(Decimal(1),),
+            )
+
+    def test_la_pila_del_lado_que_toca_cambia_la_confianza(self) -> None:
+        # La serie llega a fase 3 con impulso BULLISH, asi que el lado que soporta es el
+        # VENDEDOR. Se compara la misma serie con la pila en un lado y en el otro: las
+        # FASES salen identicas (imbalance no entra en BarSignals) y solo F5 se mueve.
+        base = _series_hacia_fase_3()
+        n = len(base.price)
+        # CRECIENTE, no constante. F5 se normaliza por PERCENTIL dentro de su propia
+        # distribucion, y el percentil de un valor constante en una distribucion
+        # constante es 0,5 SIEMPRE -- da igual que valga 0 o 0,9 --. Con una serie
+        # plana los dos lados salen identicos y el test pasaria en falso sin probar la
+        # orientacion. Es la misma trampa que ya mordio en F1, F7 y F3.
+        creciente = tuple(Decimal(i) / Decimal(n) for i in range(n))
+        plana = tuple(Decimal(0) for _ in range(n))
+        soporta = _replay(
+            replace(base, imbalance_sell_stack=creciente, imbalance_buy_stack=plana)
+        )
+        no_soporta = _replay(
+            replace(base, imbalance_sell_stack=plana, imbalance_buy_stack=creciente)
+        )
+        assert [o.phase for o in soporta.outcomes] == [
+            o.phase for o in no_soporta.outcomes
+        ]
+        # No basta con que difieran: la pila del lado que SOPORTA tiene que dar MAS
+        # confianza, que es lo que distingue la orientacion correcta de la invertida.
+        parejas = list(zip(soporta.outcomes, no_soporta.outcomes, strict=True))
+        distintas = [(a.confidence, b.confidence) for a, b in parejas if a != b]
+        assert distintas
+        assert all(a > b for a, b in distintas)
+
+    def test_sigue_siendo_determinista_bit_a_bit_con_f5(self) -> None:
         series = _series_hacia_fase_3()
         una, otra = _replay(series), _replay(series)
         assert una == otra

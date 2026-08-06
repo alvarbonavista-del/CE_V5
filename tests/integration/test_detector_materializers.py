@@ -33,6 +33,11 @@ from ce_v5.platform.rules.climax import (
     CLIMAX_BOTTOM_STRENGTH_SOURCE_ID,
     CLIMAX_TOP_STRENGTH_SOURCE_ID,
 )
+from ce_v5.platform.rules.imbalance import (
+    IMBALANCE_BUY_STACK_SOURCE_ID,
+    IMBALANCE_SELL_STACK_SOURCE_ID,
+    detect_stacked_imbalance,
+)
 from ce_v5.platform.rules.notrade import (
     NOTRADE_FLOW_DISLOCATION_SOURCE_ID,
     NOTRADE_FOOTPRINT_INEFF_SOURCE_ID,
@@ -569,3 +574,116 @@ class TestNoTradeServido:
                 total.decimal_value
                 == bloque_fp.decimal_value + bloque_flow.decimal_value
             )
+
+
+# --- imbalance.* : POINT_LOCAL sobre celdas (P08c-CONF-05) ----------------------------
+
+# Barra con TRES niveles y una pila COMPRADORA de 3: cada nivel tiene buy >= 3 * el sell
+# del nivel de abajo, asi que la corrida llega a MIN_STACK y la fuerza satura a 1.
+_PILA_BUY = ((100, 1, 1), (101, 30, 1), (102, 30, 1), (103, 30, 1))
+
+
+def _footprint_con_pila(indice: int) -> FootprintClosedPayload:
+    """Footprint de cuatro niveles con una pila compradora conocida."""
+    open_time = _open_time(indice)
+    cells = tuple(
+        FootprintCell(
+            price=Decimal(precio),
+            buy_volume=Decimal(buy),
+            sell_volume=Decimal(sell),
+            delta=Decimal(buy) - Decimal(sell),
+        )
+        for precio, buy, sell in _PILA_BUY
+    )
+    total_buy = sum((c.buy_volume for c in cells), Decimal(0))
+    total_sell = sum((c.sell_volume for c in cells), Decimal(0))
+    return FootprintClosedPayload(
+        maturity_state=MaturityState.CLOSED,
+        exchange=_EXCHANGE,
+        market_type=MarketType.SPOT,
+        symbol=_SYMBOL,
+        timeframe=_TF,
+        open_time=open_time,
+        close_time=open_time + _TF.duration_ms,
+        cells=cells,
+        bar_buy_volume=total_buy,
+        bar_sell_volume=total_sell,
+        bar_delta=total_buy - total_sell,
+        trade_count=len(cells) * 2,
+        is_complete=True,
+    )
+
+
+class TestImbalanceMaterializado:
+    """imbalance.* servido desde PostgreSQL real, con el rol de reglas.
+
+    Es POINT_LOCAL y solo consume market.footprint, asi que -- a diferencia de los
+    cuatro detectores -- NO necesita la tabla de velas ni la comprobacion de alineacion:
+    aqui se siembra solo el footprint, y que eso baste es parte de lo que se prueba.
+    """
+
+    def test_sirve_un_valor_por_barra_sin_warm_up(
+        self,
+        rules_db: PsycopgDatabase,
+        persistir_footprint: PersistirFootprint,
+        limpiar_detectores: None,
+    ) -> None:
+        # POINT_LOCAL: pedir 5 barras devuelve 5 valores desde la PRIMERA. Si se hubiera
+        # declarado WINDOWED(100), las primeras 99 saldrian vacias -- este es el candado
+        # de esa decision (DICTAMEN P08c-CONF-05) visto desde la BD.
+        for indice in range(5):
+            persistir_footprint(
+                _footprint_con_pila(indice),
+                MarketFootprintEventType.FOOTPRINT_CLOSED,
+                indice,
+            )
+        serie = _materializar(rules_db, IMBALANCE_BUY_STACK_SOURCE_ID, _open_time(4), 5)
+        assert len(serie) == 5
+
+    def test_el_valor_servido_es_el_del_nucleo_puro(
+        self,
+        rules_db: PsycopgDatabase,
+        persistir_footprint: PersistirFootprint,
+        limpiar_detectores: None,
+    ) -> None:
+        # La BD no puede cambiar el veredicto: lo que sale por el materializador tiene
+        # que ser exactamente lo que da detect_stacked_imbalance sobre esas celdas.
+        for indice in range(3):
+            persistir_footprint(
+                _footprint_con_pila(indice),
+                MarketFootprintEventType.FOOTPRINT_CLOSED,
+                indice,
+            )
+        esperado_buy, esperado_sell = detect_stacked_imbalance(
+            _footprint_con_pila(2).cells
+        )
+        assert esperado_buy == Decimal(1)  # la pila de 3 satura
+        assert esperado_sell == Decimal(0)
+
+        buy = _materializar(rules_db, IMBALANCE_BUY_STACK_SOURCE_ID, _open_time(2), 1)
+        sell = _materializar(rules_db, IMBALANCE_SELL_STACK_SOURCE_ID, _open_time(2), 1)
+        assert buy[0].scalar_type is ScalarType.DECIMAL
+        assert buy[0].decimal_value == esperado_buy
+        assert sell[0].decimal_value == esperado_sell
+
+    def test_es_determinista_bit_a_bit(
+        self,
+        rules_db: PsycopgDatabase,
+        persistir_footprint: PersistirFootprint,
+        limpiar_detectores: None,
+    ) -> None:
+        # ADR-007: dos materializaciones de la misma barra, digito a digito.
+        for indice in range(3):
+            persistir_footprint(
+                _footprint_con_pila(indice),
+                MarketFootprintEventType.FOOTPRINT_CLOSED,
+                indice,
+            )
+        for source_id in (
+            IMBALANCE_BUY_STACK_SOURCE_ID,
+            IMBALANCE_SELL_STACK_SOURCE_ID,
+        ):
+            una = _materializar(rules_db, source_id, _open_time(2), 3)
+            otra = _materializar(rules_db, source_id, _open_time(2), 3)
+            assert una == otra
+            assert [str(v) for v in una] == [str(v) for v in otra]

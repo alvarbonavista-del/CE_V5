@@ -100,6 +100,11 @@ from ce_v5.platform.rules.footprint_range import (
     FOOTPRINT_PRICE_RANGE_SOURCE_ID,
     price_range,
 )
+from ce_v5.platform.rules.imbalance import (
+    IMBALANCE_BUY_STACK_SOURCE_ID,
+    IMBALANCE_SELL_STACK_SOURCE_ID,
+    detect_stacked_imbalance,
+)
 from ce_v5.platform.rules.indicators.candle import (
     CANDLE_BODY_PCT_SOURCE_ID,
     CANDLE_HIGH_SOURCE_ID,
@@ -1271,6 +1276,22 @@ def _candle_lower_shadow_pct(candle: CandleOHLCV) -> Decimal:
     )[0]
 
 
+def _imbalance_buy_stack(footprint: FootprintPayload) -> Decimal:
+    """imbalance.buy_stack: la pila COMPRADORA de la barra (P08c-CONF-05).
+
+    POINT_LOCAL como orderflow.delta y footprint.price_range: el nucleo mira SOLO las
+    celdas de esta barra. market.footprint es NON_SERVIBLE (un conjunto de celdas no es
+    un escalar), asi que no se pide por dispatch y se lee aqui -- patron de void con su
+    LVN y de MACD con sus EMAs.
+    """
+    return detect_stacked_imbalance(footprint.cells)[0]
+
+
+def _imbalance_sell_stack(footprint: FootprintPayload) -> Decimal:
+    """imbalance.sell_stack: la pila VENDEDORA de la barra (P08c-CONF-05)."""
+    return detect_stacked_imbalance(footprint.cells)[1]
+
+
 def _absorption_ratio(bar: DetectorBar) -> Decimal | None:
     """El absorption_ratio de una barra (volumen agresor / span), o None si no lo hay.
 
@@ -1541,6 +1562,12 @@ SOURCE_MATERIALIZERS: dict[str, SourceMaterializer] = {
         lookback=1,
     ),
     FOOTPRINT_PRICE_RANGE_SOURCE_ID: FootprintPointLocalSpec(extract=price_range),
+    IMBALANCE_BUY_STACK_SOURCE_ID: FootprintPointLocalSpec(
+        extract=_imbalance_buy_stack
+    ),
+    IMBALANCE_SELL_STACK_SOURCE_ID: FootprintPointLocalSpec(
+        extract=_imbalance_sell_stack
+    ),
     PIVOTPHASE_PHASE_SOURCE_ID: PivotphasePhaseSpec(),
     PIVOTPHASE_CONFIDENCE_SOURCE_ID: PivotphaseConfidenceSpec(),
     CANDLE_BODY_PCT_SOURCE_ID: CandlePointLocalSpec(extract=_candle_body_pct),

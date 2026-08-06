@@ -28,6 +28,10 @@ from ce_v5.platform.rules.climax import (
 )
 from ce_v5.platform.rules.cvd import CVD_SOURCE_ID
 from ce_v5.platform.rules.footprint_range import FOOTPRINT_PRICE_RANGE_SOURCE_ID
+from ce_v5.platform.rules.imbalance import (
+    IMBALANCE_BUY_STACK_SOURCE_ID,
+    IMBALANCE_SELL_STACK_SOURCE_ID,
+)
 from ce_v5.platform.rules.notrade import NOTRADE_SCORE_SOURCE_ID
 from ce_v5.platform.rules.orderflow import (
     ORDERFLOW_DELTA_MOMENTUM_SOURCE_ID,
@@ -139,6 +143,8 @@ def replay_pivotphase(
         vp_lvn=_mat(VP_LVN_SOURCE_ID),
         absorption_bid=_mat(ABSORPTION_BID_STRENGTH_SOURCE_ID),
         absorption_ask=_mat(ABSORPTION_ASK_STRENGTH_SOURCE_ID),
+        imbalance_buy_stack=_mat(IMBALANCE_BUY_STACK_SOURCE_ID),
+        imbalance_sell_stack=_mat(IMBALANCE_SELL_STACK_SOURCE_ID),
         climax_top=_mat(CLIMAX_TOP_STRENGTH_SOURCE_ID),
         climax_bottom=_mat(CLIMAX_BOTTOM_STRENGTH_SOURCE_ID),
         void_bull=_mat(VOID_SNAP_BULLISH_SOURCE_ID),

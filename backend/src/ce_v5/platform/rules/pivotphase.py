@@ -46,6 +46,10 @@ from ce_v5.platform.rules.climax import (
 )
 from ce_v5.platform.rules.cvd import CVD_SOURCE_ID
 from ce_v5.platform.rules.footprint_range import FOOTPRINT_PRICE_RANGE_SOURCE_ID
+from ce_v5.platform.rules.imbalance import (
+    IMBALANCE_BUY_STACK_SOURCE_ID,
+    IMBALANCE_SELL_STACK_SOURCE_ID,
+)
 from ce_v5.platform.rules.notrade import NOTRADE_SCORE_SOURCE_ID
 from ce_v5.platform.rules.orderflow import (
     ORDERFLOW_DELTA_MOMENTUM_SOURCE_ID,
@@ -449,6 +453,8 @@ _PIVOTPHASE_CONSUMES: tuple[str, ...] = (
     VOID_SNAP_BEARISH_SOURCE_ID,
     NOTRADE_SCORE_SOURCE_ID,
     CVD_SOURCE_ID,
+    IMBALANCE_BUY_STACK_SOURCE_ID,
+    IMBALANCE_SELL_STACK_SOURCE_ID,
 )
 
 

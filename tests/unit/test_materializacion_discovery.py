@@ -27,6 +27,8 @@ _EXPECTED = {
     "orderflow.delta_momentum",
     "cvd.value",
     "footprint.price_range",
+    "imbalance.buy_stack",
+    "imbalance.sell_stack",
     "pivotphase.phase",
     "pivotphase.confidence",
     "candle.body_pct",
@@ -156,3 +158,11 @@ def test_catalogo_vivo_valida() -> None:
     for declaration in discover_declarations():
         catalog.register(declaration)
     catalog.validate()
+
+
+def test_discovery_incluye_imbalance_para_F5() -> None:
+    # P08c-CONF-05: las dos fuentes que desbloquean F5, el ultimo factor con peso 0.
+    # POINT_LOCAL (no WINDOWED): la pila se mide dentro de la vela con ratio y minimo
+    # fijos, asi que no hay ventana que leer -- misma forma que footprint.price_range.
+    ids = {d.source_id for d in discover_declarations()}
+    assert {"imbalance.buy_stack", "imbalance.sell_stack"} <= ids

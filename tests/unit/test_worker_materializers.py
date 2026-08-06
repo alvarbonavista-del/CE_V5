@@ -223,6 +223,8 @@ class TestRegistroPorSourceId:
             CVD_SOURCE_ID,
             ORDERFLOW_DELTA_MOMENTUM_SOURCE_ID,
             "footprint.price_range",
+            "imbalance.buy_stack",
+            "imbalance.sell_stack",
             PIVOTPHASE_PHASE_SOURCE_ID,
             PIVOTPHASE_CONFIDENCE_SOURCE_ID,
             CANDLE_BODY_PCT_SOURCE_ID,

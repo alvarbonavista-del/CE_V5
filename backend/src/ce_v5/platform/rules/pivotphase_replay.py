@@ -64,6 +64,8 @@ class ReplaySeries:
     vp_lvn: tuple[Decimal, ...]
     absorption_bid: tuple[Decimal, ...]
     absorption_ask: tuple[Decimal, ...]
+    imbalance_buy_stack: tuple[Decimal, ...]
+    imbalance_sell_stack: tuple[Decimal, ...]
     climax_top: tuple[Decimal, ...]
     climax_bottom: tuple[Decimal, ...]
     void_bull: tuple[Decimal, ...]
@@ -84,6 +86,8 @@ class ReplaySeries:
             len(self.vp_lvn),
             len(self.absorption_bid),
             len(self.absorption_ask),
+            len(self.imbalance_buy_stack),
+            len(self.imbalance_sell_stack),
             len(self.climax_top),
             len(self.climax_bottom),
             len(self.void_bull),
@@ -196,6 +200,36 @@ def _absorption_zone(
     return None
 
 
+def _imbalance_raw(
+    direction: str, buy_stack: Decimal, sell_stack: Decimal
+) -> Decimal | None:
+    """El raw de F5: la pila de imbalance del lado que SOPORTA el pivote esperado.
+
+    MISMA INVERSION QUE F1 Y F3, por tercera vez y por la misma razon: direction es la
+    del IMPULSO, no la del pivote.
+
+      impulso BULLISH -> se espera un TECHO -> lo confirma la pila VENDEDORA que frena
+        la subida -> sell_stack.
+      impulso BEARISH -> se espera un SUELO -> lo confirma la pila COMPRADORA que frena
+        la caida -> buy_stack.
+
+    Ojo a la diferencia de vocabulario con F1, que despista si se leen seguidos: alli el
+    lado que soporta un TECHO es el ASK (agresion compradora absorbida) y aqui es la
+    pila de VENTA. No se contradicen -- absorption nombra al AGRESOR que queda atrapado
+    y el imbalance nombra al lado que DOMINA el desequilibrio --, pero son etiquetas
+    opuestas para la misma situacion de mercado, asi que cada uno se orienta con su
+    propio criterio y no copiando el del otro.
+
+    Sin direccion (FSM en IDLE) no hay pivote que soportar: None, y F5 aporta 0 en esa
+    barra. Misma convencion conservadora que F1/F2/F4.
+    """
+    if direction == BULLISH:
+        return sell_stack
+    if direction == BEARISH:
+        return buy_stack
+    return None
+
+
 def _toxicity_raw(
     climax_top: Decimal,
     climax_bottom: Decimal,
@@ -256,6 +290,7 @@ def replay_from_series(
     f2_raws: list[Decimal] = []
     f3_raws: list[Decimal] = []
     f4_raws: list[Decimal] = []
+    f5_raws: list[Decimal] = []
     f7_raws: list[Decimal] = []
     # F3 (P08c-CONF-03) se precomputa de UNA pasada sobre la ventana entera y no barra a
     # barra: los pivotes de una divergencia necesitan `strength` barras a cada lado, asi
@@ -318,6 +353,15 @@ def replay_from_series(
         # acumula antes del corte de lookback para llegar cebado a la primera emitida.
         f3_raw = cvd_divergence_feature(state.direction, divergencias.get(i, {}))
         f3_raws.append(f3_raw)
+        # F5 (P08c-CONF-05), igual que F1/F3: orientado por la direccion VIGENTE y
+        # acumulado antes del corte de lookback.
+        f5_raw = _imbalance_raw(
+            state.direction,
+            series.imbalance_buy_stack[i],
+            series.imbalance_sell_stack[i],
+        )
+        if f5_raw is not None:
+            f5_raws.append(f5_raw)
         if i < lookback:
             continue
         inputs = ConfidenceInputs(
@@ -335,6 +379,11 @@ def replay_from_series(
             f4=(
                 FactorInput(raw=f4_raw, distribution=tuple(f4_raws[-norm_window:]))
                 if f4_raw is not None
+                else None
+            ),
+            f5=(
+                FactorInput(raw=f5_raw, distribution=tuple(f5_raws[-norm_window:]))
+                if f5_raw is not None
                 else None
             ),
             f6=VpContextInput(
