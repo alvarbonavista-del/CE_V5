@@ -14,15 +14,20 @@ FRONTERA P4/P5 (ELEVACION P08c-PIVOT-02, OPCION R1 ratificada por Central):
   reales (orderflow/cvd/vp/notrade, swing.*), snapshot/replay del CVD (F3) y alta en
   catalogo. Sin logica de modelo.
 
-FACTORES (I-04 2.3; AHP REV 2). Activos en v5.0 (peso 1/5 cada uno):
-  F2 exhaustion de delta, F3 divergencia de CVD, F4 esfuerzo vs resultado,
+FACTORES (I-04 2.3; AHP REV 2). Con peso en v5.0 (1/6 cada uno tras P08c-CONF-01):
+  F1 absorcion, F2 exhaustion de delta, F3 divergencia de CVD, F4 esfuerzo vs resultado,
   F6 contexto de volume profile, F7 void/notrade (penaliza).
-Diferidos (peso 0, activables sin cambio de estructura):
-  F1 absorcion (espera candle.open + absorption.*), F5 imbalance apilado (espera fuente
-  de celdas de footprint). Activarlos = anadir peso + funcion + input, no reestructurar.
-F2/F3/F4/F7 se normalizan por PERCENTIL (raw + distribucion reciente). F6 se normaliza
-por DISTANCIA a niveles VP servibles (ELEVACION P08c-PIVOT-05: corrige el vol_ratio
-inicial; los vp.* exponen PRECIOS, no ratios de volumen).
+Diferido (peso 0): F5 imbalance apilado (espera fuente de celdas de footprint).
+
+PESO NO ES LO MISMO QUE INPUT VIVO. F1 se activo en P08c-CONF-01 con su extractor
+real (absorption.bid/ask_strength, orientado por la direccion del pivote). F3 y F7
+tienen peso pero su input aun se construye -- llegan como None y aportan 0 --, asi
+que el techo
+efectivo de hoy es 4/6 = 66,67 y no 100. Se cierran en 3b (F3) y 3c (F7).
+
+F1/F2/F3/F4/F7 se normalizan por PERCENTIL (raw + distribucion reciente). F6 se
+normaliza por DISTANCIA a niveles VP servibles (ELEVACION P08c-PIVOT-05: corrige
+el vol_ratio inicial; los vp.* exponen PRECIOS, no ratios de volumen).
 
 EVIDENCIA AUSENTE NO INFLA: un factor ausente o no evaluable aporta 0 (no se renormaliza
 el denominador); la confianza sube conforme se acumula evidencia en cada cierre
@@ -32,9 +37,9 @@ DETERMINISTA y reproducible bit a bit (ADR-007): solo Decimal, sin float; cuanti
 ROUND_HALF_EVEN. DEC-AHP-01: todos los pesos/ventanas son SEMILLAS [A CALIBRAR AHP],
 nunca verdades; la calibracion (walk-forward sobre corpus) esta DIFERIDA.
 
-DECLARACION DIFERIDA: la DataSource pivotphase.confidence declara consumes que incluyen
-swing.* (F3) y la fuente de void/notrade (F7), AUN INEXISTENTES en el catalogo; se
-hornea en P5 cuando esas fuentes esten disponibles. Mismo criterio que absorption.py.
+CONSUMES, AL DIA: pivotphase.* ya declara absorption.bid/ask_strength (F1, vivo desde
+P08c-CONF-01). Lo que F3 y F7 necesiten se anadira cuando sus extractores existan
+(3b y 3c): una arista se declara cuando se LEE, no antes.
 """
 
 from __future__ import annotations
@@ -47,8 +52,17 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-# Peso semilla: cinco factores activos, 1/5 cada uno (AHP REV 2). Decimal exacto.
-_ACTIVE_WEIGHT = Decimal(1) / Decimal(5)
+# Peso semilla: SEIS factores activos, 1/6 cada uno (AHP REV 2 + P08c-CONF-01, que
+# activa F1). Solo F5 queda en 0.
+#
+# 1/6 NO ES TERMINANTE Y AUN ASI LA SUMA CIERRA EXACTA. Decimal redondea 1/6 al alza en
+# su ultimo digito (…6667), asi que sumar seis veces ese valor da 1.000…000, que compara
+# == Decimal(1). Se verifico ademas que se mantiene con prec 6, 9, 15, 28, 34 y 50:
+# el invariante de __post_init__ (suma == 1) no depende del contexto. Si algun dia
+# se pasara a un reparto que NO cierre exacto, la validacion mordera -- que es justo
+# lo que tiene que hacer -- y la solucion sera declarar los pesos, no relajar la
+# comprobacion.
+_ACTIVE_WEIGHT = Decimal(1) / Decimal(6)
 # Cuantizacion determinista de la confianza final (0-100), ROUND_HALF_EVEN (ADR-007).
 _CONFIDENCE_QUANTUM = Decimal("0.01")
 
@@ -56,9 +70,8 @@ _CONFIDENCE_QUANTUM = Decimal("0.01")
 class Factor(StrEnum):
     """Los siete factores del modelo (I-04 2.3). Taxonomia estable.
 
-    Activos en v5.0 (peso 1/5): F2, F3, F4, F6, F7. Diferidos (peso 0, activables sin
-    reestructurar): F1 (absorcion; espera candle.open + absorption.*) y F5 (imbalance
-    apilado; espera celdas de footprint).
+    Con peso en v5.0 (1/6): F1, F2, F3, F4, F6, F7. Diferido (peso 0, activable sin
+    reestructurar): F5 (imbalance apilado; espera celdas de footprint).
     """
 
     F1_ABSORPTION = "f1_absorption"
@@ -105,9 +118,12 @@ class VpContextInput:
 class ConfidenceInputs:
     """Insumos por factor activo. None = ausente en esta barra (aporta 0, conservador).
 
-    F1/F5 diferidos: se anadiran como campos cuando se activen; no reestructuran nada.
+    f1 entra en P08c-CONF-01 y confirma lo que el diseno prometia: activar un factor
+    diferido es ANADIR campo + peso + extractor, sin reestructurar nada. F5 sigue sin
+    campo (espera celdas de footprint) y entrara igual el dia que se active.
     """
 
+    f1: FactorInput | None = None
     f2: FactorInput | None = None
     f3: FactorInput | None = None
     f4: FactorInput | None = None
@@ -119,9 +135,9 @@ class ConfidenceInputs:
 class ConfidenceParams:
     """Parametros SEMILLA del modelo (DEC-AHP-01: [A CALIBRAR AHP], nunca verdades).
 
-    weights: peso por factor; activos 1/5, F1/F5 0. La suma DEBE ser 1 (garantiza que la
-    confianza cae en 0-100). formula_version entra en la cache_key (I-01 C2/C3): un
-    cambio de pesos/forma la incrementa.
+    weights: peso por factor; los seis con peso van a 1/6 y solo F5 queda en 0. La
+    suma DEBE ser 1 (garantiza que la confianza cae en 0-100). formula_version entra
+    en la cache_key (I-01 C2/C3): un cambio de pesos/forma la incrementa.
     """
 
     weights: tuple[tuple[Factor, Decimal], ...]
@@ -163,11 +179,23 @@ class ConfidenceResult:
 
 
 def default_params() -> ConfidenceParams:
-    """Parametros semilla v5.0 (AHP REV 2): activos 1/5, F1/F5 0. formula_version=2
-    tras la correccion de F6 a distancia (ELEVACION P08c-PIVOT-05)."""
+    """Parametros semilla v5.0: SEIS activos a 1/6, solo F5 en 0. formula_version=3.
+
+    formula_version 2 -> 3 (P08c-CONF-01): F1 pasa de 0 a 1/6 y los otros cinco bajan de
+    1/5 a 1/6, asi que la MISMA barra con los MISMOS insumos da otra confianza. Subirla
+    es obligatorio -- entra en params_version, que es PK del snapshot --: sin el bump,
+    un replay reinterpretaria snapshots viejos con los pesos nuevos y la serie cambiaria
+    en silencio.
+
+    TECHO EFECTIVO, que no es lo mismo que la suma de pesos. F3 y F7 tienen peso 1/6
+    pero su input aun no se construye (llegan como None y aportan 0): hasta 3b/3c el
+    maximo alcanzable son los cuatro factores con input vivo -- F1, F2, F4, F6 --, o sea
+    4/6 = 66,67 sobre 100. Antes de esta tanda eran tres de cinco (60). Que un factor
+    pesado no aporte NO infla al resto: la evidencia ausente no se renormaliza.
+    """
     return ConfidenceParams(
         weights=(
-            (Factor.F1_ABSORPTION, Decimal(0)),
+            (Factor.F1_ABSORPTION, _ACTIVE_WEIGHT),
             (Factor.F2_DELTA_EXHAUSTION, _ACTIVE_WEIGHT),
             (Factor.F3_CVD_DIVERGENCE, _ACTIVE_WEIGHT),
             (Factor.F4_EFFORT_RESULT, _ACTIVE_WEIGHT),
@@ -175,7 +203,7 @@ def default_params() -> ConfidenceParams:
             (Factor.F6_VP_CONTEXT, _ACTIVE_WEIGHT),
             (Factor.F7_VOID_NOTRADE, _ACTIVE_WEIGHT),
         ),
-        formula_version=2,
+        formula_version=3,
     )
 
 
@@ -234,6 +262,12 @@ def compute_confidence(
     contributions: list[FactorContribution] = []
     # Factores por percentil (raw + distribucion). F7 invierte: void penaliza.
     percentile_specs: tuple[tuple[Factor, FactorInput | None, bool], ...] = (
+        # F1 orientado como F2/F3/F4: MAYOR fuerza de absorcion = mas soporte del
+        # pivote.
+        # El extractor (P5) ya elige el LADO que casa con la direccion, asi que aqui el
+        # raw llega orientado y no hay que invertir. F7 sigue siendo el unico que
+        # invierte.
+        (Factor.F1_ABSORPTION, inputs.f1, False),
         (Factor.F2_DELTA_EXHAUSTION, inputs.f2, False),
         (Factor.F3_CVD_DIVERGENCE, inputs.f3, False),
         (Factor.F4_EFFORT_RESULT, inputs.f4, False),

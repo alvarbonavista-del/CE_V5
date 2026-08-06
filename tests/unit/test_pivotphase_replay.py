@@ -30,6 +30,8 @@ def _series(n: int) -> ReplaySeries:
         vp_val=tuple(Decimal(50) for _ in range(n)),
         vp_hvn=tuple(Decimal(100 + i) for i in range(n)),
         vp_lvn=tuple(Decimal(50) for _ in range(n)),
+        absorption_bid=tuple(Decimal(0) for _ in range(n)),
+        absorption_ask=tuple(Decimal(0) for _ in range(n)),
     )
 
 
@@ -101,4 +103,80 @@ def test_series_length_mismatch_raises() -> None:
             vp_val=(Decimal(1),),
             vp_hvn=(Decimal(1),),
             vp_lvn=(Decimal(1),),
+            absorption_bid=(Decimal(1),),
+            absorption_ask=(Decimal(1),),
         )
+
+
+def _series_absorcion_en(n: int, lado: str) -> ReplaySeries:
+    """Como _series pero con la fuerza de absorcion CRECIENTE en `lado` y plana en el
+    otro.
+
+    La fuerza tiene que VARIAR barra a barra: F1 se normaliza por PERCENTIL, y el
+    percentil de un valor constante dentro de su propia distribucion constante es
+    siempre 0,5 -- da igual que valga 0 o 0,9. Con fuerza plana las dos orientaciones
+    darian el MISMO numero y el test no probaria nada (se comprobo: pasaba en falso).
+    """
+    creciente = tuple(Decimal(i) / Decimal(n) for i in range(n))
+    plana = tuple(Decimal(0) for _ in range(n))
+    return ReplaySeries(
+        price=tuple(Decimal(100 + i) for i in range(n)),
+        delta=tuple(Decimal(i % 7 + 1) for i in range(n)),
+        delta_momentum=tuple(Decimal(0) for _ in range(n)),
+        price_range=tuple(Decimal(2) for _ in range(n)),
+        vp_poc=tuple(Decimal(100 + i) for i in range(n)),
+        vp_vah=tuple(Decimal(200) for _ in range(n)),
+        vp_val=tuple(Decimal(50) for _ in range(n)),
+        vp_hvn=tuple(Decimal(100 + i) for i in range(n)),
+        vp_lvn=tuple(Decimal(50) for _ in range(n)),
+        absorption_bid=creciente if lado == "bid" else plana,
+        absorption_ask=creciente if lado == "ask" else plana,
+    )
+
+
+class TestF1EnElReplay:
+    """F1 vivo (P08c-CONF-01): la absorcion entra en la confianza, orientada por
+    lado."""
+
+    def test_la_serie_de_absorcion_es_obligatoria(self) -> None:
+        # ReplaySeries valida longitudes: si alguien anadiera las dos series con otro
+        # tamano, el replay emparejaria la absorcion de una barra con el delta de otra.
+        with pytest.raises(ValueError, match="misma longitud"):
+            ReplaySeries(
+                price=(Decimal(1),),
+                delta=(Decimal(1),),
+                delta_momentum=(Decimal(0),),
+                price_range=(Decimal(1),),
+                vp_poc=(Decimal(1),),
+                vp_vah=(Decimal(1),),
+                vp_val=(Decimal(1),),
+                vp_hvn=(Decimal(1),),
+                vp_lvn=(Decimal(1),),
+                absorption_bid=(Decimal(1), Decimal(1)),
+                absorption_ask=(Decimal(1),),
+            )
+
+    def test_el_replay_sigue_siendo_determinista_con_absorcion(self) -> None:
+        series = _series_absorcion_en(40, "ask")
+        params = PivotParams()
+        conf = default_params()
+        una = replay_from_series(series, PivotState(), params, conf, 10, 10)
+        otra = replay_from_series(series, PivotState(), params, conf, 10, 10)
+        assert una == otra
+
+    def test_la_absorcion_del_lado_que_toca_cambia_la_confianza(self) -> None:
+        # ORIENTACION (la parte que de verdad hay que clavar): con impulso alcista se
+        # espera un TECHO, que lo confirma la absorcion de COMPRADORES (ask). Dos series
+        # identicas salvo por QUE LADO lleva la fuerza tienen que dar confianzas
+        # distintas; si el extractor leyera el lado contrario, saldrian iguales.
+        params = PivotParams()
+        conf = default_params()
+        solo_bid = replay_from_series(
+            _series_absorcion_en(40, "bid"), PivotState(), params, conf, 10, 10
+        )
+        solo_ask = replay_from_series(
+            _series_absorcion_en(40, "ask"), PivotState(), params, conf, 10, 10
+        )
+        assert [o.confidence for o in solo_bid.outcomes] != [
+            o.confidence for o in solo_ask.outcomes
+        ]

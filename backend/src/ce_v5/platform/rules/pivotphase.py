@@ -34,6 +34,10 @@ from dataclasses import dataclass, replace
 from decimal import Decimal
 from enum import IntEnum
 
+from ce_v5.platform.rules.absorption import (
+    ABSORPTION_ASK_STRENGTH_SOURCE_ID,
+    ABSORPTION_BID_STRENGTH_SOURCE_ID,
+)
 from ce_v5.platform.rules.footprint_range import FOOTPRINT_PRICE_RANGE_SOURCE_ID
 from ce_v5.platform.rules.orderflow import (
     ORDERFLOW_DELTA_MOMENTUM_SOURCE_ID,
@@ -362,9 +366,11 @@ _PIVOTPHASE_CACHE_KEY_SCHEMA: tuple[str, ...] = (
     "formula_version",
 )
 
-# consumes: el DAG de insumos de la FSM (DICTAMEN PIVOT-10). absorption.* NO se lista
-# AHORA a proposito: esta DIFERIDA (candle.open, P08b) y anadirla romperia el DAG del
-# catalogo vivo. Se ANADE en P5.
+# consumes: el DAG de insumos de la FSM (DICTAMEN PIVOT-10). absorption.bid/ask_strength
+# ENTRAN en P08c-CONF-01: dejaron de estar diferidas (P08b entrego candle.open y esta
+# pieza las cableo), y el replay las materializa de verdad para el factor F1 de la
+# confianza. Se declaran porque se LEEN -- mismo criterio de DAG honesto que en los
+# cuatro detectores.
 _PIVOTPHASE_CONSUMES: tuple[str, ...] = (
     MARKET_CLOSE_SOURCE_ID,
     ORDERFLOW_DELTA_SOURCE_ID,
@@ -375,6 +381,8 @@ _PIVOTPHASE_CONSUMES: tuple[str, ...] = (
     VP_VAL_SOURCE_ID,
     VP_HVN_SOURCE_ID,
     VP_LVN_SOURCE_ID,
+    ABSORPTION_BID_STRENGTH_SOURCE_ID,
+    ABSORPTION_ASK_STRENGTH_SOURCE_ID,
 )
 
 

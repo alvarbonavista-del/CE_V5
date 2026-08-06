@@ -469,9 +469,12 @@ def test_declaracion_confidence_solo_declarada() -> None:
     assert confidence.servibility is Servibility.CONTINUOUS
 
 
-def test_consumes_no_incluye_absorption_todavia() -> None:
-    """absorption.* se ANADE mas adelante: listarla ahora romperia el DAG del
-    catalogo vivo (DICTAMEN PIVOT-10: 9 aristas, sin notrade.score).
+def test_consumes_incluye_absorption() -> None:
+    """absorption.* ENTRA en P08c-CONF-01: el replay la materializa para F1.
+
+    Dejo de ser una arista diferida cuando P08b entrego candle.open y esta pieza cableo
+    absorption.bid/ask_strength. Se declara porque se LEE de verdad -- mismo criterio de
+    DAG honesto que en los cuatro detectores. notrade.score sigue fuera (F7, 3c).
     """
     for declaration in declarations():
         assert declaration.consumes == (
@@ -484,8 +487,11 @@ def test_consumes_no_incluye_absorption_todavia() -> None:
             "vp.val",
             "vp.hvn",
             "vp.lvn",
+            "absorption.bid_strength",
+            "absorption.ask_strength",
         )
-        assert not any(c.startswith("absorption.") for c in declaration.consumes)
+        # notrade.score sigue FUERA: F7 tiene peso pero aun no tiene extractor (3c).
+        assert not any(c.startswith("notrade.") for c in declaration.consumes)
 
 
 def test_declaracion_esta_cableada_en_el_discovery_vivo() -> None:
