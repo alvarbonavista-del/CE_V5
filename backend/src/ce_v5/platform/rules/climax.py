@@ -35,8 +35,26 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal
-from enum import StrEnum
+from enum import Enum, StrEnum
 from typing import TYPE_CHECKING
+
+from ce_v5.platform.rules.indicators.candle import (
+    CANDLE_HIGH_SOURCE_ID,
+    CANDLE_LOW_SOURCE_ID,
+)
+from ce_v5.platform.rules.rawclose import MARKET_CLOSE_SOURCE_ID
+from ce_v5.platform.rules.rawfootprint import MARKET_FOOTPRINT_SOURCE_ID
+from source.datasource import (
+    DataSourceDeclaration,
+    HistoryUnit,
+    MemoryModel,
+    ParamSpec,
+    Servibility,
+    SharingScope,
+    SourceType,
+)
+from source.families.market import Timeframe
+from source.rules.scalar import ScalarType, ScalarValue
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -316,3 +334,119 @@ def label_climax(
             continue
         flip_run = 0
     return 0
+
+
+# --- Cara SERVIBLE: dos fuentes por LADO (P08c-DET-01) --------------------------------
+#
+# Mismo criterio que absorption.*: el veredicto es un triplete (detected, side,
+# strength)
+# y se sirve como DOS fuentes DECIMAL, una por lado, cada una publicando la FUERZA de SU
+# lado y 0 en cualquier otro caso.
+
+CLIMAX_TOP_STRENGTH_SOURCE_ID = "climax.top_strength"
+CLIMAX_BOTTOM_STRENGTH_SOURCE_ID = "climax.bottom_strength"
+
+
+class ClimaxOutput(Enum):
+    """Cual de las DOS salidas servibles publica una fuente."""
+
+    TOP_STRENGTH = "top_strength"
+    BOTTOM_STRENGTH = "bottom_strength"
+
+
+_SIDE_BY_OUTPUT: dict[ClimaxOutput, ClimaxSide] = {
+    ClimaxOutput.TOP_STRENGTH: ClimaxSide.TOP,
+    ClimaxOutput.BOTTOM_STRENGTH: ClimaxSide.BOTTOM,
+}
+
+
+def climax_output(signal: ClimaxSignal, output: ClimaxOutput) -> Decimal:
+    """La fuerza del climax si es del lado de `output`; 0 en cualquier otro caso.
+
+    Como en absorption.*, la fuerza SUB-UMBRAL no se publica (detected=False con
+    strength>0 da 0): emitirla convertiria strength_min en decorativo.
+    """
+    if signal.detected and signal.side is _SIDE_BY_OUTPUT[output]:
+        return signal.strength
+    return Decimal(0)
+
+
+def _decimal_param(name: str, default: Decimal) -> ParamSpec:
+    """ParamSpec decimal con su default (semilla [PARIDAD v4] del detector)."""
+    return ParamSpec(
+        name=name,
+        value_type=ScalarType.DECIMAL,
+        default=ScalarValue(scalar_type=ScalarType.DECIMAL, decimal_value=default),
+    )
+
+
+def _climax_declaration(source_id: str) -> DataSourceDeclaration:
+    """Declaracion comun de las dos climax.* (P08c-DET-01).
+
+    WINDOWED: los umbrales son PERCENTILES de la ventana previa (window[:-1]), no de la
+    historia entera. Sin snapshot y sin migracion, como vp.*.
+
+    consumes DAG HONESTO (enmienda P08c-DET-01). candle.open NO entra, y es la unica
+    diferencia con notrade.*: ClimaxCandle no tiene campo open porque la direccion sale
+    SOLO de la posicion del cierre en el rango (rev 3, H2 -- "anadirlo seria un campo
+    muerto"). Declarar candle.open aqui seria una arista muerta del DAG: decir que se
+    usa
+    algo que el nucleo no lee.
+
+    PARAMS DEFAULT-ONLY: los umbrales calibrables viajan con su semilla y entran en la
+    cache_key, pero no son overridables (MAT-05 Q2). Los PESOS van FIJOS en paridad v4.
+    """
+    return DataSourceDeclaration(
+        source_id=source_id,
+        source_type=SourceType.OBSERVABLE,
+        servibility=Servibility.CONTINUOUS,
+        memory_model=MemoryModel.WINDOWED,
+        value_type=ScalarType.DECIMAL,
+        evaluation_contexts=tuple(tf.value for tf in Timeframe),
+        history_units=(HistoryUnit.BARS,),
+        params=(
+            _decimal_param("vol_pct", _VOL_PCT),
+            _decimal_param("range_pct", _RANGE_PCT),
+            _decimal_param("close_rejection", _CLOSE_REJECTION),
+            _decimal_param("excess_cap", _EXCESS_CAP),
+            _decimal_param("strength_min", _STRENGTH_MIN),
+        ),
+        shared_evaluation=True,
+        sharing_scope=SharingScope.PUBLIC_CROSS_TENANT,
+        cache_key_schema=(
+            "exchange",
+            "symbol",
+            "market_type",
+            "timeframe",
+            "vol_pct",
+            "range_pct",
+            "close_rejection",
+            "excess_cap",
+            "strength_min",
+        ),
+        consumes=(
+            MARKET_FOOTPRINT_SOURCE_ID,
+            CANDLE_HIGH_SOURCE_ID,
+            CANDLE_LOW_SOURCE_ID,
+            MARKET_CLOSE_SOURCE_ID,
+        ),
+    )
+
+
+def climax_top_strength_declaration() -> DataSourceDeclaration:
+    """climax.top_strength: agotamiento con cierre RECHAZADO abajo (reversion
+    bajista)."""
+    return _climax_declaration(CLIMAX_TOP_STRENGTH_SOURCE_ID)
+
+
+def climax_bottom_strength_declaration() -> DataSourceDeclaration:
+    """climax.bottom_strength: agotamiento con cierre arriba (reversion alcista)."""
+    return _climax_declaration(CLIMAX_BOTTOM_STRENGTH_SOURCE_ID)
+
+
+def declarations() -> tuple[DataSourceDeclaration, ...]:
+    """Declaraciones que este modulo publica al catalogo vivo (discovery, MAT-02)."""
+    return (
+        climax_top_strength_declaration(),
+        climax_bottom_strength_declaration(),
+    )

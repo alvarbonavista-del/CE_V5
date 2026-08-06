@@ -36,10 +36,20 @@ from ce_v5.entrypoints.worker_rules.materializers import (
     _cvd_session_step,
     _cvd_step,
 )
+from ce_v5.platform.rules.absorption import (
+    ABSORPTION_ASK_STRENGTH_SOURCE_ID,
+    ABSORPTION_BID_STRENGTH_SOURCE_ID,
+)
+from ce_v5.platform.rules.climax import (
+    CLIMAX_BOTTOM_STRENGTH_SOURCE_ID,
+    CLIMAX_TOP_STRENGTH_SOURCE_ID,
+)
 from ce_v5.platform.rules.compiler import ExecutionPlan, ResolvedSource
 from ce_v5.platform.rules.cvd import CVD_SOURCE_ID, ResetPolicy
 from ce_v5.platform.rules.indicators.candle import (
     CANDLE_BODY_PCT_SOURCE_ID,
+    CANDLE_HIGH_SOURCE_ID,
+    CANDLE_LOW_SOURCE_ID,
     CANDLE_LOWER_SHADOW_PCT_SOURCE_ID,
     CANDLE_OPEN_SOURCE_ID,
     CANDLE_UPPER_SHADOW_PCT_SOURCE_ID,
@@ -90,6 +100,12 @@ from ce_v5.platform.rules.indicators.vwap import (
     VWAP_DISTANCE_PCT_SOURCE_ID,
     VWAP_VALUE_SOURCE_ID,
 )
+from ce_v5.platform.rules.notrade import (
+    NOTRADE_FLOW_DISLOCATION_SOURCE_ID,
+    NOTRADE_FOOTPRINT_INEFF_SOURCE_ID,
+    NOTRADE_SCORE_SOURCE_ID,
+    NOTRADE_STATE_SOURCE_ID,
+)
 from ce_v5.platform.rules.orderflow import (
     ORDERFLOW_DELTA_MOMENTUM_SOURCE_ID,
     ORDERFLOW_DELTA_SOURCE_ID,
@@ -99,6 +115,10 @@ from ce_v5.platform.rules.orderflow import (
 from ce_v5.platform.rules.pivotphase import (
     PIVOTPHASE_CONFIDENCE_SOURCE_ID,
     PIVOTPHASE_PHASE_SOURCE_ID,
+)
+from ce_v5.platform.rules.void import (
+    VOID_SNAP_BEARISH_SOURCE_ID,
+    VOID_SNAP_BULLISH_SOURCE_ID,
 )
 from ce_v5.platform.rules.volume_profile import (
     DEFAULT_BIN_COUNT,
@@ -203,12 +223,26 @@ class TestRegistroPorSourceId:
             CVD_SOURCE_ID,
             ORDERFLOW_DELTA_MOMENTUM_SOURCE_ID,
             "footprint.price_range",
+            "imbalance.buy_stack",
+            "imbalance.sell_stack",
             PIVOTPHASE_PHASE_SOURCE_ID,
             PIVOTPHASE_CONFIDENCE_SOURCE_ID,
             CANDLE_BODY_PCT_SOURCE_ID,
             CANDLE_UPPER_SHADOW_PCT_SOURCE_ID,
             CANDLE_LOWER_SHADOW_PCT_SOURCE_ID,
             CANDLE_OPEN_SOURCE_ID,
+            CANDLE_HIGH_SOURCE_ID,
+            CANDLE_LOW_SOURCE_ID,
+            ABSORPTION_BID_STRENGTH_SOURCE_ID,
+            ABSORPTION_ASK_STRENGTH_SOURCE_ID,
+            CLIMAX_TOP_STRENGTH_SOURCE_ID,
+            CLIMAX_BOTTOM_STRENGTH_SOURCE_ID,
+            VOID_SNAP_BULLISH_SOURCE_ID,
+            VOID_SNAP_BEARISH_SOURCE_ID,
+            NOTRADE_SCORE_SOURCE_ID,
+            NOTRADE_FOOTPRINT_INEFF_SOURCE_ID,
+            NOTRADE_FLOW_DISLOCATION_SOURCE_ID,
+            NOTRADE_STATE_SOURCE_ID,
             VOLUME_RATIO_VS_AVG_SOURCE_ID,
             VWAP_VALUE_SOURCE_ID,
             VWAP_DISTANCE_PCT_SOURCE_ID,

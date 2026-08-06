@@ -11,11 +11,19 @@ from __future__ import annotations
 from decimal import Decimal
 
 from ce_v5.platform.rules.absorption import (
+    ABSORPTION_ASK_STRENGTH_SOURCE_ID,
+    ABSORPTION_BID_STRENGTH_SOURCE_ID,
+    AbsorptionOutput,
     AbsorptionParams,
     AbsorptionSide,
+    AbsorptionSignal,
+    absorption_output,
     adaptive_threshold,
+    declarations,
     detect_absorption,
 )
+from source.datasource import MemoryModel, Servibility
+from source.rules.scalar import ScalarType
 
 
 class TestUmbralAdaptativo:
@@ -165,3 +173,103 @@ class TestFuerzaYParametrizacion:
         )
         assert signal.detected
         assert signal.side is AbsorptionSide.ASK
+
+
+class TestProyeccionServible:
+    """La cara SERVIBLE (P08c-DET-01): del triplete del veredicto a dos escalares.
+
+    absorption_output publica la FUERZA cuando la absorcion es del lado que mira la
+    fuente, y 0 en cualquier otro caso. Es la unica pieza de logica que anade el
+    cableado, asi que es la que hay que clavar.
+    """
+
+    def _signal(
+        self, *, detected: bool, side: AbsorptionSide | None, strength: str
+    ) -> AbsorptionSignal:
+        return AbsorptionSignal(
+            detected=detected, side=side, strength=Decimal(strength)
+        )
+
+    def test_bid_publica_la_fuerza_cuando_la_absorcion_es_bid(self) -> None:
+        senal = self._signal(detected=True, side=AbsorptionSide.BID, strength="0.75")
+        assert absorption_output(senal, AbsorptionOutput.BID_STRENGTH) == Decimal(
+            "0.75"
+        )
+
+    def test_ask_publica_la_fuerza_cuando_la_absorcion_es_ask(self) -> None:
+        senal = self._signal(detected=True, side=AbsorptionSide.ASK, strength="0.62")
+        assert absorption_output(senal, AbsorptionOutput.ASK_STRENGTH) == Decimal(
+            "0.62"
+        )
+
+    def test_el_lado_contrario_publica_cero(self) -> None:
+        # Lo que hace util tener DOS fuentes: una absorcion de suelo no puede leerse
+        # como si fuera de techo.
+        senal = self._signal(detected=True, side=AbsorptionSide.BID, strength="0.75")
+        assert absorption_output(senal, AbsorptionOutput.ASK_STRENGTH) == Decimal(0)
+
+    def test_sin_deteccion_publica_cero_aunque_haya_fuerza(self) -> None:
+        # Candidatura estructural con fuerza SUB-UMBRAL: detected=False con strength>0.
+        # Publicarla convertiria strength_min en decorativo.
+        senal = self._signal(detected=False, side=AbsorptionSide.BID, strength="0.29")
+        assert absorption_output(senal, AbsorptionOutput.BID_STRENGTH) == Decimal(0)
+
+    def test_sin_lado_publica_cero_en_ambas(self) -> None:
+        senal = self._signal(detected=False, side=None, strength="0")
+        assert absorption_output(senal, AbsorptionOutput.BID_STRENGTH) == Decimal(0)
+        assert absorption_output(senal, AbsorptionOutput.ASK_STRENGTH) == Decimal(0)
+
+    def test_las_dos_salidas_no_son_la_misma(self) -> None:
+        # Muerde: una proyeccion que ignorase el lado daria lo mismo en las dos.
+        senal = self._signal(detected=True, side=AbsorptionSide.ASK, strength="0.9")
+        bid = absorption_output(senal, AbsorptionOutput.BID_STRENGTH)
+        ask = absorption_output(senal, AbsorptionOutput.ASK_STRENGTH)
+        assert (bid, ask) == (Decimal(0), Decimal("0.9"))
+
+
+class TestDeclaracionesServibles:
+    def test_son_dos_con_los_source_id_esperados(self) -> None:
+        assert {d.source_id for d in declarations()} == {
+            ABSORPTION_BID_STRENGTH_SOURCE_ID,
+            ABSORPTION_ASK_STRENGTH_SOURCE_ID,
+        }
+
+    def test_las_dos_son_continuous_windowed_decimal(self) -> None:
+        # WINDOWED y no RECURSIVE: el umbral adaptativo sale de una ventana ACOTADA de
+        # ratios previos, no de la historia entera. Por eso no hay snapshot.
+        for declaration in declarations():
+            assert declaration.servibility is Servibility.CONTINUOUS
+            assert declaration.memory_model is MemoryModel.WINDOWED
+            assert declaration.value_type is ScalarType.DECIMAL
+
+    def test_los_umbrales_son_params_default_only_en_la_cache_key(self) -> None:
+        # Calibrables (AHP diferido) -> viajan con su semilla y entran en la clave; NO
+        # overridables porque el materializador llama al nucleo con sus defaults.
+        for declaration in declarations():
+            nombres = {p.name for p in declaration.params}
+            assert nombres == {
+                "ratio_floor",
+                "percentile",
+                "aggression_min_fraction",
+                "containment_max_fraction",
+                "strength_min",
+            }
+            assert declaration.overridable_params == ()
+            assert nombres <= set(declaration.cache_key_schema)
+
+    def test_los_pesos_no_se_declaran_como_params(self) -> None:
+        # Van FIJOS en paridad v4 (decision registrada), como los ratios Fibonacci.
+        for declaration in declarations():
+            nombres = {p.name for p in declaration.params}
+            assert not any(nombre.startswith("weight_") for nombre in nombres)
+
+    def test_consumes_es_el_dag_honesto(self) -> None:
+        # Enmienda P08c-DET-01: solo lo que el nucleo lee de verdad. candle.open entra
+        # porque displacement = close - open; candle.high/low NO, porque absorption usa
+        # el SPAN del footprint, no el rango de la vela.
+        for declaration in declarations():
+            assert set(declaration.consumes) == {
+                "market.footprint",
+                "candle.open",
+                "market.close",
+            }

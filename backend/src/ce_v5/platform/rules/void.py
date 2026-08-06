@@ -37,8 +37,22 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal
-from enum import StrEnum
+from enum import Enum, StrEnum
 from typing import TYPE_CHECKING
+
+from ce_v5.platform.rules.rawclose import MARKET_CLOSE_SOURCE_ID
+from ce_v5.platform.rules.rawfootprint import MARKET_FOOTPRINT_SOURCE_ID
+from source.datasource import (
+    DataSourceDeclaration,
+    HistoryUnit,
+    MemoryModel,
+    ParamSpec,
+    Servibility,
+    SharingScope,
+    SourceType,
+)
+from source.families.market import Timeframe
+from source.rules.scalar import ScalarType, ScalarValue
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -223,3 +237,115 @@ def label_void(
         if reached:
             return 1
     return 0
+
+
+# --- Cara SERVIBLE: dos fuentes por DIRECCION (P08c-DET-01) ---------------------------
+#
+# El veredicto de void es un PAR (detected, direction) sin fuerza asociada: el snap
+# ocurre o no ocurre. Se sirve como DOS fuentes DECIMAL indicadoras {0,1}, una por
+# direccion. No es un BOOLEAN a proposito: mantiene la familia de detectores homogenea
+# en DECIMAL (absorption y climax publican fuerza continua) y deja la puerta abierta a
+# que una futura calibracion gradue la senal sin cambiar el value_type.
+
+VOID_SNAP_BULLISH_SOURCE_ID = "void.snap_bullish"
+VOID_SNAP_BEARISH_SOURCE_ID = "void.snap_bearish"
+
+
+class VoidOutput(Enum):
+    """Cual de las DOS salidas servibles publica una fuente."""
+
+    SNAP_BULLISH = "snap_bullish"
+    SNAP_BEARISH = "snap_bearish"
+
+
+_DIRECTION_BY_OUTPUT: dict[VoidOutput, VoidSnapDirection] = {
+    VoidOutput.SNAP_BULLISH: VoidSnapDirection.BULLISH,
+    VoidOutput.SNAP_BEARISH: VoidSnapDirection.BEARISH,
+}
+
+
+def void_output(signal: VoidSignal, output: VoidOutput) -> Decimal:
+    """1 si la barra es un snap de la direccion de `output`; 0 en cualquier otro
+    caso."""
+    if signal.detected and signal.direction is _DIRECTION_BY_OUTPUT[output]:
+        return Decimal(1)
+    return Decimal(0)
+
+
+def _int_param(name: str, default: int) -> ParamSpec:
+    """ParamSpec entero con su default (semilla [PARIDAD v4] del detector)."""
+    return ParamSpec(
+        name=name,
+        value_type=ScalarType.INTEGER,
+        default=ScalarValue(scalar_type=ScalarType.INTEGER, integer_value=default),
+    )
+
+
+def _decimal_param(name: str, default: Decimal) -> ParamSpec:
+    """ParamSpec decimal con su default (semilla [PARIDAD v4] del detector)."""
+    return ParamSpec(
+        name=name,
+        value_type=ScalarType.DECIMAL,
+        default=ScalarValue(scalar_type=ScalarType.DECIMAL, decimal_value=default),
+    )
+
+
+def _void_declaration(source_id: str) -> DataSourceDeclaration:
+    """Declaracion comun de las dos void.* (P08c-DET-01).
+
+    WINDOWED de verdad, no por comodidad: todo cruce del LVN CADUCA en r_bars, asi que
+    el veredicto de la barra T sale de una ventana ACOTADA. La "watchlist" de v4 es la
+    implementacion en streaming de esa misma semantica, no un estado sin cota.
+
+    consumes DAG HONESTO (enmienda P08c-DET-01): market.footprint (de donde sale el
+    nivel LVN) y market.close (la serie que lo cruza y vuelve). NO consume vp.lvn, y
+    eso es una
+    decision, no un olvido: vp.lvn es NON_SERVIBLE (un CONJUNTO de niveles, no un
+    escalar), asi que no se puede pedir por dispatch. El materializador computa el nivel
+    INTERNAMENTE con select_lvn_price sobre su propia ventana de footprint -- el mismo
+    patron con el que MACD calcula sus EMAs sin consumir ema.value.
+    """
+    return DataSourceDeclaration(
+        source_id=source_id,
+        source_type=SourceType.OBSERVABLE,
+        servibility=Servibility.CONTINUOUS,
+        memory_model=MemoryModel.WINDOWED,
+        value_type=ScalarType.DECIMAL,
+        evaluation_contexts=tuple(tf.value for tf in Timeframe),
+        history_units=(HistoryUnit.BARS,),
+        params=(
+            _int_param("r_bars", _R_BARS),
+            _decimal_param("return_tolerance", _RETURN_TOLERANCE),
+            _decimal_param("far_threshold", _FAR_THRESHOLD),
+        ),
+        shared_evaluation=True,
+        sharing_scope=SharingScope.PUBLIC_CROSS_TENANT,
+        cache_key_schema=(
+            "exchange",
+            "symbol",
+            "market_type",
+            "timeframe",
+            "r_bars",
+            "return_tolerance",
+            "far_threshold",
+        ),
+        consumes=(MARKET_FOOTPRINT_SOURCE_ID, MARKET_CLOSE_SOURCE_ID),
+    )
+
+
+def void_snap_bullish_declaration() -> DataSourceDeclaration:
+    """void.snap_bullish: cruce DESCENDENTE del LVN que vuelve -> se espera subida."""
+    return _void_declaration(VOID_SNAP_BULLISH_SOURCE_ID)
+
+
+def void_snap_bearish_declaration() -> DataSourceDeclaration:
+    """void.snap_bearish: cruce ASCENDENTE del LVN que vuelve -> se espera caida."""
+    return _void_declaration(VOID_SNAP_BEARISH_SOURCE_ID)
+
+
+def declarations() -> tuple[DataSourceDeclaration, ...]:
+    """Declaraciones que este modulo publica al catalogo vivo (discovery, MAT-02)."""
+    return (
+        void_snap_bullish_declaration(),
+        void_snap_bearish_declaration(),
+    )

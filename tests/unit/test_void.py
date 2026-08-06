@@ -12,14 +12,22 @@ from decimal import Decimal
 
 from ce_v5.platform.rules.void import (
     VOID_FORMULA_VERSION,
+    VOID_SNAP_BEARISH_SOURCE_ID,
+    VOID_SNAP_BULLISH_SOURCE_ID,
     VoidLabelParams,
+    VoidOutput,
     VoidParams,
+    VoidSignal,
     VoidSnap,
     VoidSnapDirection,
+    declarations,
     evaluate_void,
     label_void,
     scan_void_snaps,
+    void_output,
 )
+from source.datasource import MemoryModel, Servibility
+from source.rules.scalar import ScalarType
 
 _LVN = Decimal(100)
 # Con LVN=100 y semillas por defecto: return_up=100.05, return_down=99.95,
@@ -246,3 +254,63 @@ def test_etiqueta_r_configurable() -> None:
         params=VoidLabelParams(r_bars=1),
     )
     assert label == 0
+
+
+class TestProyeccionServible:
+    """La cara SERVIBLE (P08c-DET-01): del par (detected, direction) a dos
+    indicadoras."""
+
+    def test_bullish_publica_uno_cuando_el_snap_es_bullish(self) -> None:
+        senal = VoidSignal(detected=True, direction=VoidSnapDirection.BULLISH)
+        assert void_output(senal, VoidOutput.SNAP_BULLISH) == Decimal(1)
+
+    def test_bearish_publica_uno_cuando_el_snap_es_bearish(self) -> None:
+        senal = VoidSignal(detected=True, direction=VoidSnapDirection.BEARISH)
+        assert void_output(senal, VoidOutput.SNAP_BEARISH) == Decimal(1)
+
+    def test_la_direccion_contraria_publica_cero(self) -> None:
+        senal = VoidSignal(detected=True, direction=VoidSnapDirection.BULLISH)
+        assert void_output(senal, VoidOutput.SNAP_BEARISH) == Decimal(0)
+
+    def test_sin_snap_publica_cero_en_ambas(self) -> None:
+        senal = VoidSignal(detected=False, direction=None)
+        assert void_output(senal, VoidOutput.SNAP_BULLISH) == Decimal(0)
+        assert void_output(senal, VoidOutput.SNAP_BEARISH) == Decimal(0)
+
+    def test_solo_emite_cero_o_uno(self) -> None:
+        # Es una INDICADORA: no hay fuerza que graduar hoy. El value_type es DECIMAL
+        # para que una calibracion futura pueda graduarla sin cambiar el contrato.
+        for detected in (True, False):
+            for direction in (VoidSnapDirection.BULLISH, VoidSnapDirection.BEARISH):
+                senal = VoidSignal(detected=detected, direction=direction)
+                for output in VoidOutput:
+                    assert void_output(senal, output) in {Decimal(0), Decimal(1)}
+
+
+class TestDeclaracionesServibles:
+    def test_son_dos_con_los_source_id_esperados(self) -> None:
+        assert {d.source_id for d in declarations()} == {
+            VOID_SNAP_BULLISH_SOURCE_ID,
+            VOID_SNAP_BEARISH_SOURCE_ID,
+        }
+
+    def test_las_dos_son_continuous_windowed_decimal(self) -> None:
+        for declaration in declarations():
+            assert declaration.servibility is Servibility.CONTINUOUS
+            assert declaration.memory_model is MemoryModel.WINDOWED
+            assert declaration.value_type is ScalarType.DECIMAL
+
+    def test_los_umbrales_son_params_default_only_en_la_cache_key(self) -> None:
+        for declaration in declarations():
+            nombres = {p.name for p in declaration.params}
+            assert nombres == {"r_bars", "return_tolerance", "far_threshold"}
+            assert declaration.overridable_params == ()
+            assert nombres <= set(declaration.cache_key_schema)
+
+    def test_no_consume_vp_lvn(self) -> None:
+        # vp.lvn es NON_SERVIBLE (un CONJUNTO de niveles): no se puede pedir por
+        # dispatch. El nivel se computa DENTRO del materializador con select_lvn_price,
+        # como MACD calcula sus EMAs sin consumir ema.value.
+        for declaration in declarations():
+            assert set(declaration.consumes) == {"market.footprint", "market.close"}
+            assert "vp.lvn" not in declaration.consumes

@@ -11,16 +11,24 @@ from __future__ import annotations
 from decimal import Decimal
 
 from ce_v5.platform.rules.climax import (
+    CLIMAX_BOTTOM_STRENGTH_SOURCE_ID,
     CLIMAX_FORMULA_VERSION,
+    CLIMAX_TOP_STRENGTH_SOURCE_ID,
     MIN_CANDLES,
     ClimaxCandle,
+    ClimaxOutput,
     ClimaxSide,
+    ClimaxSignal,
     LabelCandle,
     LabelParams,
+    climax_output,
     climax_thresholds,
+    declarations,
     evaluate_climax,
     label_climax,
 )
+from source.datasource import MemoryModel, Servibility
+from source.rules.scalar import ScalarType
 
 # --------------------------------------------------------------------------- #
 # Fixtures y referente independiente
@@ -360,3 +368,73 @@ def test_etiqueta_r_bars_configurable() -> None:
         params=LabelParams(r_bars=2),
     )
     assert label == 0
+
+
+class TestProyeccionServible:
+    """La cara SERVIBLE (P08c-DET-01): del triplete del veredicto a dos escalares."""
+
+    def _signal(
+        self, *, detected: bool, side: ClimaxSide | None, strength: str
+    ) -> ClimaxSignal:
+        return ClimaxSignal(detected=detected, side=side, strength=Decimal(strength))
+
+    def test_top_publica_la_fuerza_cuando_el_climax_es_top(self) -> None:
+        senal = self._signal(detected=True, side=ClimaxSide.TOP, strength="0.71")
+        assert climax_output(senal, ClimaxOutput.TOP_STRENGTH) == Decimal("0.71")
+
+    def test_bottom_publica_la_fuerza_cuando_el_climax_es_bottom(self) -> None:
+        senal = self._signal(detected=True, side=ClimaxSide.BOTTOM, strength="0.55")
+        assert climax_output(senal, ClimaxOutput.BOTTOM_STRENGTH) == Decimal("0.55")
+
+    def test_el_lado_contrario_publica_cero(self) -> None:
+        senal = self._signal(detected=True, side=ClimaxSide.TOP, strength="0.71")
+        assert climax_output(senal, ClimaxOutput.BOTTOM_STRENGTH) == Decimal(0)
+
+    def test_sin_deteccion_publica_cero_aunque_haya_fuerza(self) -> None:
+        senal = self._signal(detected=False, side=ClimaxSide.TOP, strength="0.29")
+        assert climax_output(senal, ClimaxOutput.TOP_STRENGTH) == Decimal(0)
+
+    def test_sin_lado_publica_cero_en_ambas(self) -> None:
+        senal = self._signal(detected=False, side=None, strength="0")
+        assert climax_output(senal, ClimaxOutput.TOP_STRENGTH) == Decimal(0)
+        assert climax_output(senal, ClimaxOutput.BOTTOM_STRENGTH) == Decimal(0)
+
+
+class TestDeclaracionesServibles:
+    def test_son_dos_con_los_source_id_esperados(self) -> None:
+        assert {d.source_id for d in declarations()} == {
+            CLIMAX_TOP_STRENGTH_SOURCE_ID,
+            CLIMAX_BOTTOM_STRENGTH_SOURCE_ID,
+        }
+
+    def test_las_dos_son_continuous_windowed_decimal(self) -> None:
+        for declaration in declarations():
+            assert declaration.servibility is Servibility.CONTINUOUS
+            assert declaration.memory_model is MemoryModel.WINDOWED
+            assert declaration.value_type is ScalarType.DECIMAL
+
+    def test_los_umbrales_son_params_default_only_en_la_cache_key(self) -> None:
+        for declaration in declarations():
+            nombres = {p.name for p in declaration.params}
+            assert nombres == {
+                "vol_pct",
+                "range_pct",
+                "close_rejection",
+                "excess_cap",
+                "strength_min",
+            }
+            assert declaration.overridable_params == ()
+            assert nombres <= set(declaration.cache_key_schema)
+
+    def test_consumes_no_incluye_candle_open(self) -> None:
+        # ENMIENDA P08c-DET-01 (P1). ClimaxCandle no tiene campo open: la direccion sale
+        # SOLO de la posicion del cierre en el rango (rev 3, H2). Declarar candle.open
+        # seria una arista MUERTA del DAG -- decir que se usa algo que no se lee.
+        for declaration in declarations():
+            assert set(declaration.consumes) == {
+                "market.footprint",
+                "candle.high",
+                "candle.low",
+                "market.close",
+            }
+            assert "candle.open" not in declaration.consumes

@@ -51,12 +51,14 @@ def _outbox() -> dict[str, str]:
 def _conforme() -> dict[tuple[str, str, str], bool]:
     """La linea base CONFORME: exactamente los privilegios que la postura autoriza.
 
-    Dos rendijas de LECTURA de mercado (velas 0016, footprint 0021) y, sobre el estado
-    PROPIO del motor (cvd_snapshot, 0022), lectura Y escritura acotada a INSERT.
+    TRES rendijas de LECTURA de mercado (velas 0016, footprint 0021 y el snapshot del
+    libro 0029) y, sobre el estado PROPIO del motor (cvd_snapshot, 0022), lectura Y
+    escritura acotada a INSERT.
     """
     conforme = {
         (RULES, "market_candle", "SELECT"): True,
         (RULES, "market_footprint", "SELECT"): True,
+        (RULES, "market_orderbook_snapshot", "SELECT"): True,
     }
     for tabla in check_rules_access.RULES_STATE_TABLES:
         conforme[(RULES, tabla, "SELECT")] = True
@@ -84,6 +86,38 @@ def test_sin_select_sobre_market_candle_el_motor_no_puede_evaluar() -> None:
     # en produccion. Aqui rompe el build.
     problems = check_rules(_funcion(), True, {}, _outbox())
     assert any("NO tiene SELECT" in p for p in problems)
+
+
+def test_sin_select_sobre_el_libro_el_bloque_l2_no_puede_materializarse() -> None:
+    # El POSITIVO del libro (P08c-CONF-05, 0029): el bloque L2 de notrade se computa
+    # sobre la ventana de snapshots frontier. Si el grant desaparece, el bloque volveria
+    # a valer 0 EN SILENCIO -- el fail-safe de OBS-1 lo absorberia sin ruido --, que es
+    # justo el fallo mudo que este positivo existe para impedir. Se dejan puestos los
+    # otros dos SELECT para que lo que muerda sea el del LIBRO.
+    problems = check_rules(
+        _funcion(),
+        True,
+        {
+            (RULES, "market_candle", "SELECT"): True,
+            (RULES, "market_footprint", "SELECT"): True,
+        },
+        _outbox(),
+    )
+    assert any(
+        p.startswith(f"{check_rules_access.MARKET_ORDERBOOK_SNAPSHOT_TABLE}: ")
+        and "NO tiene SELECT" in p
+        for p in problems
+    )
+
+
+def test_el_motor_no_puede_ESCRIBIR_el_libro() -> None:
+    # El libro es append-only tambien para el motor: un snapshot fabricado por el motor
+    # alimentaria sus propias reglas de orderflow.
+    for privilegio in ("INSERT", "UPDATE", "DELETE"):
+        problems = _check({(RULES, "market_orderbook_snapshot", privilegio): True})
+        assert any(
+            check_rules_access.MARKET_ORDERBOOK_SNAPSHOT_TABLE in p for p in problems
+        )
 
 
 def test_sin_select_sobre_market_footprint_el_motor_no_puede_materializar() -> None:

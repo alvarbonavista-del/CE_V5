@@ -76,14 +76,43 @@ from ce_v5.infra.db.market_footprint import (
     read_footprint_delta_range,
     read_footprint_window,
 )
+from ce_v5.infra.db.market_orderbook import (
+    frontier_by_open_time,
+    read_orderbook_frontier_window,
+)
 from ce_v5.infra.db.rsi_snapshot import read_rsi_snapshot_before, write_rsi_snapshot
+from ce_v5.platform.rules.absorption import (
+    ABSORPTION_ASK_STRENGTH_SOURCE_ID,
+    ABSORPTION_BID_STRENGTH_SOURCE_ID,
+    AbsorptionOutput,
+    AbsorptionSignal,
+    absorption_output,
+    adaptive_threshold,
+    detect_absorption,
+)
+from ce_v5.platform.rules.climax import (
+    CLIMAX_BOTTOM_STRENGTH_SOURCE_ID,
+    CLIMAX_TOP_STRENGTH_SOURCE_ID,
+    ClimaxCandle,
+    ClimaxOutput,
+    ClimaxSignal,
+    climax_output,
+    evaluate_climax,
+)
 from ce_v5.platform.rules.cvd import CVD_SOURCE_ID, ResetPolicy, session_starts
 from ce_v5.platform.rules.footprint_range import (
     FOOTPRINT_PRICE_RANGE_SOURCE_ID,
     price_range,
 )
+from ce_v5.platform.rules.imbalance import (
+    IMBALANCE_BUY_STACK_SOURCE_ID,
+    IMBALANCE_SELL_STACK_SOURCE_ID,
+    detect_stacked_imbalance,
+)
 from ce_v5.platform.rules.indicators.candle import (
     CANDLE_BODY_PCT_SOURCE_ID,
+    CANDLE_HIGH_SOURCE_ID,
+    CANDLE_LOW_SOURCE_ID,
     CANDLE_LOWER_SHADOW_PCT_SOURCE_ID,
     CANDLE_OPEN_SOURCE_ID,
     CANDLE_UPPER_SHADOW_PCT_SOURCE_ID,
@@ -152,6 +181,19 @@ from ce_v5.platform.rules.materializer import (
     materialize_recursive,
     materialize_windowed,
 )
+from ce_v5.platform.rules.notrade import (
+    NOTRADE_FLOW_DISLOCATION_SOURCE_ID,
+    NOTRADE_FOOTPRINT_INEFF_SOURCE_ID,
+    NOTRADE_SCORE_SOURCE_ID,
+    NOTRADE_STATE_SOURCE_ID,
+    BookDepth,
+    NoTradeCandle,
+    NoTradeOutput,
+    NoTradeSignal,
+    evaluate_no_trade,
+    notrade_decimal_output,
+    notrade_state_token,
+)
 from ce_v5.platform.rules.orderflow import (
     ORDERFLOW_DELTA_MOMENTUM_SOURCE_ID,
     ORDERFLOW_DELTA_SOURCE_ID,
@@ -160,6 +202,14 @@ from ce_v5.platform.rules.orderflow import (
 from ce_v5.platform.rules.pivotphase import (
     PIVOTPHASE_CONFIDENCE_SOURCE_ID,
     PIVOTPHASE_PHASE_SOURCE_ID,
+)
+from ce_v5.platform.rules.void import (
+    VOID_SNAP_BEARISH_SOURCE_ID,
+    VOID_SNAP_BULLISH_SOURCE_ID,
+    VoidOutput,
+    VoidSignal,
+    evaluate_void,
+    void_output,
 )
 from ce_v5.platform.rules.volume_profile import (
     DEFAULT_BIN_COUNT,
@@ -180,6 +230,7 @@ if TYPE_CHECKING:
     from ce_v5.infra.db.market_candles import CandleOHLCV
     from ce_v5.infra.db.ports import Session
     from source.families.footprint import FootprintPayload
+    from source.families.orderbook import OrderbookSnapshotPayload
 
 # Ventana rodante del perfil de volumen [PARIDAD v4 _WINDOW]. NO es dimension de
 # cache_key (VP_CACHE_KEY_SCHEMA no la lleva): es constante FIJA de materializacion
@@ -195,6 +246,14 @@ CVD_RESET_POLICY_V5 = ResetPolicy.ROLLING.value
 # Ventana rodante de swing.high/low. FIJA, NO param, NO cache_key (MAT-05 Q3, dictamen
 # P08b-SWING-01 Q2): la resolucion del pivote depende de strength, no de window_bars.
 SWING_WINDOW_BARS = 100
+
+# Ventana rodante de los cuatro detectores footprint+vela (P08c-DET-01). Es el
+# NORM_WINDOW que absorption, climax y notrade ya declaran por separado [PARIDAD v4] y
+# que void cubre de sobra (su horizonte es r_bars=5). FIJA, NO param y NO cache_key, por
+# el mismo criterio que PROFILE_WINDOW_BARS y SWING_WINDOW_BARS (MAT-05 Q3): lo que
+# cambia el veredicto son los UMBRALES del detector, no el tamano de la ventana de
+# normalizacion.
+DETECTOR_WINDOW_BARS = 100
 
 
 class UnwiredSourceError(RuntimeError):
@@ -401,6 +460,224 @@ class CandleWindowedSpec:
                 window_bars=self.window_bars,
                 history_bars=history_bars,
             )
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class DetectorBar:
+    """Una barra con sus DOS caras ALINEADAS: el footprint y la vela.
+
+    Los cuatro detectores de P08c-DET-01 (absorption, climax, void, notrade) miran a la
+    vez el ORDERFLOW (delta, volumen agresor, span del footprint) y la FORMA de la vela
+    (OHLC). Emparejarlas en un solo elemento deja que la ventana rodante sea UNA
+    (materialize_windowed sobre DetectorBar) en vez de dos que habria que re-alinear
+    dentro de cada sub-ventana.
+    """
+
+    footprint: FootprintPayload
+    candle: CandleOHLCV
+
+    @property
+    def aggressor_volume(self) -> Decimal:
+        """Volumen AGRESOR de la barra: comprador + vendedor del footprint.
+
+        NO es candle.volume (el volumen que publica el exchange para la vela): los
+        nucleos de absorption/climax/notrade razonan sobre AGRESION, y FootprintPayload
+        no expone un total -- solo sus dos lados --, asi que se suma aqui.
+        """
+        return self.footprint.bar_buy_volume + self.footprint.bar_sell_volume
+
+
+def _read_detector_window(
+    session: Session,
+    exchange: str,
+    symbol: str,
+    timeframe: str,
+    open_time: int,
+    bars: int,
+) -> tuple[DetectorBar, ...]:
+    """Las `bars` barras mas recientes con footprint Y vela, alineadas y verificadas.
+
+    footprint y vela viven en TABLAS DISTINTAS, las escriben caminos distintos y sus
+    lectores recortan por separado: NADA garantiza por construccion que las dos ventanas
+    cubran las mismas barras. Por eso aqui no se asume la alineacion, se COMPRUEBA --
+    misma longitud y mismo open_time barra a barra -- y se falla RUIDOSO si no cuadra.
+
+    Es la convencion que ya fija pivotphase_materializer con ReplaySeries ("las series
+    deben tener la misma longitud"), reforzada con la igualdad de open_time: dos
+    ventanas del mismo tamano pero desplazadas una barra pasarian el chequeo de
+    longitud y emparejarian el delta de una barra con el OHLC de otra, que es
+    exactamente el fallo
+    MUDO que ningun test de forma cazaria.
+    """
+    footprints = read_footprint_window(
+        session, exchange, symbol, timeframe, open_time, bars
+    )
+    candles = read_ohlcv_window(session, exchange, symbol, timeframe, open_time, bars)
+    if len(footprints) != len(candles):
+        msg = (
+            f"footprint sirvio {len(footprints)} barras y la vela {len(candles)} para "
+            f"la misma ventana hasta {open_time}: los detectores no pueden emparejar "
+            "orderflow con forma de vela (fail-loud)."
+        )
+        raise UnwiredSourceError(msg)
+    for footprint, candle in zip(footprints, candles, strict=True):
+        if footprint.open_time != candle.open_time:
+            msg = (
+                f"footprint en la barra {footprint.open_time} emparejado con la vela "
+                f"{candle.open_time}: las ventanas estan desplazadas (fail-loud)."
+            )
+            raise UnwiredSourceError(msg)
+    return tuple(
+        DetectorBar(footprint=footprint, candle=candle)
+        for footprint, candle in zip(footprints, candles, strict=True)
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class DetectorWindowedSpec:
+    """Materializador WINDOWED de un detector footprint+vela (P08c-DET-01).
+
+    Como FootprintWindowedSpec, pero su base es la barra COMPUESTA (DetectorBar) y su
+    transform devuelve el CARRIER (ScalarValue) en vez de un Decimal: entre las diez
+    salidas de los cuatro detectores hay nueve DECIMAL y una STRING (notrade.state), y
+    unificarlas en el carrier evita un segundo camino solo para la categorica. Es lo que
+    habilita materialize_windowed generica en la salida (enmienda P08c-DET-01).
+
+    El WARM-UP es el de siempre y no se toca: materialize_windowed emite MENOS valores
+    (hasta ninguno) cuando la historia no llega, y el evaluador lo lee como
+    NOT_EVALUABLE (K3). Los nucleos ademas tienen su propio minimo interno (MIN_CANDLES
+    en climax/notrade), que resuelven devolviendo "sin senal" -- un 0 legitimo, no un
+    hueco.
+    """
+
+    transform: Callable[[Sequence[DetectorBar]], ScalarValue]
+    window_bars: int = DETECTOR_WINDOW_BARS
+
+    def materialize(
+        self,
+        session: Session,
+        exchange: str,
+        symbol: str,
+        timeframe: str,
+        open_time: int,
+        history_bars: int,
+    ) -> tuple[ScalarValue, ...]:
+        base = _read_detector_window(
+            session,
+            exchange,
+            symbol,
+            timeframe,
+            open_time,
+            history_bars + self.window_bars - 1,
+        )
+        return materialize_windowed(
+            base,
+            self.transform,
+            window_bars=self.window_bars,
+            history_bars=history_bars,
+        )
+
+
+def _book_depth(snapshot: OrderbookSnapshotPayload | None) -> BookDepth | None:
+    """Reduce el frontier del libro a lo MINIMO que piden las cuatro features de L2.
+
+    La reduccion vive AQUI y no en el nucleo a proposito: notrade.py es puro y no
+    conoce el contrato de la familia orderbook. Le llega un BookDepth de cuatro Decimal,
+    igual que a los otros detectores les llegan escalares y no el FootprintPayload.
+
+    Un libro sin NINGUN nivel (los dos lados vacios) devuelve None y no un BookDepth de
+    ceros: sin niveles no hay media que calcular, y un cero ahi entraria en la
+    distribucion como si fuera una observacion.
+    """
+    if snapshot is None:
+        return None
+    niveles = [*snapshot.bids, *snapshot.asks]
+    if not niveles:
+        return None
+    tamanos = [nivel.size for nivel in niveles]
+    total = sum(tamanos, Decimal(0))
+    return BookDepth(
+        bid_size=sum((nivel.size for nivel in snapshot.bids), Decimal(0)),
+        ask_size=sum((nivel.size for nivel in snapshot.asks), Decimal(0)),
+        max_level_size=max(tamanos),
+        mean_level_size=total / Decimal(len(tamanos)),
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class NotradeBar:
+    """DetectorBar + el frontier del libro de esa barra (P08c-CONF-05).
+
+    Composicion y no herencia: NotradeBar LLEVA un DetectorBar en vez de extenderlo, asi
+    que absorption/climax/void siguen recibiendo exactamente el tipo de antes y no se
+    enteran de que existe el libro.
+
+    book es None cuando esa barra no tuvo frontier, que es un caso LEGITIMO (el libro
+    pudo no estar suscrito, o hubo un resync) y no un error: el nucleo le aplica su
+    fail-safe (OBS-1).
+    """
+
+    bar: DetectorBar
+    book: BookDepth | None
+
+
+@dataclass(frozen=True, slots=True)
+class NotradeWindowedSpec:
+    """Materializador WINDOWED de notrade.*, que ademas del footprint+vela lee el LIBRO.
+
+    POR QUE UN SPEC PROPIO Y NO DetectorWindowedSpec (P08c-CONF-05). El transform de
+    DetectorWindowedSpec recibe `Sequence[DetectorBar]` y NADA MAS -- sin session --,
+    asi que desde ahi es IMPOSIBLE leer una tercera tabla. Las opciones eran meter el
+    libro en DetectorBar (y entonces absorption, climax y void pagarian una lectura que
+    no usan, y su DAG declararia una arista muerta) o dar a notrade su propio spec y su
+    propia base. Se eligio lo segundo: los otros tres detectores siguen EXACTAMENTE
+    igual, con su DetectorWindowedSpec y su DetectorBar intactos.
+
+    Se apoya en que materialize_windowed es GENERICA EN LA BASE (materialize_windowed
+    [Base, Out]): la mecanica de ventana rodante no depende del tipo de los elementos,
+    asi que sirve NotradeBar sin duplicar el bucle ni pasar nada por un lado.
+
+    El libro se empareja por OPEN_TIME, no por posicion, y esa es la otra diferencia con
+    _read_detector_window. Alli footprint y vela deben cubrir las mismas barras y una
+    discrepancia es fail-loud. Aqui NO: una barra puede tener footprint y no tener
+    frontier, y eso es legitimo. La ausencia viaja como book=None hasta el nucleo, que
+    le aplica su fail-safe (OBS-1: L2 = 0 en esa barra, score como limite inferior).
+    """
+
+    transform: Callable[[Sequence[NotradeBar]], ScalarValue]
+    window_bars: int = DETECTOR_WINDOW_BARS
+
+    def materialize(
+        self,
+        session: Session,
+        exchange: str,
+        symbol: str,
+        timeframe: str,
+        open_time: int,
+        history_bars: int,
+    ) -> tuple[ScalarValue, ...]:
+        total = history_bars + self.window_bars - 1
+        detector = _read_detector_window(
+            session, exchange, symbol, timeframe, open_time, total
+        )
+        frontiers = frontier_by_open_time(
+            read_orderbook_frontier_window(
+                session, exchange, symbol, timeframe, open_time, total
+            )
+        )
+        base = tuple(
+            NotradeBar(
+                bar=bar,
+                book=_book_depth(frontiers.get(bar.footprint.open_time)),
+            )
+            for bar in detector
+        )
+        return materialize_windowed(
+            base,
+            self.transform,
+            window_bars=self.window_bars,
+            history_bars=history_bars,
         )
 
 
@@ -1107,8 +1384,222 @@ def _candle_lower_shadow_pct(candle: CandleOHLCV) -> Decimal:
     )[0]
 
 
+def _imbalance_buy_stack(footprint: FootprintPayload) -> Decimal:
+    """imbalance.buy_stack: la pila COMPRADORA de la barra (P08c-CONF-05).
+
+    POINT_LOCAL como orderflow.delta y footprint.price_range: el nucleo mira SOLO las
+    celdas de esta barra. market.footprint es NON_SERVIBLE (un conjunto de celdas no es
+    un escalar), asi que no se pide por dispatch y se lee aqui -- patron de void con su
+    LVN y de MACD con sus EMAs.
+    """
+    return detect_stacked_imbalance(footprint.cells)[0]
+
+
+def _imbalance_sell_stack(footprint: FootprintPayload) -> Decimal:
+    """imbalance.sell_stack: la pila VENDEDORA de la barra (P08c-CONF-05)."""
+    return detect_stacked_imbalance(footprint.cells)[1]
+
+
+def _absorption_ratio(bar: DetectorBar) -> Decimal | None:
+    """El absorption_ratio de una barra (volumen agresor / span), o None si no lo hay.
+
+    Span 0 (barra de un solo nivel, o sin celdas) -> el ratio es indefinido y la barra
+    NO entra en la distribucion del umbral adaptativo. Meter un 0 o un infinito la
+    contaminaria: el percentil dejaria de describir la distribucion real de ratios.
+    """
+    span = price_range(bar.footprint)
+    if span <= 0:
+        return None
+    return bar.aggressor_volume / span
+
+
+def _absorption_signal(window: Sequence[DetectorBar]) -> AbsorptionSignal:
+    """El veredicto de absorcion de la ULTIMA barra de la ventana.
+
+    detect_absorption no recibe ventana: pide los escalares de UNA barra mas un
+    threshold. El threshold es lo que aporta la ventana -- adaptive_threshold sobre los
+    ratios de las barras PREVIAS (window[:-1]) --, misma convencion que climax con sus
+    percentiles: la barra evaluada no se autonormaliza.
+    """
+    ratios = [
+        ratio for bar in window[:-1] if (ratio := _absorption_ratio(bar)) is not None
+    ]
+    current = window[-1]
+    return detect_absorption(
+        volume=current.aggressor_volume,
+        delta=current.footprint.bar_delta,
+        price_range=price_range(current.footprint),
+        displacement=current.candle.close - current.candle.open,
+        threshold=adaptive_threshold(ratios),
+    )
+
+
+def _absorption_bid_strength(window: Sequence[DetectorBar]) -> ScalarValue:
+    return ScalarValue(
+        scalar_type=ScalarType.DECIMAL,
+        decimal_value=absorption_output(
+            _absorption_signal(window), AbsorptionOutput.BID_STRENGTH
+        ),
+    )
+
+
+def _absorption_ask_strength(window: Sequence[DetectorBar]) -> ScalarValue:
+    return ScalarValue(
+        scalar_type=ScalarType.DECIMAL,
+        decimal_value=absorption_output(
+            _absorption_signal(window), AbsorptionOutput.ASK_STRENGTH
+        ),
+    )
+
+
+def _climax_signal(window: Sequence[DetectorBar]) -> ClimaxSignal:
+    """El veredicto de climax de la ULTIMA barra de la ventana.
+
+    La vela de entrada mezcla las dos caras a proposito: el VOLUMEN es el agresor del
+    footprint (no candle.volume) y high/low/close salen de la vela. open NO se pasa
+    porque ClimaxCandle no lo tiene: la direccion sale solo de la posicion del cierre en
+    el rango (rev 3, H2).
+    """
+    return evaluate_climax(
+        [
+            ClimaxCandle(
+                volume=bar.aggressor_volume,
+                high=bar.candle.high,
+                low=bar.candle.low,
+                close=bar.candle.close,
+            )
+            for bar in window
+        ]
+    )
+
+
+def _climax_top_strength(window: Sequence[DetectorBar]) -> ScalarValue:
+    return ScalarValue(
+        scalar_type=ScalarType.DECIMAL,
+        decimal_value=climax_output(_climax_signal(window), ClimaxOutput.TOP_STRENGTH),
+    )
+
+
+def _climax_bottom_strength(window: Sequence[DetectorBar]) -> ScalarValue:
+    return ScalarValue(
+        scalar_type=ScalarType.DECIMAL,
+        decimal_value=climax_output(
+            _climax_signal(window), ClimaxOutput.BOTTOM_STRENGTH
+        ),
+    )
+
+
+def _void_signal(window: Sequence[DetectorBar]) -> VoidSignal:
+    """El veredicto de void de la ULTIMA barra de la ventana.
+
+    El nivel LVN se computa AQUI con select_lvn_price sobre la ventana de footprint, no
+    se pide a vp.lvn: esa fuente es NON_SERVIBLE (un CONJUNTO de niveles, no un escalar)
+    y no se puede pedir por dispatch. Es el patron con el que MACD calcula sus EMAs sin
+    consumir ema.value.
+    """
+    return evaluate_void(
+        [bar.candle.close for bar in window],
+        select_lvn_price([bar.footprint for bar in window]),
+    )
+
+
+def _void_snap_bullish(window: Sequence[DetectorBar]) -> ScalarValue:
+    return ScalarValue(
+        scalar_type=ScalarType.DECIMAL,
+        decimal_value=void_output(_void_signal(window), VoidOutput.SNAP_BULLISH),
+    )
+
+
+def _void_snap_bearish(window: Sequence[DetectorBar]) -> ScalarValue:
+    return ScalarValue(
+        scalar_type=ScalarType.DECIMAL,
+        decimal_value=void_output(_void_signal(window), VoidOutput.SNAP_BEARISH),
+    )
+
+
+def _notrade_signal(window: Sequence[NotradeBar]) -> NoTradeSignal:
+    """El veredicto de no-trade de la ULTIMA barra de la ventana.
+
+    NoTradeCandle mezcla las dos caras: delta y volumen AGRESOR del footprint, y el OHLC
+    entero de la vela (aqui SI entra open, a diferencia de climax: price_change =
+    close - open alimenta tres de las siete features).
+
+    El None de evaluate_no_trade (ventana por debajo de min_candles = 5) es INALCANZABLE
+    con DETECTOR_WINDOW_BARS = 100, asi que aqui es un invariante roto y no un caso de
+    warm-up: se rompe RUIDOSO, igual que _volume_ratio_vs_avg con su ventana llena. El
+    warm-up de la SERIE es otra cosa y lo resuelve materialize_windowed emitiendo menos
+    barras.
+    """
+    veredicto = evaluate_no_trade(
+        [
+            NoTradeCandle(
+                delta=elemento.bar.footprint.bar_delta,
+                volume=elemento.bar.aggressor_volume,
+                high=elemento.bar.candle.high,
+                low=elemento.bar.candle.low,
+                close=elemento.bar.candle.close,
+                open=elemento.bar.candle.open,
+                # None cuando esa barra no tuvo frontier: ausencia legitima con
+                # fail-safe propio en el nucleo (OBS-1), no un error.
+                book=elemento.book,
+            )
+            for elemento in window
+        ]
+    )
+    if veredicto is None:
+        msg = (
+            "notrade.* materializado con una ventana por debajo de su minimo "
+            "(invariante roto: la ventana del detector es mayor que min_candles)."
+        )
+        raise RuntimeError(msg)
+    return veredicto
+
+
+def _notrade_score(window: Sequence[NotradeBar]) -> ScalarValue:
+    return ScalarValue(
+        scalar_type=ScalarType.DECIMAL,
+        decimal_value=notrade_decimal_output(
+            _notrade_signal(window), NoTradeOutput.SCORE
+        ),
+    )
+
+
+def _notrade_footprint_ineff(window: Sequence[NotradeBar]) -> ScalarValue:
+    return ScalarValue(
+        scalar_type=ScalarType.DECIMAL,
+        decimal_value=notrade_decimal_output(
+            _notrade_signal(window), NoTradeOutput.FOOTPRINT_INEFF
+        ),
+    )
+
+
+def _notrade_flow_dislocation(window: Sequence[NotradeBar]) -> ScalarValue:
+    return ScalarValue(
+        scalar_type=ScalarType.DECIMAL,
+        decimal_value=notrade_decimal_output(
+            _notrade_signal(window), NoTradeOutput.FLOW_DISLOCATION
+        ),
+    )
+
+
+def _notrade_state(window: Sequence[NotradeBar]) -> ScalarValue:
+    """La UNICA salida STRING de la familia de detectores (carrier D1)."""
+    return ScalarValue(
+        scalar_type=ScalarType.STRING,
+        string_value=notrade_state_token(_notrade_signal(window)),
+    )
+
+
 def _candle_open(candle: CandleOHLCV) -> Decimal:
     return candle.open
+
+
+def _candle_high(candle: CandleOHLCV) -> Decimal:
+    return candle.high
+
+
+def _candle_low(candle: CandleOHLCV) -> Decimal:
+    return candle.low
 
 
 def _volume_ratio_vs_avg(window: Sequence[CandleOHLCV]) -> Decimal:
@@ -1182,6 +1673,12 @@ SOURCE_MATERIALIZERS: dict[str, SourceMaterializer] = {
         lookback=1,
     ),
     FOOTPRINT_PRICE_RANGE_SOURCE_ID: FootprintPointLocalSpec(extract=price_range),
+    IMBALANCE_BUY_STACK_SOURCE_ID: FootprintPointLocalSpec(
+        extract=_imbalance_buy_stack
+    ),
+    IMBALANCE_SELL_STACK_SOURCE_ID: FootprintPointLocalSpec(
+        extract=_imbalance_sell_stack
+    ),
     PIVOTPHASE_PHASE_SOURCE_ID: PivotphasePhaseSpec(),
     PIVOTPHASE_CONFIDENCE_SOURCE_ID: PivotphaseConfidenceSpec(),
     CANDLE_BODY_PCT_SOURCE_ID: CandlePointLocalSpec(extract=_candle_body_pct),
@@ -1192,6 +1689,28 @@ SOURCE_MATERIALIZERS: dict[str, SourceMaterializer] = {
         extract=_candle_lower_shadow_pct
     ),
     CANDLE_OPEN_SOURCE_ID: CandlePointLocalSpec(extract=_candle_open),
+    CANDLE_HIGH_SOURCE_ID: CandlePointLocalSpec(extract=_candle_high),
+    CANDLE_LOW_SOURCE_ID: CandlePointLocalSpec(extract=_candle_low),
+    ABSORPTION_BID_STRENGTH_SOURCE_ID: DetectorWindowedSpec(
+        transform=_absorption_bid_strength
+    ),
+    ABSORPTION_ASK_STRENGTH_SOURCE_ID: DetectorWindowedSpec(
+        transform=_absorption_ask_strength
+    ),
+    CLIMAX_TOP_STRENGTH_SOURCE_ID: DetectorWindowedSpec(transform=_climax_top_strength),
+    CLIMAX_BOTTOM_STRENGTH_SOURCE_ID: DetectorWindowedSpec(
+        transform=_climax_bottom_strength
+    ),
+    VOID_SNAP_BULLISH_SOURCE_ID: DetectorWindowedSpec(transform=_void_snap_bullish),
+    VOID_SNAP_BEARISH_SOURCE_ID: DetectorWindowedSpec(transform=_void_snap_bearish),
+    NOTRADE_SCORE_SOURCE_ID: NotradeWindowedSpec(transform=_notrade_score),
+    NOTRADE_FOOTPRINT_INEFF_SOURCE_ID: NotradeWindowedSpec(
+        transform=_notrade_footprint_ineff
+    ),
+    NOTRADE_FLOW_DISLOCATION_SOURCE_ID: NotradeWindowedSpec(
+        transform=_notrade_flow_dislocation
+    ),
+    NOTRADE_STATE_SOURCE_ID: NotradeWindowedSpec(transform=_notrade_state),
     VOLUME_RATIO_VS_AVG_SOURCE_ID: CandleWindowedSpec(
         transform=_volume_ratio_vs_avg, window_bars=LOOKBACK_DEFAULT + 1
     ),

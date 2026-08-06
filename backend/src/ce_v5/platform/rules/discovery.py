@@ -11,12 +11,18 @@ tanto NO entran al catalogo vivo hasta que su dependencia exista (aditividad).
 from __future__ import annotations
 
 from ce_v5.platform.rules import (
+    absorption,
+    climax,
     cvd,
     footprint_range,
+    imbalance,
+    notrade,
     orderflow,
     pivotphase,
+    rawbook,
     rawclose,
     rawfootprint,
+    void,
     volume_profile,
 )
 from ce_v5.platform.rules.indicators import (
@@ -36,12 +42,18 @@ from source.datasource import DataSourceDeclaration
 def discover_declarations() -> tuple[DataSourceDeclaration, ...]:
     """Agrega las declaraciones de todos los modulos productores (lista explicita)."""
     return (
+        *absorption.declarations(),
+        *climax.declarations(),
+        *void.declarations(),
+        *notrade.declarations(),
+        *rawbook.declarations(),
         *rawclose.declarations(),
         *rawfootprint.declarations(),
         *volume_profile.declarations(),
         *orderflow.declarations(),
         *cvd.declarations(),
         *footprint_range.declarations(),
+        *imbalance.declarations(),
         *pivotphase.declarations(),
         *candle.declarations(),
         *divergence.declarations(),
