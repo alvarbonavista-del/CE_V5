@@ -19,6 +19,7 @@ from ce_v5.entrypoints.worker_rules.materializers import (
     DetectorWindowedSpec,
     _absorption_signal,
     _climax_signal,
+    _notrade_signal,
     _void_signal,
 )
 from ce_v5.infra.db.market_candles import CandleOHLCV
@@ -31,6 +32,13 @@ from ce_v5.platform.rules.climax import (
     CLIMAX_BOTTOM_STRENGTH_SOURCE_ID,
     CLIMAX_TOP_STRENGTH_SOURCE_ID,
     ClimaxSide,
+)
+from ce_v5.platform.rules.notrade import (
+    NOTRADE_FLOW_DISLOCATION_SOURCE_ID,
+    NOTRADE_FOOTPRINT_INEFF_SOURCE_ID,
+    NOTRADE_SCORE_SOURCE_ID,
+    NOTRADE_STATE_SOURCE_ID,
+    NoTradeState,
 )
 from ce_v5.platform.rules.void import (
     VOID_SNAP_BEARISH_SOURCE_ID,
@@ -356,3 +364,83 @@ class TestVoidTransform:
         # derivase del footprint, esto reventaria por falta de nivel.
         senal = _void_signal(self._ventana_con_snap())
         assert senal.detected in {True, False}
+
+
+class TestNoTradeTransform:
+    """La transform de notrade: cuatro salidas de UN veredicto -- tres DECIMAL y una
+    STRING."""
+
+    def _ventana(self) -> list[DetectorBar]:
+        # Cierres y volumenes variados para que la normalizacion min-max tenga recorrido
+        # (con una ventana plana todas las features quedarian en 0.5 y el score seria
+        # constante, que no probaria nada).
+        return [
+            _bar(
+                i,
+                buy=str(5 + i % 7),
+                sell=str(3 + i % 5),
+                close_price=str(100 + i % 9),
+                open_price=str(104 - i % 4),
+            )
+            for i in range(40)
+        ]
+
+    def test_el_score_no_pasa_de_65_sin_l2(self) -> None:
+        # El bloque L2 (peso 35) esta DIFERIDO y contribuye 0: el score es un LIMITE
+        # INFERIOR de la toxicidad. Si algun dia pasara de 65 sin que l2.* exista,
+        # alguien habria renormalizado y las series historicas cambiarian de sentido.
+        spec = SOURCE_MATERIALIZERS[NOTRADE_SCORE_SOURCE_ID]
+        assert isinstance(spec, DetectorWindowedSpec)
+        valor = spec.transform(self._ventana())
+        assert valor.decimal_value is not None
+        assert Decimal(0) <= valor.decimal_value <= Decimal(65)
+
+    def test_los_bloques_respetan_sus_topes(self) -> None:
+        ventana = self._ventana()
+        topes = {
+            NOTRADE_FOOTPRINT_INEFF_SOURCE_ID: Decimal(40),
+            NOTRADE_FLOW_DISLOCATION_SOURCE_ID: Decimal(25),
+        }
+        for source_id, tope in topes.items():
+            spec = SOURCE_MATERIALIZERS[source_id]
+            assert isinstance(spec, DetectorWindowedSpec)
+            valor = spec.transform(ventana)
+            assert valor.decimal_value is not None
+            assert Decimal(0) <= valor.decimal_value <= tope
+
+    def test_el_score_es_la_suma_de_los_dos_bloques_activos(self) -> None:
+        # ATA las tres cifras entre si: si una se calculara sobre otra ventana, la suma
+        # dejaria de cuadrar.
+        ventana = self._ventana()
+        senal = _notrade_signal(ventana)
+        assert senal.no_trade_score == senal.footprint_ineff + senal.flow_dislocation
+        assert senal.l2_instability == Decimal(0)
+
+    def test_state_sirve_un_token_string_del_vocabulario(self) -> None:
+        spec = SOURCE_MATERIALIZERS[NOTRADE_STATE_SOURCE_ID]
+        assert isinstance(spec, DetectorWindowedSpec)
+        valor = spec.transform(self._ventana())
+        assert valor.scalar_type is ScalarType.STRING
+        assert valor.decimal_value is None
+        assert valor.string_value in {estado.value for estado in NoTradeState}
+
+    def test_toxic_es_inalcanzable_mientras_l2_este_diferido(self) -> None:
+        # La banda superior arranca en 80 y el score no pasa de 65: es una limitacion
+        # DECLARADA del estado PROVISIONAL, no un defecto del cableado.
+        spec = SOURCE_MATERIALIZERS[NOTRADE_STATE_SOURCE_ID]
+        assert isinstance(spec, DetectorWindowedSpec)
+        assert spec.transform(self._ventana()).string_value != NoTradeState.TOXIC.value
+
+    def test_las_cuatro_salidas_no_son_la_misma(self) -> None:
+        ventana = self._ventana()
+        transforms = {
+            SOURCE_MATERIALIZERS[source_id]
+            for source_id in (
+                NOTRADE_SCORE_SOURCE_ID,
+                NOTRADE_FOOTPRINT_INEFF_SOURCE_ID,
+                NOTRADE_FLOW_DISLOCATION_SOURCE_ID,
+                NOTRADE_STATE_SOURCE_ID,
+            )
+        }
+        assert len(transforms) == 4
+        del ventana

@@ -100,6 +100,12 @@ from ce_v5.platform.rules.indicators.vwap import (
     VWAP_DISTANCE_PCT_SOURCE_ID,
     VWAP_VALUE_SOURCE_ID,
 )
+from ce_v5.platform.rules.notrade import (
+    NOTRADE_FLOW_DISLOCATION_SOURCE_ID,
+    NOTRADE_FOOTPRINT_INEFF_SOURCE_ID,
+    NOTRADE_SCORE_SOURCE_ID,
+    NOTRADE_STATE_SOURCE_ID,
+)
 from ce_v5.platform.rules.orderflow import (
     ORDERFLOW_DELTA_MOMENTUM_SOURCE_ID,
     ORDERFLOW_DELTA_SOURCE_ID,
@@ -231,6 +237,10 @@ class TestRegistroPorSourceId:
             CLIMAX_BOTTOM_STRENGTH_SOURCE_ID,
             VOID_SNAP_BULLISH_SOURCE_ID,
             VOID_SNAP_BEARISH_SOURCE_ID,
+            NOTRADE_SCORE_SOURCE_ID,
+            NOTRADE_FOOTPRINT_INEFF_SOURCE_ID,
+            NOTRADE_FLOW_DISLOCATION_SOURCE_ID,
+            NOTRADE_STATE_SOURCE_ID,
             VOLUME_RATIO_VS_AVG_SOURCE_ID,
             VWAP_VALUE_SOURCE_ID,
             VWAP_DISTANCE_PCT_SOURCE_ID,

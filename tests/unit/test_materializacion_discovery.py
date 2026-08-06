@@ -12,6 +12,10 @@ _EXPECTED = {
     "climax.bottom_strength",
     "void.snap_bullish",
     "void.snap_bearish",
+    "notrade.score",
+    "notrade.footprint_ineff",
+    "notrade.flow_dislocation",
+    "notrade.state",
     "market.close",
     "market.footprint",
     "vp.poc",
@@ -63,12 +67,14 @@ def test_discovery_incluye_market_close_aditividad() -> None:
     assert "market.close" in ids
 
 
-def test_discovery_no_incluye_diferidas() -> None:
-    # absorption.*, climax.* y void.* SALEN de esta lista en P08c-DET-01 conforme se
-    # cablean. notrade.* es la ultima que queda diferida en esta pieza.
+def test_discovery_ya_no_tiene_detectores_diferidos() -> None:
+    # P08c-DET-01 cierra la lista: los CUATRO detectores estan cableados. Lo que queda
+    # diferido no es una FUENTE sino el bloque L2 de notrade (peso 35 reservado), que
+    # espera a que exista l2.* -- y eso no se ve en el catalogo, se ve en el tope 65 del
+    # score.
     ids = {d.source_id for d in discover_declarations()}
-    for prefix in ("notrade.",):
-        assert not any(i.startswith(prefix) for i in ids)
+    for prefix in ("absorption.", "climax.", "void.", "notrade."):
+        assert any(i.startswith(prefix) for i in ids)
 
 
 def test_discovery_incluye_absorption_ya_no_diferida() -> None:
@@ -110,6 +116,19 @@ def test_discovery_incluye_void_ya_no_diferida() -> None:
     # vp.lvn (es NON_SERVIBLE): el nivel se computa dentro del materializador.
     ids = {d.source_id for d in discover_declarations()}
     assert {"void.snap_bullish", "void.snap_bearish"} <= ids
+
+
+def test_discovery_incluye_notrade_ya_no_diferida() -> None:
+    # P08c-DET-01: CUATRO fuentes (tres cifras del score descompuesto + el estado). Es
+    # el unico detector con salida STRING, y su consumes SI incluye candle.open (al
+    # reves que climax): NoTradeCandle lo usa.
+    ids = {d.source_id for d in discover_declarations()}
+    assert {
+        "notrade.score",
+        "notrade.footprint_ineff",
+        "notrade.flow_dislocation",
+        "notrade.state",
+    } <= ids
 
 
 def test_discovery_incluye_las_cinco_divergence() -> None:

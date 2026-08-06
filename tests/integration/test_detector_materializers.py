@@ -33,6 +33,13 @@ from ce_v5.platform.rules.climax import (
     CLIMAX_BOTTOM_STRENGTH_SOURCE_ID,
     CLIMAX_TOP_STRENGTH_SOURCE_ID,
 )
+from ce_v5.platform.rules.notrade import (
+    NOTRADE_FLOW_DISLOCATION_SOURCE_ID,
+    NOTRADE_FOOTPRINT_INEFF_SOURCE_ID,
+    NOTRADE_SCORE_SOURCE_ID,
+    NOTRADE_STATE_SOURCE_ID,
+    NoTradeState,
+)
 from ce_v5.platform.rules.void import (
     VOID_SNAP_BEARISH_SOURCE_ID,
     VOID_SNAP_BULLISH_SOURCE_ID,
@@ -68,7 +75,12 @@ _BARRAS = 130
 _ABSORPTION = (ABSORPTION_BID_STRENGTH_SOURCE_ID, ABSORPTION_ASK_STRENGTH_SOURCE_ID)
 _CLIMAX = (CLIMAX_TOP_STRENGTH_SOURCE_ID, CLIMAX_BOTTOM_STRENGTH_SOURCE_ID)
 _VOID = (VOID_SNAP_BULLISH_SOURCE_ID, VOID_SNAP_BEARISH_SOURCE_ID)
-_TODAS = (*_ABSORPTION, *_CLIMAX, *_VOID)
+_NOTRADE_DECIMAL = (
+    NOTRADE_SCORE_SOURCE_ID,
+    NOTRADE_FOOTPRINT_INEFF_SOURCE_ID,
+    NOTRADE_FLOW_DISLOCATION_SOURCE_ID,
+)
+_TODAS = (*_ABSORPTION, *_CLIMAX, *_VOID, *_NOTRADE_DECIMAL, NOTRADE_STATE_SOURCE_ID)
 
 PersistirVela = Callable[[CandlePayload, MarketCandleEventType, int], bool]
 PersistirFootprint = Callable[[FootprintPayload, MarketFootprintEventType, int], bool]
@@ -241,7 +253,7 @@ class TestSerieServida:
         # permite escribir "absorption.bid_strength > 0.5" sin tratar el silencio.
         _sembrar(persistir_footprint, persistir_vela)
 
-        for source_id in _TODAS:
+        for source_id in _ABSORPTION:
             serie = _materializar(rules_db, source_id, _open_time(_ULTIMA - 1), 3)
             assert len(serie) == 3
             assert all(valor.decimal_value == Decimal(0) for valor in serie)
@@ -289,9 +301,9 @@ class TestDeterminismo:
             una = _materializar(rules_db, source_id, _open_time(_ULTIMA), 5)
             otra = _materializar(rules_db, source_id, _open_time(_ULTIMA), 5)
             assert una == otra
-            assert [str(v.decimal_value) for v in una] == [
-                str(v.decimal_value) for v in otra
-            ]
+            # Bit a bit y para los DOS tipos: str(ScalarValue) incluye el campo tipado,
+            # asi que cubre tanto las nueve DECIMAL como notrade.state (STRING).
+            assert [str(v) for v in una] == [str(v) for v in otra]
 
     def test_la_cola_no_depende_de_cuantas_barras_se_pidan(
         self,
@@ -487,3 +499,73 @@ class TestVoidServido:
 
         assert len(serie) == 1
         assert serie[0].decimal_value is not None
+
+
+class TestNoTradeServido:
+    def test_las_tres_cifras_salen_en_rango(
+        self,
+        rules_db: PsycopgDatabase,
+        persistir_footprint: PersistirFootprint,
+        persistir_vela: PersistirVela,
+        limpiar_detectores: None,
+    ) -> None:
+        _sembrar(persistir_footprint, persistir_vela)
+        topes = {
+            NOTRADE_SCORE_SOURCE_ID: Decimal(65),
+            NOTRADE_FOOTPRINT_INEFF_SOURCE_ID: Decimal(40),
+            NOTRADE_FLOW_DISLOCATION_SOURCE_ID: Decimal(25),
+        }
+
+        for source_id, tope in topes.items():
+            serie = _materializar(rules_db, source_id, _open_time(_ULTIMA), 3)
+            assert len(serie) == 3
+            for valor in serie:
+                assert valor.scalar_type is ScalarType.DECIMAL
+                assert valor.decimal_value is not None
+                assert Decimal(0) <= valor.decimal_value <= tope
+
+    def test_state_sirve_un_token_string_por_el_mismo_borde(
+        self,
+        rules_db: PsycopgDatabase,
+        persistir_footprint: PersistirFootprint,
+        persistir_vela: PersistirVela,
+        limpiar_detectores: None,
+    ) -> None:
+        # La UNICA salida STRING de la familia, servida por el MISMO carrier y el MISMO
+        # spec WINDOWED que las nueve DECIMAL. Es lo que habilito materialize_windowed
+        # generica en la salida (enmienda P08c-DET-01).
+        _sembrar(persistir_footprint, persistir_vela)
+
+        serie = _materializar(rules_db, NOTRADE_STATE_SOURCE_ID, _open_time(_ULTIMA), 4)
+
+        assert len(serie) == 4
+        for valor in serie:
+            assert valor.scalar_type is ScalarType.STRING
+            assert valor.decimal_value is None
+            assert valor.string_value in {estado.value for estado in NoTradeState}
+
+    def test_el_score_cuadra_con_la_suma_de_sus_bloques(
+        self,
+        rules_db: PsycopgDatabase,
+        persistir_footprint: PersistirFootprint,
+        persistir_vela: PersistirVela,
+        limpiar_detectores: None,
+    ) -> None:
+        # Las tres cifras se materializan por separado (dispatch por SOURCE_ID) pero
+        # salen del MISMO recorrido: si alguna leyera otra ventana, la suma no
+        # cuadraria.
+        _sembrar(persistir_footprint, persistir_vela)
+        ultimo = _open_time(_ULTIMA)
+
+        score = _materializar(rules_db, NOTRADE_SCORE_SOURCE_ID, ultimo, 3)
+        fp = _materializar(rules_db, NOTRADE_FOOTPRINT_INEFF_SOURCE_ID, ultimo, 3)
+        flow = _materializar(rules_db, NOTRADE_FLOW_DISLOCATION_SOURCE_ID, ultimo, 3)
+
+        for total, bloque_fp, bloque_flow in zip(score, fp, flow, strict=True):
+            assert total.decimal_value is not None
+            assert bloque_fp.decimal_value is not None
+            assert bloque_flow.decimal_value is not None
+            assert (
+                total.decimal_value
+                == bloque_fp.decimal_value + bloque_flow.decimal_value
+            )

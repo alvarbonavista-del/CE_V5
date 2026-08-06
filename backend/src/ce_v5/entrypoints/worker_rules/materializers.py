@@ -172,6 +172,18 @@ from ce_v5.platform.rules.materializer import (
     materialize_recursive,
     materialize_windowed,
 )
+from ce_v5.platform.rules.notrade import (
+    NOTRADE_FLOW_DISLOCATION_SOURCE_ID,
+    NOTRADE_FOOTPRINT_INEFF_SOURCE_ID,
+    NOTRADE_SCORE_SOURCE_ID,
+    NOTRADE_STATE_SOURCE_ID,
+    NoTradeCandle,
+    NoTradeOutput,
+    NoTradeSignal,
+    evaluate_no_trade,
+    notrade_decimal_output,
+    notrade_state_token,
+)
 from ce_v5.platform.rules.orderflow import (
     ORDERFLOW_DELTA_MOMENTUM_SOURCE_ID,
     ORDERFLOW_DELTA_SOURCE_ID,
@@ -1376,6 +1388,76 @@ def _void_snap_bearish(window: Sequence[DetectorBar]) -> ScalarValue:
     )
 
 
+def _notrade_signal(window: Sequence[DetectorBar]) -> NoTradeSignal:
+    """El veredicto de no-trade de la ULTIMA barra de la ventana.
+
+    NoTradeCandle mezcla las dos caras: delta y volumen AGRESOR del footprint, y el OHLC
+    entero de la vela (aqui SI entra open, a diferencia de climax: price_change =
+    close - open alimenta tres de las siete features).
+
+    El None de evaluate_no_trade (ventana por debajo de min_candles = 5) es INALCANZABLE
+    con DETECTOR_WINDOW_BARS = 100, asi que aqui es un invariante roto y no un caso de
+    warm-up: se rompe RUIDOSO, igual que _volume_ratio_vs_avg con su ventana llena. El
+    warm-up de la SERIE es otra cosa y lo resuelve materialize_windowed emitiendo menos
+    barras.
+    """
+    veredicto = evaluate_no_trade(
+        [
+            NoTradeCandle(
+                delta=bar.footprint.bar_delta,
+                volume=bar.aggressor_volume,
+                high=bar.candle.high,
+                low=bar.candle.low,
+                close=bar.candle.close,
+                open=bar.candle.open,
+            )
+            for bar in window
+        ]
+    )
+    if veredicto is None:
+        msg = (
+            "notrade.* materializado con una ventana por debajo de su minimo "
+            "(invariante roto: la ventana del detector es mayor que min_candles)."
+        )
+        raise RuntimeError(msg)
+    return veredicto
+
+
+def _notrade_score(window: Sequence[DetectorBar]) -> ScalarValue:
+    return ScalarValue(
+        scalar_type=ScalarType.DECIMAL,
+        decimal_value=notrade_decimal_output(
+            _notrade_signal(window), NoTradeOutput.SCORE
+        ),
+    )
+
+
+def _notrade_footprint_ineff(window: Sequence[DetectorBar]) -> ScalarValue:
+    return ScalarValue(
+        scalar_type=ScalarType.DECIMAL,
+        decimal_value=notrade_decimal_output(
+            _notrade_signal(window), NoTradeOutput.FOOTPRINT_INEFF
+        ),
+    )
+
+
+def _notrade_flow_dislocation(window: Sequence[DetectorBar]) -> ScalarValue:
+    return ScalarValue(
+        scalar_type=ScalarType.DECIMAL,
+        decimal_value=notrade_decimal_output(
+            _notrade_signal(window), NoTradeOutput.FLOW_DISLOCATION
+        ),
+    )
+
+
+def _notrade_state(window: Sequence[DetectorBar]) -> ScalarValue:
+    """La UNICA salida STRING de la familia de detectores (carrier D1)."""
+    return ScalarValue(
+        scalar_type=ScalarType.STRING,
+        string_value=notrade_state_token(_notrade_signal(window)),
+    )
+
+
 def _candle_open(candle: CandleOHLCV) -> Decimal:
     return candle.open
 
@@ -1483,6 +1565,14 @@ SOURCE_MATERIALIZERS: dict[str, SourceMaterializer] = {
     ),
     VOID_SNAP_BULLISH_SOURCE_ID: DetectorWindowedSpec(transform=_void_snap_bullish),
     VOID_SNAP_BEARISH_SOURCE_ID: DetectorWindowedSpec(transform=_void_snap_bearish),
+    NOTRADE_SCORE_SOURCE_ID: DetectorWindowedSpec(transform=_notrade_score),
+    NOTRADE_FOOTPRINT_INEFF_SOURCE_ID: DetectorWindowedSpec(
+        transform=_notrade_footprint_ineff
+    ),
+    NOTRADE_FLOW_DISLOCATION_SOURCE_ID: DetectorWindowedSpec(
+        transform=_notrade_flow_dislocation
+    ),
+    NOTRADE_STATE_SOURCE_ID: DetectorWindowedSpec(transform=_notrade_state),
     VOLUME_RATIO_VS_AVG_SOURCE_ID: CandleWindowedSpec(
         transform=_volume_ratio_vs_avg, window_bars=LOOKBACK_DEFAULT + 1
     ),

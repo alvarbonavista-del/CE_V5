@@ -31,8 +31,27 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal
-from enum import StrEnum
+from enum import Enum, StrEnum
 from typing import TYPE_CHECKING
+
+from ce_v5.platform.rules.indicators.candle import (
+    CANDLE_HIGH_SOURCE_ID,
+    CANDLE_LOW_SOURCE_ID,
+    CANDLE_OPEN_SOURCE_ID,
+)
+from ce_v5.platform.rules.rawclose import MARKET_CLOSE_SOURCE_ID
+from ce_v5.platform.rules.rawfootprint import MARKET_FOOTPRINT_SOURCE_ID
+from source.datasource import (
+    DataSourceDeclaration,
+    HistoryUnit,
+    MemoryModel,
+    ParamSpec,
+    Servibility,
+    SharingScope,
+    SourceType,
+)
+from source.families.market import Timeframe
+from source.rules.scalar import ScalarType, ScalarValue
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -298,3 +317,173 @@ def net_edge(
     if modulated > _SCORE_MAX:
         return _SCORE_MAX
     return modulated
+
+
+# --- Cara SERVIBLE: CUATRO fuentes (P08c-DET-01) --------------------------------------
+#
+# A diferencia de los otros tres detectores, aqui el veredicto no dice "hubo algo de
+# este lado": es un SCORE descompuesto. Se sirven las tres cifras (el total y sus dos
+# bloques activos) mas el ESTADO categorico. Las tres primeras son DECIMAL;
+# notrade.state es la unica salida STRING de la familia y viaja por el mismo
+# carrier que fib.direction
+# y divergence.kind (D1) -- por eso materialize_windowed es generica en la salida.
+#
+# EL TOPE ES 65, NO 100, hasta que exista l2.*: el bloque L2 (peso 35) esta DIFERIDO y
+# contribuye 0. El score servido es un LIMITE INFERIOR de la toxicidad y "toxic" es
+# inalcanzable hoy. No se renormaliza a 100 a proposito: cuando L2 entre se SUMA sin
+# rescalar, y las series historicas no cambian de significado.
+
+NOTRADE_SCORE_SOURCE_ID = "notrade.score"
+NOTRADE_FOOTPRINT_INEFF_SOURCE_ID = "notrade.footprint_ineff"
+NOTRADE_FLOW_DISLOCATION_SOURCE_ID = "notrade.flow_dislocation"
+NOTRADE_STATE_SOURCE_ID = "notrade.state"
+
+
+class NoTradeOutput(Enum):
+    """Cual de las CUATRO salidas servibles publica una fuente.
+
+    Las cuatro salen del MISMO NoTradeSignal y de un solo recorrido de la ventana; lo
+    unico que cambia es que campo publican y en que tipo viaja.
+    """
+
+    SCORE = "score"
+    FOOTPRINT_INEFF = "footprint_ineff"
+    FLOW_DISLOCATION = "flow_dislocation"
+    STATE = "state"
+
+
+_DECIMAL_FIELD_BY_OUTPUT: dict[NoTradeOutput, str] = {
+    NoTradeOutput.SCORE: "no_trade_score",
+    NoTradeOutput.FOOTPRINT_INEFF: "footprint_ineff",
+    NoTradeOutput.FLOW_DISLOCATION: "flow_dislocation",
+}
+
+
+def notrade_decimal_output(signal: NoTradeSignal, output: NoTradeOutput) -> Decimal:
+    """El campo DECIMAL que publica `output`. STATE no es uno de ellos.
+
+    l2_instability NO se sirve: hoy vale 0 por construccion (bloque diferido) y una
+    fuente que siempre devuelve 0 no informa de nada -- seria ruido con aspecto de dato.
+    Cuando l2.* exista, entrara como fuente propia.
+    """
+    field = _DECIMAL_FIELD_BY_OUTPUT.get(output)
+    if field is None:
+        msg = (
+            f"{output.value!r} no es una salida DECIMAL de notrade.*: state es "
+            "el token categorico y se proyecta con notrade_state_token."
+        )
+        raise ValueError(msg)
+    value = getattr(signal, field)
+    if not isinstance(value, Decimal):  # pragma: no cover - lo garantiza el dataclass
+        msg = f"el campo {field!r} de NoTradeSignal no es Decimal."
+        raise TypeError(msg)
+    return value
+
+
+def notrade_state_token(signal: NoTradeSignal) -> str:
+    """El estado de toxicidad como TOKEN de texto servible.
+
+    El token NO se inventa aqui: es el .value del NoTradeState que ya calcula el nucleo
+    por bandas. Un vocabulario nuevo seria un segundo sitio donde mantener los mismos
+    cuatro nombres.
+    """
+    return signal.state.value
+
+
+def _decimal_param(name: str, default: Decimal) -> ParamSpec:
+    """ParamSpec decimal con su default (semilla [PARIDAD v4] del detector)."""
+    return ParamSpec(
+        name=name,
+        value_type=ScalarType.DECIMAL,
+        default=ScalarValue(scalar_type=ScalarType.DECIMAL, decimal_value=default),
+    )
+
+
+def _notrade_declaration(
+    source_id: str, value_type: ScalarType = ScalarType.DECIMAL
+) -> DataSourceDeclaration:
+    """Declaracion comun de las cuatro notrade.* (P08c-DET-01).
+
+    WINDOWED: cada feature se normaliza por MIN-MAX sobre una ventana rodante ACOTADA
+    (NORM_WINDOW), asi que el score de la barra T se recomputa por ventana. Sin
+    snapshot que mantener.
+
+    consumes DAG HONESTO (enmienda P08c-DET-01): market.footprint (delta y volumen
+    agresor) mas el OHLC entero de la vela. candle.open SI entra -- al reves que en
+    climax --: NoTradeCandle lo tiene y lo usa (price_change = close - open alimenta
+    divergence, move_no_delta y delta_stall).
+
+    PARAMS DEFAULT-ONLY: solo las BANDAS de estado y la K del net edge, que es lo que la
+    calibracion toca (decision registrada: los SUB-PESOS van FIJOS en paridad v4 para
+    reducir grados de libertad). Los pesos de bloque tampoco se declaran: el 35 de L2
+    esta RESERVADO y cambiarlo sin la fuente no significaria nada.
+    """
+    return DataSourceDeclaration(
+        source_id=source_id,
+        source_type=SourceType.OBSERVABLE,
+        servibility=Servibility.CONTINUOUS,
+        memory_model=MemoryModel.WINDOWED,
+        value_type=value_type,
+        evaluation_contexts=tuple(tf.value for tf in Timeframe),
+        history_units=(HistoryUnit.BARS,),
+        params=(
+            _decimal_param("state_safe_max", _STATE_SAFE_MAX),
+            _decimal_param("state_caution_max", _STATE_CAUTION_MAX),
+            _decimal_param("state_no_trade_max", _STATE_NO_TRADE_MAX),
+            _decimal_param("net_edge_k", _NET_EDGE_K),
+        ),
+        shared_evaluation=True,
+        sharing_scope=SharingScope.PUBLIC_CROSS_TENANT,
+        cache_key_schema=(
+            "exchange",
+            "symbol",
+            "market_type",
+            "timeframe",
+            "state_safe_max",
+            "state_caution_max",
+            "state_no_trade_max",
+            "net_edge_k",
+        ),
+        consumes=(
+            MARKET_FOOTPRINT_SOURCE_ID,
+            CANDLE_OPEN_SOURCE_ID,
+            CANDLE_HIGH_SOURCE_ID,
+            CANDLE_LOW_SOURCE_ID,
+            MARKET_CLOSE_SOURCE_ID,
+        ),
+    )
+
+
+def notrade_score_declaration() -> DataSourceDeclaration:
+    """notrade.score: toxicidad total 0-100 (tope 65 hasta que exista l2.*)."""
+    return _notrade_declaration(NOTRADE_SCORE_SOURCE_ID)
+
+
+def notrade_footprint_ineff_declaration() -> DataSourceDeclaration:
+    """notrade.footprint_ineff: bloque de ineficiencia de footprint (0-40)."""
+    return _notrade_declaration(NOTRADE_FOOTPRINT_INEFF_SOURCE_ID)
+
+
+def notrade_flow_dislocation_declaration() -> DataSourceDeclaration:
+    """notrade.flow_dislocation: bloque de dislocacion de flujo (0-25)."""
+    return _notrade_declaration(NOTRADE_FLOW_DISLOCATION_SOURCE_ID)
+
+
+def notrade_state_declaration() -> DataSourceDeclaration:
+    """notrade.state: banda de toxicidad como token (STRING).
+
+    La unica salida CATEGORICA de la familia de detectores. El token "toxic" es
+    INALCANZABLE mientras L2 este diferido (el score no pasa de 65): no es un defecto,
+    es el estado PROVISIONAL que documenta el nucleo.
+    """
+    return _notrade_declaration(NOTRADE_STATE_SOURCE_ID, ScalarType.STRING)
+
+
+def declarations() -> tuple[DataSourceDeclaration, ...]:
+    """Declaraciones que este modulo publica al catalogo vivo (discovery, MAT-02)."""
+    return (
+        notrade_score_declaration(),
+        notrade_footprint_ineff_declaration(),
+        notrade_flow_dislocation_declaration(),
+        notrade_state_declaration(),
+    )
